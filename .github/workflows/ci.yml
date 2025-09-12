@@ -1,0 +1,120 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.8', '3.9', '3.10', '3.11']
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: Format check with black
+      run: |
+        black --check data_collectors/ api/ --line-length=120
+    
+    - name: Lint with flake8
+      run: |
+        flake8 data_collectors/ api/ --max-line-length=120 --exclude=.venv,__pycache__ --ignore=E402,F401,W291,W293,E501
+    
+    - name: Type check with mypy (optional)
+      continue-on-error: true
+      run: |
+        pip install mypy
+        mypy data_collectors/ api/ --ignore-missing-imports || true
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.8', '3.9', '3.10', '3.11']
+    
+    services:
+      postgres:
+        image: postgres:14
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: trading_db
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: Setup config files
+      run: |
+        cp data_collectors/data_collector_config.example.yaml data_collectors/data_collector_config.yaml
+        cp data_collectors/continuous_monitor_config.example.yaml data_collectors/continuous_monitor_config.yaml
+    
+    - name: Test database connection
+      env:
+        PGPASSWORD: postgres
+      run: |
+        python -c "
+        import psycopg2
+        conn = psycopg2.connect(
+            host='localhost',
+            port=5432,
+            database='trading_db',
+            user='postgres',
+            password='postgres'
+        )
+        print('Database connection successful')
+        conn.close()
+        "
+    
+    - name: Run basic import tests
+      run: |
+        python -c "from data_collectors.bybit.futures import database"
+        python -c "from data_collectors.bybit.futures import time_utils"
+        python -c "from data_collectors.bybit.futures import config_validator"
+        python -c "from api.bybit import bybit_api_client"
+    
+    - name: Validate configurations
+      run: |
+        cd data_collectors/bybit/futures
+        python config_validator.py || true
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Run security checks
+      run: |
+        pip install safety bandit
+        safety check --json || true
+        bandit -r data_collectors/ api/ -f json || true

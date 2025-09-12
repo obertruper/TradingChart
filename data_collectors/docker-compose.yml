@@ -1,0 +1,72 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: trading_postgres
+    environment:
+      POSTGRES_DB: trading_db
+      POSTGRES_USER: macbook
+      POSTGRES_PASSWORD: ""
+      POSTGRES_HOST_AUTH_METHOD: trust
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db_backups:/backups
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U macbook -d trading_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  data_monitor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: bybit_monitor
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      - PYTHONUNBUFFERED=1
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=trading_db
+      - DB_USER=macbook
+      - DB_PASSWORD=
+    volumes:
+      - ./bybit/futures:/app
+      - ./logs:/app/logs
+      - ./checkpoints:/app/checkpoints
+      - ./continuous_monitor_config.yaml:/app/continuous_monitor_config.yaml:ro
+      - ./data_collector_config.yaml:/app/data_collector_config.yaml:ro
+    command: python continuous_monitor.py --daemon
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Опциональный веб-интерфейс для мониторинга
+  monitor_ui:
+    image: nginx:alpine
+    container_name: monitor_ui
+    ports:
+      - "8080:80"
+    volumes:
+      - ./web:/usr/share/nginx/html:ro
+    depends_on:
+      - data_monitor
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+    driver: local
+
+networks:
+  default:
+    name: trading_network
+    driver: bridge

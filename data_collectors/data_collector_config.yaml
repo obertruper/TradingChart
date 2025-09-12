@@ -1,0 +1,134 @@
+# Data Collector Configuration for Historical Candle Data
+# =========================================================
+
+# API Settings
+api:
+  bybit:
+    api_key: "API_KEY"
+    api_secret: "SECRET_KEY"
+    testnet: false
+
+# Database Settings (PostgreSQL only)
+database:
+  type: "postgres"
+  host: "127.0.0.1"
+  port: 5432
+  database: "trading_db"
+  user: "macbook"
+  password: ""
+  
+  # Table settings
+  table_name: "candles_bybit_futures_1m"
+  
+  # Connection settings
+  connection_pool:
+    min_connections: 2
+    max_connections: 10
+    timeout: 30
+
+# Exchange Settings
+exchange:
+  name: "bybit"
+  category: "linear"  # futures category
+  
+  # API rate limits (Bybit: 120 requests per minute)
+  rate_limit:
+    requests_per_minute: 100  # Conservative limit
+    requests_per_second: 2
+    batch_delay: 0.5  # seconds between batches
+  
+  # Request settings
+  max_candles_per_request: 1000  # Bybit limit
+  retry_attempts: 3
+  retry_delay: 1  # seconds
+
+# Collection Settings
+collection:
+  # Time range for historical data collection
+  start_date: "2025-09-11 00:00:00"  # Format: YYYY-MM-DD HH:MM:SS
+  end_date: "2025-09-11 01:00:00"    # Current date or specific end
+  timezone: "UTC"                    # Timezone for date interpretation (UTC recommended)
+  
+  # Timeframe
+  interval: "1"  # 1 minute candles
+  
+  # Trading pairs to collect
+  symbols:
+    - "BTCUSDT"
+#    - "ETHUSDT"
+#    - "SOLUSDT"
+#    - "XRPUSDT"
+#    - "ADAUSDT"
+#    - "BNBUSDT"
+#    - "LINKUSDT"
+#    - "XLMUSDT"
+#    - "LTCUSDT"
+#    - "DOTUSDT"
+
+  # Collection strategy
+  batch_size: 1000  # candles per batch
+  max_days_per_request: 1  # days to collect in single request
+  
+  # Smart collection settings
+  smart_collection: true        # Check existing data and collect only missing periods
+  force_overwrite: false       # Force overwrite existing data (ignores smart_collection)
+  fill_gaps: true              # Fill missing gaps in existing data
+  mode: "full_range"           # full_range, smart_gaps, force_overwrite
+  validate_continuity: true    # Verify data continuity after collection
+  
+  # Large collection management
+  max_candles_per_batch: 1000           # Maximum candles per single API request
+  batch_delay_seconds: 0.5              # Delay between batches for rate limiting
+  progress_checkpoint_frequency: 5000   # Save progress every N candles
+  large_collection_warning_days: 30     # Warn for collections larger than N days
+  
+  # Data validation
+  validate_data: true
+  skip_duplicates: true
+
+# Logging Settings
+logging:
+  level: "DEBUG"  # DEBUG, INFO, WARNING, ERROR
+  file: "logs/data_collector.log"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  
+  # Progress reporting
+  progress_interval: 100  # log every N batches
+  save_checkpoint: true
+  checkpoint_file: "data_collectors/checkpoints/collection_progress.json"
+
+# Monitoring Settings
+monitoring:
+  # Performance metrics
+  track_collection_speed: true
+  estimate_completion_time: true
+  
+  # Error handling
+  max_consecutive_errors: 5
+  stop_on_critical_error: true
+  
+  # Storage monitoring
+  check_disk_space: true
+  min_free_space_gb: 1
+  
+  # Memory monitoring
+  max_memory_usage_mb: 512
+
+# Advanced Settings
+advanced:
+  # Multi-threading (experimental)
+  use_threads: false
+  max_workers: 2
+  
+  # Data optimization
+  compress_data: false
+  use_bulk_insert: true
+  commit_frequency: 1000  # commits per N inserts
+  
+  # Recovery settings
+  resume_from_checkpoint: true
+  auto_resume_on_restart: true
+  
+  # Testing mode
+  test_mode: false  # if true, collect only small sample
+  test_days: 1      # days to collect in test mode

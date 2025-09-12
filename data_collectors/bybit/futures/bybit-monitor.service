@@ -1,0 +1,36 @@
+[Unit]
+Description=Bybit Futures Data Monitor
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+User=macbook
+Group=staff
+WorkingDirectory=/Users/macbook/PycharmProjects/BOT_Trading_V2/data_collectors/bybit/futures
+
+# Настройки окружения
+Environment="PYTHONUNBUFFERED=1"
+Environment="PYTHONPATH=/Users/macbook/PycharmProjects/BOT_Trading_V2"
+
+# Команда запуска
+ExecStart=/usr/bin/python3 /Users/macbook/PycharmProjects/BOT_Trading_V2/data_collectors/bybit/futures/continuous_monitor.py --daemon
+
+# Перезапуск при сбое
+Restart=on-failure
+RestartSec=10
+
+# Логирование
+StandardOutput=append:/Users/macbook/PycharmProjects/BOT_Trading_V2/data_collectors/bybit/futures/logs/monitor_service.log
+StandardError=append:/Users/macbook/PycharmProjects/BOT_Trading_V2/data_collectors/bybit/futures/logs/monitor_service_error.log
+
+# Лимиты
+LimitNOFILE=65535
+LimitNPROC=32768
+
+# Таймауты
+TimeoutStartSec=30
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

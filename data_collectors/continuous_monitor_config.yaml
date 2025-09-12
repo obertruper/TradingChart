@@ -1,0 +1,153 @@
+# Continuous Data Monitor Configuration
+# =====================================
+
+# API Settings (inherited from main collector)
+api:
+  bybit:
+    api_key: "API_KEY"
+    api_secret: "SECRET_KEY"
+    testnet: false
+
+# Database Settings (inherited from main collector)
+database:
+  type: "postgres"
+  host: "127.0.0.1"
+  port: 5432
+  database: "trading_db"
+  user: "macbook"
+  password: ""
+  table_name: "candles_bybit_futures_1m"
+  connection_pool:
+    min_connections: 2
+    max_connections: 10
+    timeout: 30
+
+# Exchange Settings
+exchange:
+  name: "bybit"
+  category: "linear"
+  rate_limit:
+    requests_per_minute: 80  # More conservative for continuous monitoring
+    requests_per_second: 1
+    batch_delay: 0.8
+  max_candles_per_request: 1000
+  retry_attempts: 3
+  retry_delay: 2
+
+# Monitoring Settings
+monitoring:
+  # Symbols to monitor
+  symbols:
+    - "BTCUSDT"
+#    - "ETHUSDT"
+#    - "BNBUSDT"
+#    - "SOLUSDT"
+#    - "XRPUSDT"
+  
+  # Check frequency
+  check_interval_minutes: 1     # Check every minute for real-time monitoring
+  max_lookback_hours: 999999    # No limit - fill all historical gaps
+  min_gap_minutes: 1            # React to every new candle (1 minute)
+  
+  # Data collection settings
+  batch_size: 1000             # Candles per batch when filling gaps
+  max_fill_hours: 999999       # No practical limit - fill as much as possible
+  
+  # Error handling
+  max_consecutive_errors: 3    # Stop monitoring symbol after N consecutive errors
+  error_retry_delay: 300       # Wait 5 minutes before retrying failed symbol
+  
+  # Performance settings
+  symbol_delay_seconds: 1      # Minimal delay for real-time monitoring
+  api_cooldown_seconds: 0.5    # Faster API calls for real-time updates
+
+# Gap Detection Settings
+gap_detection:
+  # Time zones
+  timezone: "UTC"
+  
+  # Gap analysis
+  market_open_24_7: true       # Crypto markets are 24/7
+  expected_candle_interval: 60 # Expected interval between candles in seconds
+  
+  # Smart filling
+  fill_recent_gaps_only: true  # Only fill recent gaps, not old historical gaps
+  recent_threshold_hours: 48   # Consider gaps "recent" if within last 48 hours
+  
+  # Data validation
+  validate_filled_data: true   # Validate data after filling gaps
+  skip_weekends: false         # Don't skip weekends for crypto
+  skip_holidays: false         # Don't skip holidays for crypto
+
+# Logging Settings
+logging:
+  # Main logging configuration
+  level: "INFO"  # Default level for file logging
+  file: "logs/continuous_monitor.log"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  max_file_size_mb: 50
+  backup_count: 5
+  
+  # Console output configuration
+  console_output:
+    enabled: true
+    level: "INFO"  # Console logging level (INFO, DEBUG, WARNING, ERROR)
+    compact_mode: true  # Use compact output format
+    show_progress_bar: true  # Show tqdm progress bars
+    colored_output: true  # Use colored output if terminal supports it
+    
+  # Component-specific log levels
+  component_levels:
+    urllib3: "WARNING"  # Hide HTTP connection details
+    urllib3.connectionpool: "WARNING"  # Hide connection pool details
+    bybit_api_client: "INFO"  # Hide API request details
+    ContinuousMonitor: "INFO"  # Main monitor logging
+    CandleDataManager: "INFO"  # Database operations
+    DatabaseManager: "WARNING"  # Database connection details
+    requests: "WARNING"  # Hide requests library debug info
+    
+  # Debug mode - quickly enable detailed logging
+  debug_mode: false  # Set to true to override all levels to DEBUG
+  
+  # Progress reporting
+  log_every_check: true
+  log_gap_detection: true
+  log_data_filling: true
+  progress_update_interval: 100  # Update progress every N candles
+  show_statistics_every: 10  # Show statistics every N batches
+
+# Notification Settings (optional)
+notifications:
+  enabled: false
+  
+  # Webhook notifications (for future implementation)
+  webhook:
+    url: ""
+    enabled: false
+  
+  # Email notifications (for future implementation)  
+  email:
+    enabled: false
+    smtp_server: ""
+    from_email: ""
+    to_emails: []
+
+# Advanced Settings
+advanced:
+  # Performance optimization
+  use_bulk_insert: true
+  commit_frequency: 500
+  
+  # Recovery settings
+  resume_from_last_check: true
+  save_state_frequency: 10     # Save state every N symbol checks
+  state_file: "data_collectors/checkpoints/monitor_state.json"
+  
+  # Maintenance
+  cleanup_old_logs: true
+  log_retention_days: 30
+  
+  # Development/testing
+  dry_run: false              # If true, don't actually insert data
+  test_mode: false            # Reduced functionality for testing
+  single_symbol_test: ""      # Test only specific symbol (leave empty for all)
