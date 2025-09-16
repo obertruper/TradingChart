@@ -15,8 +15,9 @@ A robust system for collecting and managing historical cryptocurrency candle dat
 ## 📋 Prerequisites
 
 - Python 3.8+
-- PostgreSQL database
+- PostgreSQL database (hosted on VPS)
 - Bybit API credentials (optional for public data)
+- VPS with Ubuntu (for database hosting)
 
 ## 🛠 Installation
 
@@ -41,10 +42,14 @@ cp data_collectors/continuous_monitor_config.example.yaml data_collectors/contin
 nano data_collectors/data_collector_config.yaml
 ```
 
-4. Create PostgreSQL database:
-```sql
-CREATE DATABASE trading_db;
-```
+4. PostgreSQL Database Setup:
+
+The project uses a PostgreSQL database hosted on VPS with a three-tier user permission system:
+- **trading_admin**: Full administrator privileges
+- **trading_writer**: Data collection user (used by scripts)
+- **trading_reader**: Read-only access for analysis
+
+See [DATABASE_SETUP.md](DATABASE_SETUP.md) for detailed setup instructions.
 
 ## 📊 Usage
 
@@ -102,11 +107,22 @@ TradingChart/
 
 ## ⚙️ Configuration
 
+### Database Configuration
+
+The system connects to a PostgreSQL database on VPS (82.25.115.144) with:
+- Database name: `trading_data`
+- Table: `candles_bybit_futures_1m`
+- User credentials managed through secure three-tier system
+
 ### Main Configuration (`data_collector_config.yaml`)
 
 Key settings:
 - `api`: Bybit API credentials
-- `database`: PostgreSQL connection settings
+- `database`: PostgreSQL connection to VPS
+  - Host: 82.25.115.144
+  - Port: 5432
+  - Database: trading_data
+  - User: trading_writer (for data collection)
 - `collection`: Time range and symbols to collect
 - `exchange`: Rate limiting and retry settings
 

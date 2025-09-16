@@ -8,14 +8,18 @@ api:
     api_secret: "YOUR_API_SECRET_HERE"
     testnet: false
 
-# Database Settings (PostgreSQL only)
+# Database Settings (PostgreSQL on VPS)
+# The project uses a three-tier user permission system:
+# - trading_admin: Full admin (for migrations/schema changes)
+# - trading_writer: Data collection (INSERT, UPDATE, SELECT, DELETE)
+# - trading_reader: Read-only access (SELECT only)
 database:
   type: "postgres"
-  host: "127.0.0.1"
+  host: "YOUR_VPS_IP"  # Replace with your VPS IP address (e.g., 82.25.115.144)
   port: 5432
-  database: "trading_db"
-  user: "your_username"
-  password: "your_password"
+  database: "trading_data"  # Database name on VPS
+  user: "trading_writer"    # Use trading_writer for data collection scripts
+  password: "YOUR_WRITER_PASSWORD"  # Password for trading_writer user
   
   # Table settings
   table_name: "candles_bybit_futures_1m"

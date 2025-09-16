@@ -104,33 +104,48 @@ class DatabaseManager:
                 self.connection_pool.putconn(conn)
 
     def _create_tables(self):
-        """Create PostgreSQL candles table and indexes if they don't exist."""
+        """Check if table exists, create only if database is empty."""
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
 
-                # PostgreSQL table creation
+                # Check if table already exists
+                cursor.execute(
+                    """
+                    SELECT EXISTS (
+                        SELECT FROM information_schema.tables
+                        WHERE table_name = %s
+                    )
+                    """,
+                    (self.table_name,)
+                )
+
+                table_exists = cursor.fetchone()[0]
+
+                if table_exists:
+                    self.logger.info(f"Table '{self.table_name}' already exists, skipping creation")
+                    return
+
+                # Create table only if it doesn't exist
+                # Using the correct structure that matches our VPS database
                 create_table_sql = f"""
                 CREATE TABLE IF NOT EXISTS {self.table_name} (
-                    id SERIAL PRIMARY KEY,
+                    timestamp TIMESTAMPTZ NOT NULL,
                     symbol VARCHAR(20) NOT NULL,
-                    interval VARCHAR(5) NOT NULL,
-                    open_time BIGINT NOT NULL,
-                    open_price DECIMAL(20,8) NOT NULL,
-                    high_price DECIMAL(20,8) NOT NULL,
-                    low_price DECIMAL(20,8) NOT NULL,
-                    close_price DECIMAL(20,8) NOT NULL,
-                    volume DECIMAL(20,8) NOT NULL,
+                    open DECIMAL(20,8) NOT NULL,
+                    high DECIMAL(20,8) NOT NULL,
+                    low DECIMAL(20,8) NOT NULL,
+                    close DECIMAL(20,8) NOT NULL,
+                    volume DECIMAL(20,8),
                     turnover DECIMAL(20,8),
-                    UNIQUE(symbol, interval, open_time)
+                    PRIMARY KEY (timestamp, symbol)
                 );
                 """
 
                 # Create indexes
                 indexes = [
-                    f"CREATE INDEX IF NOT EXISTS idx_{self.table_name}_symbol_interval ON {self.table_name}(symbol, interval);",
-                    f"CREATE INDEX IF NOT EXISTS idx_{self.table_name}_open_time ON {self.table_name}(open_time);",
-                    f"CREATE INDEX IF NOT EXISTS idx_{self.table_name}_symbol_time ON {self.table_name}(symbol, open_time);",
+                    f"CREATE INDEX IF NOT EXISTS idx_symbol_timestamp ON {self.table_name}(symbol, timestamp);",
+                    f"CREATE INDEX IF NOT EXISTS idx_timestamp ON {self.table_name}(timestamp);",
                 ]
 
                 # Execute table creation
@@ -144,8 +159,12 @@ class DatabaseManager:
                 self.logger.info(f"Table '{self.table_name}' and indexes created successfully")
 
         except Exception as e:
-            self.logger.error(f"Failed to create tables: {e}")
-            raise
+            # If error is about permissions, just log and continue
+            if "permission denied" in str(e).lower() or "must be owner" in str(e).lower():
+                self.logger.info(f"Table '{self.table_name}' exists (permission check), continuing...")
+            else:
+                self.logger.error(f"Failed to create tables: {e}")
+                raise
 
     def check_table_exists(self) -> bool:
         """
@@ -279,16 +298,20 @@ class CandleDataManager:
             volume = Decimal(str(candle[5]))
             turnover = Decimal(str(candle[6])) if len(candle) > 6 and candle[6] else None
 
+            # Convert timestamp from milliseconds to PostgreSQL timestamp
+            from datetime import datetime, timezone
+            timestamp_dt = datetime.fromtimestamp(timestamp / 1000, tz=timezone.utc)
+
+            # Return in the order matching our table: timestamp, symbol, open, high, low, close, volume, turnover
             return (
-                symbol,
-                interval,
-                timestamp,
-                open_price,
-                high_price,
-                low_price,
-                close_price,
-                volume,
-                turnover,
+                timestamp_dt,   # timestamp as datetime object
+                symbol,         # symbol
+                open_price,     # open
+                high_price,     # high
+                low_price,      # low
+                close_price,    # close
+                volume,         # volume
+                turnover or Decimal("0"),  # turnover
             )
 
         except (ValueError, TypeError, IndexError) as e:
@@ -361,17 +384,15 @@ class CandleDataManager:
         try:
             if self.skip_duplicates:
                 insert_sql = f"""
-                INSERT INTO {self.table_name} 
-                (symbol, interval, open_time, open_price, high_price, low_price, 
-                 close_price, volume, turnover)
+                INSERT INTO {self.table_name}
+                (timestamp, symbol, open, high, low, close, volume, turnover)
                 VALUES %s
-                ON CONFLICT (symbol, interval, open_time) DO NOTHING
+                ON CONFLICT (timestamp, symbol) DO NOTHING
                 """
             else:
                 insert_sql = f"""
-                INSERT INTO {self.table_name} 
-                (symbol, interval, open_time, open_price, high_price, low_price, 
-                 close_price, volume, turnover)
+                INSERT INTO {self.table_name}
+                (timestamp, symbol, open, high, low, close, volume, turnover)
                 VALUES %s
                 """
 
@@ -400,18 +421,16 @@ class CandleDataManager:
 
         if self.skip_duplicates:
             insert_sql = f"""
-            INSERT INTO {self.table_name} 
-            (symbol, interval, open_time, open_price, high_price, low_price, 
-             close_price, volume, turnover)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (symbol, interval, open_time) DO NOTHING
+            INSERT INTO {self.table_name}
+            (timestamp, symbol, open, high, low, close, volume, turnover)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (timestamp, symbol) DO NOTHING
             """
         else:
             insert_sql = f"""
-            INSERT INTO {self.table_name} 
-            (symbol, interval, open_time, open_price, high_price, low_price, 
-             close_price, volume, turnover)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO {self.table_name}
+            (timestamp, symbol, open, high, low, close, volume, turnover)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             """
 
         for i, candle_data in enumerate(prepared_data):
@@ -436,10 +455,10 @@ class CandleDataManager:
 
         Args:
             symbol: Trading pair symbol
-            interval: Timeframe interval
+            interval: Timeframe interval (not used, kept for compatibility)
 
         Returns:
-            Tuple of (min_timestamp, max_timestamp) or None if no data exists
+            Tuple of (min_timestamp, max_timestamp) in milliseconds or None if no data exists
         """
         try:
             with self.db_manager.get_connection() as conn:
@@ -447,11 +466,13 @@ class CandleDataManager:
 
                 cursor.execute(
                     f"""
-                    SELECT MIN(open_time), MAX(open_time) 
-                    FROM {self.table_name} 
-                    WHERE symbol = %s AND interval = %s
+                    SELECT
+                        EXTRACT(EPOCH FROM MIN(timestamp))::bigint * 1000,
+                        EXTRACT(EPOCH FROM MAX(timestamp))::bigint * 1000
+                    FROM {self.table_name}
+                    WHERE symbol = %s
                 """,
-                    (symbol, interval),
+                    (symbol,),
                 )
 
                 result = cursor.fetchone()
@@ -471,7 +492,7 @@ class CandleDataManager:
 
         Args:
             symbol: Optional symbol to filter by
-            interval: Timeframe interval
+            interval: Timeframe interval (not used, kept for compatibility)
 
         Returns:
             Number of candles
@@ -483,10 +504,10 @@ class CandleDataManager:
                 if symbol:
                     cursor.execute(
                         f"""
-                        SELECT COUNT(*) FROM {self.table_name} 
-                        WHERE symbol = %s AND interval = %s
+                        SELECT COUNT(*) FROM {self.table_name}
+                        WHERE symbol = %s
                     """,
-                        (symbol, interval),
+                        (symbol,),
                     )
                 else:
                     cursor.execute(f"SELECT COUNT(*) FROM {self.table_name}")
@@ -573,13 +594,15 @@ class CandleDataManager:
                         )
                         SELECT ts FROM time_series
                         WHERE ts NOT IN (
-                            SELECT open_time FROM {self.table_name}
-                            WHERE symbol = %s AND interval = %s 
-                            AND open_time >= %s AND open_time <= %s
+                            SELECT EXTRACT(EPOCH FROM timestamp)::bigint * 1000
+                            FROM {self.table_name}
+                            WHERE symbol = %s
+                            AND EXTRACT(EPOCH FROM timestamp)::bigint * 1000 >= %s
+                            AND EXTRACT(EPOCH FROM timestamp)::bigint * 1000 <= %s
                         )
                         ORDER BY ts
                     """,
-                        (gap_start, gap_end, symbol, interval, gap_start, gap_end),
+                        (gap_start, gap_end, symbol, gap_start, gap_end),
                     )
 
                     missing_timestamps = [row[0] for row in cursor.fetchall()]

@@ -50,10 +50,18 @@ data_collectors/checkpoints/
 *.checkpoint
 *.state
 
-# Config with sensitive data
+# SECURITY - Config with passwords (NEVER COMMIT!)
 config_local.yaml
 *_local.yaml
+.env
 .env.*
+data_collectors/data_collector_config.yaml
+data_collectors/continuous_monitor_config.yaml
+!data_collectors/*.example.yaml
+*_password.txt
+*_credentials.*
+*.pem
+*.key
 
 # Pytest
 .pytest_cache/
