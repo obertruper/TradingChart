@@ -20,6 +20,17 @@ import pytz
 from typing import List, Dict, Any, Optional, Tuple
 from decimal import Decimal
 from tqdm import tqdm
+from pathlib import Path
+
+# Try to load environment variables from .env file
+try:
+    from dotenv import load_dotenv
+    # Load .env file from project root
+    env_path = Path(__file__).resolve().parents[3] / '.env'
+    if env_path.exists():
+        load_dotenv(env_path)
+except ImportError:
+    pass  # dotenv not installed, will use system environment variables
 
 # Add path to Bybit API client
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "..", "..", "api", "bybit"))
@@ -31,7 +42,7 @@ from config_validator import ConfigValidator
 from data_loader_futures import FuturesCollector
 
 
-class ContinuousMonitor:
+class Monitor:
     """
     Continuous monitoring and gap-filling system for candle data.
 
@@ -54,7 +65,7 @@ class ContinuousMonitor:
         """
         # Load configuration
         if config_path is None:
-            config_path = os.path.join(os.path.dirname(__file__), "..", "..", "continuous_monitor_config.yaml")
+            config_path = os.path.join(os.path.dirname(__file__), "..", "..", "monitor_config.yaml")
 
         self.config_path = config_path
         self.config = self._load_config()
@@ -84,7 +95,7 @@ class ContinuousMonitor:
 
         # Setup logging
         self._setup_logging(verbose=verbose, quiet=quiet)
-        self.logger = logging.getLogger("ContinuousMonitor")
+        self.logger = logging.getLogger("Monitor")
 
         # Progress tracking
         self.progress_bar = None
@@ -92,14 +103,33 @@ class ContinuousMonitor:
 
         # Only log initialization in debug mode
         if not self.compact_mode:
-            self.logger.info("ContinuousMonitor initialized")
+            self.logger.info("Monitor initialized")
             self.logger.info(f"Monitoring {len(self.config.get('monitoring', {}).get('symbols', []))} symbols")
 
     def _load_config(self) -> Dict[str, Any]:
-        """Load configuration from YAML file."""
+        """Load configuration from YAML file and merge with environment variables."""
         try:
             with open(self.config_path, "r", encoding="utf-8") as file:
                 config = yaml.safe_load(file)
+
+            # Override database password from environment variable if available
+            if os.getenv('DB_WRITER_PASSWORD'):
+                if 'database' not in config:
+                    config['database'] = {}
+                config['database']['password'] = os.getenv('DB_WRITER_PASSWORD')
+                config['database']['user'] = os.getenv('DB_WRITER_USER', config['database'].get('user', 'trading_writer'))
+                config['database']['host'] = os.getenv('DB_HOST', config['database'].get('host', '82.25.115.144'))
+                config['database']['port'] = int(os.getenv('DB_PORT', config['database'].get('port', 5432)))
+                config['database']['database'] = os.getenv('DB_NAME', config['database'].get('database', 'trading_data'))
+
+            # Override Bybit API credentials from environment if available
+            if os.getenv('BYBIT_API_KEY'):
+                if 'api' not in config:
+                    config['api'] = {'bybit': {}}
+                elif 'bybit' not in config['api']:
+                    config['api']['bybit'] = {}
+                config['api']['bybit']['api_key'] = os.getenv('BYBIT_API_KEY')
+                config['api']['bybit']['api_secret'] = os.getenv('BYBIT_API_SECRET', '')
 
             # Validate configuration
             validator = ConfigValidator()
@@ -139,7 +169,7 @@ class ContinuousMonitor:
             file_level = log_config.get("level", "INFO").upper()
             console_level = console_config.get("level", "INFO").upper()
 
-        log_file = log_config.get("file", "logs/continuous_monitor.log")
+        log_file = log_config.get("file", "logs/monitor.log")
         log_format = log_config.get("format", "%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 
         # Create logs directory if it doesn't exist
@@ -849,7 +879,7 @@ def main():
 
     try:
         # Initialize monitor with logging options
-        monitor = ContinuousMonitor(config_path=args.config, verbose=args.verbose, quiet=args.quiet)
+        monitor = Monitor(config_path=args.config, verbose=args.verbose, quiet=args.quiet)
 
         # Override logging level if specified
         if args.log_level:

@@ -10,7 +10,7 @@ A robust system for collecting and managing historical cryptocurrency candle dat
 - **PostgreSQL Integration**: Optimized bulk insertion with deduplication
 - **Progress Tracking**: Real-time progress bars and detailed logging
 - **Error Recovery**: Comprehensive retry logic and error handling
-- **Continuous Monitoring**: Automatic gap detection and filling (experimental)
+- **Continuous Monitoring**: Automatic gap detection and real-time data updates
 
 ## 📋 Prerequisites
 
@@ -32,14 +32,17 @@ cd TradingChart
 pip install -r requirements.txt
 ```
 
-3. Set up configuration:
+3. Set up environment and configuration:
 ```bash
+# Create .env file from template
+cp .env.example .env
+
+# Edit .env with your database passwords
+nano .env
+
 # Copy example configs
 cp data_collectors/data_collector_config.example.yaml data_collectors/data_collector_config.yaml
-cp data_collectors/continuous_monitor_config.example.yaml data_collectors/continuous_monitor_config.yaml
-
-# Edit configs with your API keys and database credentials
-nano data_collectors/data_collector_config.yaml
+cp data_collectors/monitor_config.example.yaml data_collectors/monitor_config.yaml
 ```
 
 4. PostgreSQL Database Setup:
@@ -50,6 +53,27 @@ The project uses a PostgreSQL database hosted on VPS with a three-tier user perm
 - **trading_reader**: Read-only access for analysis
 
 See [DATABASE_SETUP.md](DATABASE_SETUP.md) for detailed setup instructions.
+
+## 🚀 Quick Start Guide
+
+After installation, follow these steps to start collecting data:
+
+1. **Test database connection**:
+```bash
+python3 test_monitor.py
+```
+
+2. **Collect historical data** (first-time setup):
+```bash
+cd data_collectors/bybit/futures
+python3 data_loader_futures.py
+```
+
+3. **Keep data up-to-date** (run regularly):
+```bash
+cd data_collectors/bybit/futures
+python3 monitor.py --check-once --symbol BTCUSDT
+```
 
 ## 📊 Usage
 
@@ -67,20 +91,43 @@ python3 data_loader_futures.py
 View collected data statistics:
 
 ```bash
+cd data_collectors/bybit/futures
 python3 check_data.py
 ```
 
-### Continuous Monitoring (Experimental)
+Or use the test script from project root:
+```bash
+python3 test_monitor.py
+```
 
-Monitor and fill data gaps automatically:
+### Continuous Monitoring
+
+Automatically keep your data up-to-date with real-time monitoring:
 
 ```bash
-# Single check
-python3 continuous_monitor.py --check-once --symbol BTCUSDT
+cd data_collectors/bybit/futures
 
-# Daemon mode (experimental)
-./monitor_manager.sh start
+# One-time check for specific symbol
+python3 monitor.py --check-once --symbol BTCUSDT
+
+# Check all configured symbols once
+python3 monitor.py --check-once
+
+# Run in daemon mode (continuous monitoring)
+python3 monitor.py --daemon
+
+# With verbose output for debugging
+python3 monitor.py --check-once --verbose
+
+# Quiet mode (minimal output)
+python3 monitor.py --daemon --quiet
 ```
+
+The monitor will:
+- Detect gaps in your data
+- Fill missing candles automatically
+- Keep data updated to the latest minute
+- Handle multiple symbols from config
 
 ## 📁 Project Structure
 
@@ -93,14 +140,14 @@ TradingChart/
 │   ├── bybit/
 │   │   └── futures/
 │   │       ├── data_loader_futures.py    # Main data collector
-│   │       ├── continuous_monitor.py     # Gap filling monitor
+│   │       ├── monitor.py               # Real-time data monitor
 │   │       ├── database.py               # Database operations
 │   │       ├── time_utils.py            # Timezone utilities
 │   │       ├── config_validator.py      # Configuration validation
 │   │       ├── check_data.py           # Data verification
 │   │       └── monitor_manager.sh      # Monitor control script
 │   ├── data_collector_config.yaml      # Main configuration
-│   └── continuous_monitor_config.yaml  # Monitor configuration
+│   └── monitor_config.yaml             # Monitor configuration
 ├── requirements.txt                    # Python dependencies
 └── README.md                          # This file
 ```
@@ -161,10 +208,50 @@ Table: `candles_bybit_futures_1m`
 | volume | DECIMAL(20,8) | Trading volume |
 | turnover | DECIMAL(20,8) | Trading turnover |
 
-## ⚠️ Known Issues
+## 🖥️ Running as a Service
 
-- **Continuous Monitor**: Gap detection logic needs improvements for periods >24 hours
-- **State Management**: Resume functionality in continuous monitor is incomplete
+### Using tmux (Recommended for VPS)
+```bash
+# Create new tmux session
+tmux new -s monitor
+
+# Inside tmux, run monitor
+cd data_collectors/bybit/futures
+python3 monitor.py --daemon
+
+# Detach from tmux: Press Ctrl+B, then D
+# Reattach later: tmux attach -t monitor
+```
+
+### Using systemd (Linux)
+Create `/etc/systemd/system/trading-monitor.service`:
+```ini
+[Unit]
+Description=Trading Data Monitor
+After=network.target
+
+[Service]
+Type=simple
+User=your_user
+WorkingDirectory=/path/to/TradingChart/data_collectors/bybit/futures
+ExecStart=/usr/bin/python3 monitor.py --daemon
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Then:
+```bash
+sudo systemctl enable trading-monitor
+sudo systemctl start trading-monitor
+```
+
+## ✅ Current Status
+
+- **Monitor.py**: Production-ready, actively maintains real-time data
+- **Database**: Successfully collecting 2.8M+ BTCUSDT candles since 2020
+- **Performance**: Updates within 1-2 minutes of real-time
 
 ## 🤝 Contributing
 

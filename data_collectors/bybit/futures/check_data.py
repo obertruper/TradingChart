@@ -77,7 +77,7 @@ def check_data_status(verbose: bool = False, hours: int = 24):
     """Проверка статуса загруженных данных."""
 
     # Загружаем конфигурацию
-    config_path = os.path.join(os.path.dirname(__file__), "../../continuous_monitor_config.yaml")
+    config_path = os.path.join(os.path.dirname(__file__), "../../monitor_config.yaml")
     with open(config_path, "r") as f:
         config = yaml.safe_load(f)
 
@@ -181,7 +181,7 @@ def check_data_status(verbose: bool = False, hours: int = 24):
 
                 if delay_minutes > 5:
                     print(
-                        f"  ⚠️  {symbol}: Данные устарели на {int(delay_minutes)} минут - запустите continuous_monitor.py"
+                        f"  ⚠️  {symbol}: Данные устарели на {int(delay_minutes)} минут - запустите monitor.py"
                     )
 
                 gaps = calculate_gaps(db_manager, symbol, 24)

@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # Monitor Manager Script
-# Управление continuous_monitor.py процессом
+# Управление monitor.py процессом
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PYTHON_SCRIPT="$SCRIPT_DIR/continuous_monitor.py"
+PYTHON_SCRIPT="$SCRIPT_DIR/monitor.py"
 PID_FILE="$SCRIPT_DIR/.monitor.pid"
 LOG_FILE="$SCRIPT_DIR/logs/monitor_daemon.log"
 

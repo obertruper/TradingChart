@@ -56,7 +56,7 @@ config_local.yaml
 .env
 .env.*
 data_collectors/data_collector_config.yaml
-data_collectors/continuous_monitor_config.yaml
+data_collectors/monitor_config.yaml
 !data_collectors/*.example.yaml
 *_password.txt
 *_credentials.*

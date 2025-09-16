@@ -25,10 +25,10 @@ python3 data_loader_futures.py
 ### Gap Detection & Filling ✅
 ```bash
 # Check and fill gaps for specific symbol:
-python3 continuous_monitor.py --check-once --symbol BTCUSDT
+python3 monitor.py --check-once --symbol BTCUSDT
 
 # Run continuous monitoring:
-python3 continuous_monitor.py --daemon
+python3 monitor.py --daemon
 
 # Use monitor manager:
 ./monitor_manager.sh start
@@ -50,7 +50,7 @@ python3 continuous_monitor.py --daemon
 | `database.py` | ✅ **READY** | PostgreSQL database management |
 | `time_utils.py` | ✅ **READY** | UTC timezone utilities |
 | `config_validator.py` | ✅ **READY** | Configuration validation & correction |
-| `continuous_monitor.py` | ✅ **READY** | Gap filling and monitoring |
+| `monitor.py` | ✅ **READY** | Real-time monitoring and gap filling |
 
 ## 🔧 Current Capabilities & Next Steps
 
@@ -86,4 +86,4 @@ For 10 trading pairs over 3 years:
 ---
 
 ✅ **RECOMMENDED: Use `data_loader_futures.py` for bulk historical data collection.**  
-✅ **RECOMMENDED: Use `continuous_monitor.py` for gap detection and real-time monitoring.**
+✅ **RECOMMENDED: Use `monitor.py` for gap detection and real-time monitoring.**

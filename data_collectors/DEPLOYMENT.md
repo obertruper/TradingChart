@@ -6,10 +6,10 @@
 
 ```bash
 # Одноразовая проверка
-python3 continuous_monitor.py --check-once --symbol BTCUSDT
+python3 monitor.py --check-once --symbol BTCUSDT
 
 # Daemon режим
-python3 continuous_monitor.py --daemon
+python3 monitor.py --daemon
 ```
 
 ### 2. Использование Manager Script (рекомендуется)
@@ -81,7 +81,7 @@ docker-compose ps
 
 ```bash
 # Проверка процесса
-ps aux | grep continuous_monitor
+ps aux | grep monitor.py
 
 # Проверка последних записей в БД
 psql -U macbook -d trading_db -c "
@@ -108,7 +108,7 @@ GROUP BY symbol;"
 tail -f logs/monitor_daemon.log
 
 # Application logs
-tail -f logs/continuous_monitor.log
+tail -f logs/monitor.log
 
 # Systemd logs
 sudo journalctl -u bybit-monitor -f --since "1 hour ago"
@@ -119,7 +119,7 @@ docker-compose logs -f --tail=100 data_monitor
 
 ## 🔧 Настройка
 
-### Основные параметры в continuous_monitor_config.yaml
+### Основные параметры в monitor_config.yaml
 
 ```yaml
 monitoring:
@@ -162,7 +162,7 @@ chmod 600 *_config.yaml
 
 # Права на скрипты
 chmod 755 monitor_manager.sh
-chmod 755 continuous_monitor.py
+chmod 755 monitor.py
 
 # Права на директорию логов
 chmod 755 logs/
@@ -199,7 +199,7 @@ SET (autovacuum_vacuum_scale_factor = 0.1);
 
 ```bash
 # CPU и память
-htop -p $(pgrep -f continuous_monitor)
+htop -p $(pgrep -f monitor.py)
 
 # Дисковое пространство
 df -h /var/lib/postgresql
@@ -255,10 +255,10 @@ python3 -c "from api.bybit.bybit_api_client import BybitClient; print('API OK')"
 
 ```bash
 # Проверка последней ошибки
-tail -n 50 logs/continuous_monitor.log | grep ERROR
+tail -n 50 logs/monitor.log | grep ERROR
 
 # Проверка лимитов API
-grep "rate limit" logs/continuous_monitor.log
+grep "rate limit" logs/monitor.log
 
 # Ручная проверка API
 curl "https://api.bybit.com/v5/market/kline?symbol=BTCUSDT&interval=1&limit=1"
