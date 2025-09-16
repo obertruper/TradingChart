@@ -75,6 +75,11 @@ class Monitor:
         self.db_manager = DatabaseManager(self.config)
         self.candle_manager = CandleDataManager(self.db_manager, self.config)
 
+        # Log configured symbols for debugging
+        monitoring_symbols = self.config.get("monitoring", {}).get("symbols", [])
+        if monitoring_symbols:
+            print(f"[CONFIG] Loaded {len(monitoring_symbols)} symbols from config: {monitoring_symbols}")
+
         # Initialize Bybit API client for data fetching
         self.bybit_client = get_bybit_client(
             api_key=self.config.get("api", {}).get("bybit", {}).get("api_key"),
@@ -410,12 +415,20 @@ class Monitor:
 
                 # Update overall progress bar if exists
                 if hasattr(self, "overall_progress") and self.overall_progress:
+                    # Update the total if we're getting more data than expected
+                    if self.overall_progress.n + len(batch) > self.overall_progress.total:
+                        # Adjust total to match actual data
+                        self.overall_progress.total = self.overall_progress.n + len(batch)
+                        self.overall_progress.refresh()
+
                     self.overall_progress.update(len(batch))
-                    # Update postfix with current period
-                    current_date = datetime.datetime.fromtimestamp(current_start / 1000, tz=pytz.UTC).strftime(
-                        "%Y-%m-%d %H:%M"
-                    )
-                    self.overall_progress.set_postfix_str(f"Loading: {current_date}")
+                    # Update postfix with latest loaded timestamp
+                    if batch:
+                        latest_ts = int(batch[-1][0])  # Last candle's timestamp (convert to int)
+                        latest_date = datetime.datetime.fromtimestamp(latest_ts / 1000, tz=pytz.UTC).strftime(
+                            "%Y-%m-%d %H:%M"
+                        )
+                        self.overall_progress.set_postfix_str(f"Latest: {latest_date}")
 
                 # Save progress: last fetched timestamp for symbol
                 try:
@@ -636,13 +649,21 @@ class Monitor:
             - has_more_data: True if there are more historical gaps to fill
         """
         try:
-            self.logger.debug(f"Checking {symbol} for missing data...")
+            # Always log symbol being checked (even in compact mode)
+            if self.compact_mode:
+                self.logger.info(f"Checking {symbol}...")
+            else:
+                self.logger.debug(f"Checking {symbol} for missing data...")
 
             # Calculate missing range
             missing_range = self.calculate_missing_range(symbol)
 
             if missing_range is None:
-                self.logger.debug(f"{symbol}: No missing data detected")
+                # Log status even in compact mode
+                if self.compact_mode:
+                    self.logger.info(f"{symbol}: ✓ Up to date (no gaps)")
+                else:
+                    self.logger.debug(f"{symbol}: No missing data detected")
                 # Close overall progress bar if exists and no more data
                 if hasattr(self, "overall_progress") and self.overall_progress:
                     self.overall_progress.close()
@@ -659,18 +680,29 @@ class Monitor:
 
             # Setup overall progress bar if this is the first batch and progress bar is enabled
             if self.show_progress_bar and not hasattr(self, "overall_progress"):
-                # Calculate total gap to fill
-                first_timestamp = self.get_last_timestamp(symbol)
-                if first_timestamp:
-                    total_gap = int((current_time.timestamp() * 1000 - first_timestamp) / 60000)
-                    self.overall_progress = tqdm(
-                        total=total_gap,
-                        desc=f"{symbol}",
-                        unit="candles",
-                        bar_format="{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}] {postfix}",
-                        leave=True,
-                    )
-                    self.total_loaded = 0
+                # Calculate the actual number of candles we expect to load in this batch
+                expected_candles = int((end_timestamp - start_timestamp) / 60000)
+
+                # If we're loading a small batch (< 1000 candles), use exact count
+                # Otherwise, estimate based on total gap
+                if expected_candles < 1000:
+                    total_to_load = expected_candles
+                else:
+                    # For large gaps, show the full gap size
+                    first_timestamp = self.get_last_timestamp(symbol)
+                    if first_timestamp:
+                        total_to_load = int((current_time.timestamp() * 1000 - first_timestamp) / 60000)
+                    else:
+                        total_to_load = expected_candles
+
+                self.overall_progress = tqdm(
+                    total=total_to_load,
+                    desc=f"{symbol}",
+                    unit="candles",
+                    bar_format="{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}] {postfix}",
+                    leave=True,
+                )
+                self.total_loaded = 0
 
             # Don't log gap detection in compact mode - it's redundant
             if has_more_data and not self.compact_mode:
@@ -714,8 +746,10 @@ class Monitor:
         successful_symbols = []
         has_any_gaps = False
 
-        # Only log in non-compact mode
-        if not self.compact_mode:
+        # Always log summary of symbols being checked
+        if self.compact_mode:
+            self.logger.info(f"Checking {len(symbols)} symbols: {', '.join(symbols)}")
+        else:
             self.logger.info(f"Starting check of {len(symbols)} symbols...")
 
         for i, symbol in enumerate(symbols):
@@ -737,9 +771,18 @@ class Monitor:
                 if success:
                     successful_symbols.append(symbol)
 
+                # Clean up progress bar after each symbol
+                if hasattr(self, "overall_progress") and self.overall_progress:
+                    self.overall_progress.close()
+                    delattr(self, "overall_progress")
+
             except Exception as e:
                 self.logger.error(f"Unexpected error checking {symbol}: {e}")
                 results[symbol] = False
+                # Clean up progress bar on error too
+                if hasattr(self, "overall_progress") and self.overall_progress:
+                    self.overall_progress.close()
+                    delattr(self, "overall_progress")
 
             # Add delay between symbols only if NOT loading historical data
             if i < len(symbols) - 1 and not has_any_gaps:
@@ -748,11 +791,16 @@ class Monitor:
         # Update state
         self.state["last_successful_symbols"] = successful_symbols
 
-        # Log summary only in non-compact mode
-        if not self.compact_mode:
-            successful_count = sum(1 for success in results.values() if success)
+        # Always log summary
+        successful_count = sum(1 for success in results.values() if success)
+        if self.compact_mode:
+            # Compact summary with symbol status
+            status_summary = []
+            for symbol, success in results.items():
+                status_summary.append(f"{symbol}:{'✓' if success else '✗'}")
+            self.logger.info(f"Check complete: {successful_count}/{len(symbols)} successful [{', '.join(status_summary)}]")
+        else:
             self.logger.info(f"Symbol check complete: {successful_count}/{len(symbols)} successful")
-
             if has_any_gaps:
                 self.logger.info("Historical gaps detected, continuing without delay...")
 
@@ -769,13 +817,11 @@ class Monitor:
             True if all checks successful, False otherwise
         """
         if symbol:
-            if not self.compact_mode:
-                self.logger.info(f"Running single check for symbol: {symbol}")
+            self.logger.info(f"Running single check for symbol: {symbol}")
             success, _ = self.check_symbol(symbol)
             return success
         else:
-            if not self.compact_mode:
-                self.logger.info("Running single check for all symbols")
+            self.logger.info(f"Running single check for all configured symbols")
             results, _ = self.check_all_symbols()
             return all(results.values())
 

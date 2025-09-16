@@ -181,12 +181,15 @@ BYBIT_API_SECRET=
 ```
 
 ### monitor_config.yaml
-Already configured, just ensure symbols list is correct:
+Already configured with multiple symbols:
 ```yaml
 monitoring:
   symbols:
-    - "BTCUSDT"
-    # Add more symbols as needed
+    - "BTCUSDT"   # Since 2020-03-25
+    - "ETHUSDT"   # Since 2021-03-15
+    - "XRPUSDT"   # Since 2021-05-13
+    - "SOLUSDT"   # Since 2021-10-15
+    - "ADAUSDT"   # Since 2021-01-13
 ```
 
 ## 🔍 Monitoring & Logs
@@ -229,8 +232,12 @@ python3 check_data.py
 ## 📝 Notes
 
 - Monitor checks every minute in daemon mode
+- Processes multiple symbols sequentially
+- Shows exact candle count in progress bars (no more '?')
+- Displays latest loaded timestamp during updates
 - Skips updates if gap < 2 minutes (configurable)
 - Automatically handles reconnection on errors
 - Saves state in checkpoints directory
 - **API Keys**: NOT required for historical data collection (OHLCV candles are public)
 - **Data Collection**: Works with public Bybit endpoints without authentication
+- **Multi-Symbol Support**: Both data_loader_futures.py and monitor.py handle multiple symbols efficiently
