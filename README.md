@@ -16,7 +16,7 @@ A robust system for collecting and managing historical cryptocurrency candle dat
 
 - Python 3.8+
 - PostgreSQL database (hosted on VPS)
-- Bybit API credentials (optional for public data)
+- Bybit API credentials (optional - NOT required for historical data)
 - VPS with Ubuntu (for database hosting)
 
 ## 🛠 Installation

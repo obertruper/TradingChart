@@ -1,11 +1,12 @@
 # Data Collector Configuration for Historical Candle Data
 # =========================================================
 
-# API Settings
+# API Settings (OPTIONAL - not required for historical public data)
+# Leave empty or use dummy values if you only need historical candles
 api:
   bybit:
-    api_key: "YOUR_API_KEY_HERE"
-    api_secret: "YOUR_API_SECRET_HERE"
+    api_key: ""  # Optional - public data doesn't require authentication
+    api_secret: ""  # Optional - public data doesn't require authentication
     testnet: false
 
 # Database Settings (PostgreSQL on VPS)

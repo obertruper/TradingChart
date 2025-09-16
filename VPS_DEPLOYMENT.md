@@ -232,3 +232,5 @@ python3 check_data.py
 - Skips updates if gap < 2 minutes (configurable)
 - Automatically handles reconnection on errors
 - Saves state in checkpoints directory
+- **API Keys**: NOT required for historical data collection (OHLCV candles are public)
+- **Data Collection**: Works with public Bybit endpoints without authentication

@@ -17,6 +17,17 @@ import datetime
 from typing import List, Dict, Any, Optional, Tuple
 from decimal import Decimal
 from tqdm import tqdm
+from pathlib import Path
+
+# Try to load environment variables from .env file
+try:
+    from dotenv import load_dotenv
+    # Load .env file from project root
+    env_path = Path(__file__).resolve().parents[3] / '.env'
+    if env_path.exists():
+        load_dotenv(env_path)
+except ImportError:
+    pass  # dotenv not installed, will use system environment variables
 
 # Add path to Bybit API client
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "..", "..", "api", "bybit"))
@@ -95,10 +106,30 @@ class FuturesCollector:
         self.logger.info("FuturesCollector initialized with database connection")
 
     def _load_config(self) -> Dict[str, Any]:
-        """Load configuration from YAML file."""
+        """Load configuration from YAML file and merge with environment variables."""
         try:
             with open(self.config_path, "r", encoding="utf-8") as f:
                 config = yaml.safe_load(f)
+
+            # Override database password from environment variable if available
+            if os.getenv('DB_WRITER_PASSWORD'):
+                if 'database' not in config:
+                    config['database'] = {}
+                config['database']['password'] = os.getenv('DB_WRITER_PASSWORD')
+                config['database']['user'] = os.getenv('DB_WRITER_USER', config['database'].get('user', 'trading_writer'))
+                config['database']['host'] = os.getenv('DB_HOST', config['database'].get('host', '82.25.115.144'))
+                config['database']['port'] = int(os.getenv('DB_PORT', config['database'].get('port', 5432)))
+                config['database']['database'] = os.getenv('DB_NAME', config['database'].get('database', 'trading_data'))
+
+            # Override Bybit API credentials from environment if available
+            if os.getenv('BYBIT_API_KEY'):
+                if 'api' not in config:
+                    config['api'] = {'bybit': {}}
+                elif 'bybit' not in config['api']:
+                    config['api']['bybit'] = {}
+                config['api']['bybit']['api_key'] = os.getenv('BYBIT_API_KEY')
+                config['api']['bybit']['api_secret'] = os.getenv('BYBIT_API_SECRET', '')
+
             return config
         except Exception as e:
             raise Exception(f"Failed to load config from {self.config_path}: {e}")
@@ -146,11 +177,14 @@ class FuturesCollector:
             api_secret = api_config.get("api_secret")
             testnet = api_config.get("testnet", False)
 
+            # API keys are optional for public data (historical candles)
             if not api_key or not api_secret:
-                raise ValueError("API key and secret must be configured in data_collector_config.yaml")
-
-            # Initialize client with direct credentials
-            self.bybit_client = get_bybit_client(api_key=api_key, api_secret=api_secret, testnet=testnet)
+                self.logger.info("No API keys configured - using public endpoints only (sufficient for historical data)")
+                # Initialize without credentials for public data access
+                self.bybit_client = get_bybit_client(api_key=None, api_secret=None, testnet=testnet)
+            else:
+                # Initialize client with credentials if provided
+                self.bybit_client = get_bybit_client(api_key=api_key, api_secret=api_secret, testnet=testnet)
             self.logger.info("Bybit client initialized successfully from local config")
         except Exception as e:
             self.logger.error(f"Failed to initialize Bybit client: {e}")
