@@ -14,22 +14,52 @@ import numpy as np
 from datetime import datetime, timedelta
 import psycopg2
 import psycopg2.extras
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Any
 import logging
 from tqdm import tqdm
 import sys
 import os
+import warnings
+import yaml
+
+# Игнорируем предупреждение pandas о psycopg2
+warnings.filterwarnings('ignore', message='pandas only supports SQLAlchemy')
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from indicators.database import DatabaseConnection
 
 # Настройка логирования
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+def setup_logging():
+    """Настраивает логирование в консоль и файл"""
+    # Создаем папку для логов если её нет
+    log_dir = os.path.join(os.path.dirname(__file__), 'logs')
+    os.makedirs(log_dir, exist_ok=True)
+
+    # Имя файла лога с датой и временем
+    from datetime import datetime
+    log_filename = os.path.join(log_dir, f'sma_loader_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log')
+
+    # Настраиваем корневой логгер
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            # Вывод в консоль
+            logging.StreamHandler(),
+            # Запись в файл
+            logging.FileHandler(log_filename, encoding='utf-8')
+        ]
+    )
+
+    # Получаем логгер
+    logger = logging.getLogger(__name__)
+    logger.info(f"📝 Логирование настроено. Лог-файл: {log_filename}")
+
+    return logger
+
+# Инициализируем логгер
+logger = setup_logging()
 
 
 class SMALoader:
@@ -48,6 +78,23 @@ class SMALoader:
         self.batch_days = batch_days
         self.source_table = 'candles_bybit_futures_1m'
         self.target_table = 'indicators_bybit_futures_1m'
+        self.config = self.load_config()
+
+    def load_config(self) -> dict:
+        """Загружает конфигурацию из config.yaml"""
+        config_path = os.path.join(os.path.dirname(__file__), 'config.yaml')
+        if os.path.exists(config_path):
+            try:
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    config = yaml.safe_load(f)
+                    logger.info(f"📋 Конфигурация загружена из {config_path}")
+                    return config
+            except Exception as e:
+                logger.warning(f"⚠️ Не удалось загрузить config.yaml: {e}")
+                return {}
+        else:
+            logger.info("ℹ️ config.yaml не найден, используются значения по умолчанию")
+            return {}
 
     def check_and_create_columns(self, sma_periods: List[int]) -> Tuple[set, List[int]]:
         """
@@ -59,25 +106,29 @@ class SMALoader:
         Returns:
             Tuple (существующие периоды, новые созданные периоды)
         """
-        # Получаем список существующих колонок
+        # Получаем список существующих колонок с их позициями
         query = """
-            SELECT column_name
+            SELECT column_name, ordinal_position
             FROM information_schema.columns
             WHERE table_name = 'indicators_bybit_futures_1m'
-            AND column_name LIKE 'sma_%';
+            ORDER BY ordinal_position;
         """
 
-        existing_columns = self.db.execute_query(query)
+        all_columns = self.db.execute_query(query)
         existing_sma = set()
+        column_positions = {}
 
-        if existing_columns:
-            for row in existing_columns:
+        if all_columns:
+            for row in all_columns:
                 col_name = row['column_name']
-                try:
-                    period = int(col_name.split('_')[1])
-                    existing_sma.add(period)
-                except (IndexError, ValueError):
-                    continue
+                column_positions[col_name] = row['ordinal_position']
+
+                if col_name.startswith('sma_'):
+                    try:
+                        period = int(col_name.split('_')[1])
+                        existing_sma.add(period)
+                    except (IndexError, ValueError):
+                        continue
 
         logger.info(f"📊 Существующие SMA периоды: {sorted(existing_sma)}")
 
@@ -87,21 +138,30 @@ class SMALoader:
             if period not in existing_sma:
                 columns_to_create.append(period)
 
-        # Создаем новые колонки
+        # Создаем новые колонки в правильном порядке
         if columns_to_create:
             logger.info(f"🔨 Создаю новые колонки для периодов: {columns_to_create}")
 
             with self.db.get_connection() as conn:
                 with conn.cursor() as cur:
-                    for period in columns_to_create:
+                    # Сортируем периоды для создания
+                    for period in sorted(columns_to_create):
                         try:
+                            # PostgreSQL не поддерживает AFTER clause, поэтому просто создаем колонку
+                            # Она будет добавлена в конец таблицы
                             alter_query = f"""
                                 ALTER TABLE {self.target_table}
                                 ADD COLUMN IF NOT EXISTS sma_{period} DECIMAL(20,8);
                             """
+                            logger.info(f"   ➕ Создаю колонку sma_{period}")
+
                             cur.execute(alter_query)
                             conn.commit()
                             logger.info(f"   ✅ Создана колонка sma_{period}")
+
+                            # Добавляем в existing для следующих итераций
+                            existing_sma.add(period)
+
                         except Exception as e:
                             logger.error(f"   ❌ Ошибка при создании sma_{period}: {e}")
                             conn.rollback()
@@ -156,6 +216,42 @@ class SMALoader:
 
         result = self.db.execute_query(query, (self.symbol,))
         return result[0]['last_ts'] if result and result[0]['last_ts'] else None
+
+    def check_gaps_for_periods(self, sma_periods: List[int]) -> Dict[int, Dict[str, Any]]:
+        """
+        Проверяет пробелы для каждого периода SMA отдельно
+
+        Args:
+            sma_periods: Список периодов для проверки
+
+        Returns:
+            Словарь {период: {'first_ts': дата, 'last_ts': дата, 'filled_count': количество}}
+        """
+        gaps_info = {}
+
+        for period in sma_periods:
+            query = f"""
+                SELECT
+                    MIN(timestamp) FILTER (WHERE sma_{period} IS NOT NULL) as first_ts,
+                    MAX(timestamp) FILTER (WHERE sma_{period} IS NOT NULL) as last_ts,
+                    COUNT(*) FILTER (WHERE sma_{period} IS NOT NULL) as filled_count
+                FROM {self.target_table}
+                WHERE symbol = %s;
+            """
+
+            result = self.db.execute_query(query, (self.symbol,))
+            if result:
+                first_ts = result[0]['first_ts']
+                last_ts = result[0]['last_ts']
+                filled_count = result[0]['filled_count'] or 0
+
+                gaps_info[period] = {
+                    'first_ts': first_ts,
+                    'last_ts': last_ts,
+                    'filled_count': filled_count
+                }
+
+        return gaps_info
 
     def calculate_sma_batch(self, df: pd.DataFrame, sma_periods: List[int]) -> pd.DataFrame:
         """
@@ -235,6 +331,85 @@ class SMALoader:
 
         return total_saved
 
+    def fill_gaps_for_periods(self, sma_periods: List[int], min_date: datetime, max_date: datetime):
+        """
+        Заполняет пробелы для новых или неполных периодов SMA
+
+        Args:
+            sma_periods: Список периодов для проверки и заполнения
+            min_date: Минимальная дата в таблице свечей
+            max_date: Максимальная дата в таблице свечей
+        """
+        # Проверяем пробелы для каждого периода
+        gaps_info = self.check_gaps_for_periods(sma_periods)
+
+        # Получаем информацию о других периодах для сравнения
+        # Находим максимальное количество записей среди всех периодов
+        max_filled_count = 0
+        reference_last_ts = None
+        for period in sma_periods:
+            info = gaps_info.get(period, {})
+            count = info.get('filled_count', 0)
+            if count > max_filled_count:
+                max_filled_count = count
+                reference_last_ts = info.get('last_ts')
+
+        # Находим периоды с пробелами
+        periods_with_gaps = []
+        for period in sma_periods:
+            period_info = gaps_info.get(period, {})
+            first_ts = period_info.get('first_ts')
+            last_ts = period_info.get('last_ts')
+            filled_count = period_info.get('filled_count', 0)
+
+            # Если нет данных вообще
+            if filled_count == 0:
+                logger.info(f"   🔍 SMA_{period}: Нет данных - требуется полная загрузка")
+                periods_with_gaps.append(period)
+            # Если есть пробел в начале
+            elif first_ts and first_ts > min_date + timedelta(minutes=period):
+                logger.info(f"   🔍 SMA_{period}: Пробел в начале (первая запись: {first_ts})")
+                periods_with_gaps.append(period)
+            # Если период отстает от других (есть пробел в конце)
+            elif reference_last_ts and last_ts and last_ts < reference_last_ts - timedelta(hours=1):
+                logger.info(f"   🔍 SMA_{period}: Отстает от других периодов (последняя: {last_ts}, ожидается: {reference_last_ts})")
+                periods_with_gaps.append(period)
+
+        if periods_with_gaps:
+            logger.info(f"\n🔧 Обнаружены пробелы для периодов: {periods_with_gaps}")
+            logger.info("📊 Заполняю пробелы...")
+
+            # Для каждого периода с пробелом заполняем данные
+            for period in periods_with_gaps:
+                period_info = gaps_info.get(period, {})
+                first_existing = period_info.get('first_ts')
+                last_existing = period_info.get('last_ts')
+                filled_count = period_info.get('filled_count', 0)
+
+                # Определяем диапазон для заполнения
+                if filled_count == 0:
+                    # Если данных нет вообще, заполняем до reference_last_ts или max_date
+                    fill_start = min_date
+                    fill_end = reference_last_ts if reference_last_ts else max_date
+                    logger.info(f"\n   📈 Заполняю SMA_{period} полностью: {fill_start} до {fill_end}")
+                elif last_existing and last_existing < reference_last_ts:
+                    # Если период отстает, догоняем до reference_last_ts
+                    fill_start = last_existing + timedelta(minutes=1)
+                    fill_end = reference_last_ts if reference_last_ts else max_date
+                    logger.info(f"\n   📈 Догоняю SMA_{period}: с {fill_start} до {fill_end}")
+                else:
+                    # Пробел в начале - заполняем от начала до первой существующей
+                    fill_start = min_date
+                    fill_end = first_existing
+                    logger.info(f"\n   📈 Заполняю начало SMA_{period}: с {fill_start} до {fill_end}")
+
+                # Обрабатываем только этот период
+                self.process_date_range(fill_start, fill_end, [period], show_progress=True)
+
+            logger.info("\n✅ Пробелы заполнены")
+        else:
+            logger.info("✅ Пробелов не обнаружено")
+
     def process_date_range(self, start_date: datetime, end_date: datetime,
                           sma_periods: List[int], show_progress: bool = True):
         """
@@ -308,10 +483,16 @@ class SMALoader:
         Главная функция запуска
 
         Args:
-            sma_periods: Список периодов SMA (по умолчанию [10, 20, 50, 100, 200])
+            sma_periods: Список периодов SMA (по умолчанию из config.yaml или [10, 20, 50, 100, 200])
         """
+        # Приоритет: 1) аргумент функции, 2) config.yaml, 3) значения по умолчанию
         if sma_periods is None:
-            sma_periods = [10, 20, 50, 100, 200]
+            if self.config and 'indicators' in self.config and 'sma' in self.config['indicators']:
+                sma_periods = self.config['indicators']['sma'].get('periods', [10, 20, 50, 100, 200])
+                logger.info(f"📋 Используются периоды из config.yaml: {sma_periods}")
+            else:
+                sma_periods = [10, 20, 50, 100, 200]
+                logger.info(f"📋 Используются периоды по умолчанию: {sma_periods}")
 
         logger.info("=" * 60)
         logger.info(f"🚀 SMA LOADER для {self.symbol}")
@@ -335,24 +516,28 @@ class SMALoader:
         # Проверяем и создаем колонки
         existing_sma, new_columns = self.check_and_create_columns(sma_periods)
 
-        # Определяем с какой даты начинать
+        # НОВОЕ: Проверяем и заполняем пробелы для всех периодов
+        logger.info("\n🔍 Проверяю наличие пробелов в данных...")
+        self.fill_gaps_for_periods(sma_periods, min_date, max_date)
+
+        # После заполнения пробелов определяем с какой даты продолжить обычное обновление
         last_timestamp = self.get_last_indicator_timestamp(sma_periods)
 
         if last_timestamp:
-            logger.info(f"📈 Найдены данные до {last_timestamp}")
+            logger.info(f"\n📈 Данные заполнены до {last_timestamp}")
             start_date = last_timestamp + timedelta(minutes=1)
 
             if start_date >= max_date:
-                logger.info("✅ Данные уже актуальны!")
+                logger.info("✅ Данные полностью актуальны!")
                 return
 
-            logger.info(f"🔄 Обновление с {start_date}")
+            logger.info(f"🔄 Продолжаю обновление с {start_date}")
+            # Обрабатываем оставшиеся данные для всех периодов
+            self.process_date_range(start_date, max_date, sma_periods)
         else:
-            logger.info("📊 Таблица пустая, начинаю полную загрузку")
-            start_date = min_date
-
-        # Обрабатываем данные
-        self.process_date_range(start_date, max_date, sma_periods)
+            # Если после проверки пробелов все еще нет данных, делаем полную загрузку
+            logger.info("\n📊 Начинаю полную загрузку для всех периодов")
+            self.process_date_range(min_date, max_date, sma_periods)
 
         logger.info("\n" + "=" * 60)
         logger.info("✅ ЗАГРУЗКА ЗАВЕРШЕНА")
@@ -366,19 +551,24 @@ def main():
     parser = argparse.ArgumentParser(description='SMA Indicator Loader')
     parser.add_argument('--symbol', type=str, default='BTCUSDT',
                        help='Торговая пара (по умолчанию BTCUSDT)')
-    parser.add_argument('--periods', type=str, default='10,20,50,100,200',
-                       help='Периоды SMA через запятую')
+    parser.add_argument('--periods', type=str, default=None,
+                       help='Периоды SMA через запятую (если не указано, используется config.yaml)')
     parser.add_argument('--batch-days', type=int, default=30,
                        help='Размер батча в днях (по умолчанию 30)')
 
     args = parser.parse_args()
 
-    # Парсим периоды
-    sma_periods = [int(p.strip()) for p in args.periods.split(',')]
-
-    # Создаем и запускаем загрузчик
+    # Создаем загрузчик
     loader = SMALoader(symbol=args.symbol, batch_days=args.batch_days)
-    loader.run(sma_periods)
+
+    # Парсим периоды только если указаны в аргументах
+    if args.periods:
+        sma_periods = [int(p.strip()) for p in args.periods.split(',')]
+        logger.info(f"📝 Используются периоды из командной строки: {sma_periods}")
+        loader.run(sma_periods)
+    else:
+        # Используем периоды из config.yaml
+        loader.run()  # run() сам возьмет периоды из config
 
 
 if __name__ == "__main__":
