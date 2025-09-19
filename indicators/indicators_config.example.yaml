@@ -1,0 +1,81 @@
+# Конфигурация для расчета и хранения индикаторов
+# =============================================
+#
+# ИНСТРУКЦИЯ:
+# 1. Скопируйте этот файл: cp indicators_config.example.yaml indicators_config.yaml
+# 2. Отредактируйте indicators_config.yaml, указав ваши параметры БД
+# 3. НЕ коммитьте indicators_config.yaml в git (он в .gitignore)
+
+# База данных PostgreSQL
+database:
+  host: your_db_host           # IP адрес или домен вашей БД
+  port: 5432                    # Порт PostgreSQL (по умолчанию 5432)
+  database: trading_data        # Имя базы данных
+  user: your_db_user           # Имя пользователя БД
+  password: your_db_password    # Пароль пользователя БД
+
+# Таймфреймы для расчета индикаторов
+# ВАЖНО: Запуск всех таймфреймов займет много времени при первой загрузке!
+# Рекомендуется загружать по одному: python sma_loader.py --timeframe 1m
+timeframes:
+  - 1m     # Минутные данные (основной, быстрая загрузка)
+  - 15m    # 15-минутные данные
+  - 1h     # Часовые данные
+  # - 4h   # 4-часовые данные (раскомментируйте при необходимости)
+  # - 1d   # Дневные данные (раскомментируйте при необходимости)
+
+# Символы для обработки
+symbols:
+  - BTCUSDT     # Bitcoin
+  # - ETHUSDT   # Ethereum (раскомментируйте при необходимости)
+  # - SOLUSDT   # Solana
+  # - XRPUSDT   # Ripple
+  # - ADAUSDT   # Cardano
+
+# Конфигурация индикаторов
+indicators:
+  # Simple Moving Average - простая скользящая средняя
+  sma:
+    enabled: true
+    periods: [10, 30, 50, 100, 200]  # Стандартные периоды SMA
+
+  # Exponential Moving Average - экспоненциальная скользящая средняя
+  ema:
+    enabled: true
+    periods: [9, 12, 21, 26, 50, 100, 200]  # Периоды EMA (12 и 26 для MACD)
+    batch_days: 1  # Размер батча в днях (1 = видимый прогресс, 3-7 = быстрее)
+
+  # Relative Strength Index - индекс относительной силы (будущая разработка)
+  rsi:
+    enabled: false
+    periods: [14]  # Стандартный период RSI
+
+  # MACD - будет рассчитываться на основе EMA_12 и EMA_26 (будущая разработка)
+  macd:
+    enabled: false
+    fast_period: 12
+    slow_period: 26
+    signal_period: 9
+
+  # Bollinger Bands - полосы Боллинджера (будущая разработка)
+  bollinger:
+    enabled: false
+    period: 20
+    std_dev: 2
+
+# Параметры обработки данных
+processing:
+  batch_size: 10000      # Размер батча для обработки (оптимально 5000-20000)
+  parallel_workers: 4    # Количество параллельных воркеров (для будущих оптимизаций)
+
+# Настройки логирования
+logging:
+  level: INFO  # Уровень логирования (DEBUG, INFO, WARNING, ERROR)
+  file: indicators/logs/indicators.log  # Путь к файлу логов
+
+# Примечания:
+# - SMA рассчитывается быстро (параллельно для всех периодов)
+# - EMA требует последовательного расчета (медленнее, но с checkpoint)
+# - Для первой загрузки EMA может потребоваться 30-40 часов для полной истории
+# - Используйте batch_days=1 для EMA чтобы видеть прогресс
+# - После первой загрузки обновления выполняются быстро

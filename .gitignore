@@ -75,3 +75,6 @@ htmlcov/
 # Claude
 .claude/
 CLAUDE.md
+
+# Indicators config with passwords
+indicators/indicators_config.yaml

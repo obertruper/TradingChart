@@ -120,8 +120,8 @@ class SMALoader:
         return timeframe_map
 
     def load_config(self) -> dict:
-        """Загружает конфигурацию из config.yaml"""
-        config_path = os.path.join(os.path.dirname(__file__), 'config.yaml')
+        """Загружает конфигурацию из indicators_config.yaml"""
+        config_path = os.path.join(os.path.dirname(__file__), 'indicators_config.yaml')
         if os.path.exists(config_path):
             try:
                 with open(config_path, 'r', encoding='utf-8') as f:
@@ -129,11 +129,11 @@ class SMALoader:
                     logger.info(f"📋 Конфигурация загружена из {config_path}")
                     return config
             except Exception as e:
-                logger.error(f"❌ Не удалось загрузить config.yaml: {e}")
+                logger.error(f"❌ Не удалось загрузить indicators_config.yaml: {e}")
                 raise
         else:
-            logger.error("❌ config.yaml не найден")
-            raise FileNotFoundError("config.yaml not found")
+            logger.error("❌ indicators_config.yaml не найден")
+            raise FileNotFoundError("indicators_config.yaml not found")
 
     def create_indicators_table(self, timeframe: str) -> bool:
         """

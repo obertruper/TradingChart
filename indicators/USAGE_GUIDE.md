@@ -33,10 +33,14 @@ indicators:
   sma:
     enabled: true
     periods: [10, 20, 30, 40, 50, 100, 200]  # ← Просто добавьте нужные периоды
+  ema:
+    enabled: true  # ← Включите для загрузки EMA
+    periods: [9, 12, 21, 26, 50, 100, 200]  # ← Периоды для EMA
 ```
 
-### 2. Запуск загрузчика
+### 2. Запуск загрузчиков
 
+#### SMA Loader:
 ```bash
 # Все таймфреймы из config.yaml
 python indicators/sma_loader.py
@@ -49,6 +53,24 @@ python indicators/sma_loader.py --timeframes 1m,15m,1h
 
 # Другой символ
 python indicators/sma_loader.py --symbol ETHUSDT --timeframe 1h
+```
+
+#### EMA Loader:
+```bash
+# Все таймфреймы из config.yaml
+python indicators/ema_loader.py
+
+# Конкретный таймфрейм
+python indicators/ema_loader.py --timeframe 1h
+
+# Несколько таймфреймов
+python indicators/ema_loader.py --timeframes 1m,15m,1h
+
+# Другой символ
+python indicators/ema_loader.py --symbol ETHUSDT --timeframe 4h
+
+# С определенной даты
+python indicators/ema_loader.py --start-date 2024-01-01
 ```
 
 **Всё!** Скрипт автоматически:
@@ -279,6 +301,38 @@ WHERE symbol = 'BTCUSDT'
   AND LAG(sma_50) OVER (ORDER BY timestamp) <= LAG(sma_200) OVER (ORDER BY timestamp);
 
 -- Помните: для 15m и 1h это SMA по OPEN, для 1m - по CLOSE
+```
+
+### Работа с EMA:
+```sql
+-- Получить текущие значения EMA
+SELECT timestamp, ema_9, ema_21, ema_50, ema_100, ema_200
+FROM indicators_bybit_futures_1h
+WHERE symbol = 'BTCUSDT'
+ORDER BY timestamp DESC
+LIMIT 1;
+
+-- Найти пересечения EMA (быстрый крест)
+SELECT timestamp
+FROM indicators_bybit_futures_1h
+WHERE symbol = 'BTCUSDT'
+  AND ema_9 > ema_21
+  AND LAG(ema_9) OVER (ORDER BY timestamp) <= LAG(ema_21) OVER (ORDER BY timestamp)
+ORDER BY timestamp DESC
+LIMIT 10;
+
+-- Проверить тренд по EMA
+SELECT
+    timestamp,
+    CASE
+        WHEN ema_9 > ema_21 AND ema_21 > ema_50 THEN 'Сильный восходящий'
+        WHEN ema_9 < ema_21 AND ema_21 < ema_50 THEN 'Сильный нисходящий'
+        ELSE 'Боковик/неопределенность'
+    END as trend
+FROM indicators_bybit_futures_1h
+WHERE symbol = 'BTCUSDT'
+ORDER BY timestamp DESC
+LIMIT 1;
 ```
 
 ### Проверить заполненность данных:
