@@ -281,8 +281,8 @@ class RSILoader:
         with self.db.get_connection() as conn:
             cur = conn.cursor()
 
-            # Определяем какую цену использовать
-            price_column = 'close' if timeframe == '1m' else 'open'
+            # Для RSI всегда используем цену закрытия (close)
+            price_column = 'close'  # RSI должен рассчитываться по close для всех таймфреймов
 
             # Загружаем данные
             if timeframe == '1m':
@@ -301,7 +301,7 @@ class RSILoader:
                     SELECT
                         date_trunc('hour', timestamp) +
                         INTERVAL '{interval_minutes} minutes' * (EXTRACT(MINUTE FROM timestamp)::INTEGER / {interval_minutes}) as period_start,
-                        (array_agg(open ORDER BY timestamp))[1] as open_price
+                        (array_agg(close ORDER BY timestamp DESC))[1] as close_price
                     FROM candles_bybit_futures_1m
                     WHERE symbol = %s
                     AND timestamp > %s
@@ -345,13 +345,13 @@ class RSILoader:
                         interval_minutes = self.timeframe_minutes[timeframe]
                         cur.execute(f"""
                             SELECT
-                                (array_agg(open ORDER BY timestamp))[1] as open_price
+                                (array_agg(close ORDER BY timestamp DESC))[1] as close_price
                             FROM (
                                 SELECT
                                     date_trunc('hour', timestamp) +
                                     INTERVAL '{interval_minutes} minutes' * (EXTRACT(MINUTE FROM timestamp)::INTEGER / {interval_minutes}) as period_start,
                                     timestamp,
-                                    open
+                                    close
                                 FROM candles_bybit_futures_1m
                                 WHERE symbol = %s
                                 AND timestamp > %s
