@@ -47,7 +47,8 @@ INDICATORS = {
     'sma': ['sma_10', 'sma_30', 'sma_50', 'sma_100', 'sma_200'],
     'ema': ['ema_9', 'ema_12', 'ema_21', 'ema_26', 'ema_50', 'ema_100', 'ema_200'],
     'rsi': ['rsi_7', 'rsi_9', 'rsi_14', 'rsi_21', 'rsi_25'],
-    'fear_greed': ['fear_and_greed_index']  # Fear & Greed Index (only for BTCUSDT)
+    'fear_greed': ['fear_and_greed_index'],  # Fear & Greed Index from Alternative.me (only for BTCUSDT)
+    'coinmarketcap_fear_greed': ['fear_and_greed_index_coinmarketcap']  # Fear & Greed Index from CoinMarketCap (only for BTCUSDT)
 }
 
 # Date range for checking (last 30 days by default)
@@ -127,11 +128,18 @@ class OptimizedIndicatorChecker:
         query_parts = []
         for col in all_columns:
             if col == 'fear_and_greed_index':
-                # Special handling for Fear & Greed - check if value exists and get classification
+                # Special handling for Fear & Greed from Alternative.me - check if value exists and get classification
                 query_parts.append(f"""
                     COUNT(DISTINCT {col}) as {col}_count,
                     MAX({col}) as {col}_max,
                     MAX(fear_and_greed_classification) as fear_and_greed_classification
+                """)
+            elif col == 'fear_and_greed_index_coinmarketcap':
+                # Special handling for Fear & Greed from CoinMarketCap - check if value exists and get classification
+                query_parts.append(f"""
+                    COUNT(DISTINCT {col}) as {col}_count,
+                    MAX({col}) as {col}_max,
+                    MAX(fear_and_greed_index_coinmarketcap_classification) as fear_and_greed_index_coinmarketcap_classification
                 """)
             else:
                 # Regular indicators
@@ -225,7 +233,7 @@ class OptimizedIndicatorChecker:
                                 row[col] = 0
 
                         else:
-                            # Special handling for Fear & Greed Index
+                            # Special handling for Fear & Greed Index from Alternative.me
                             if indicator_type == 'fear_greed':
                                 # Fear & Greed only applies to BTCUSDT
                                 if symbol == 'BTCUSDT':
@@ -256,6 +264,41 @@ class OptimizedIndicatorChecker:
                                 else:
                                     # Fear & Greed is not applicable for non-BTCUSDT symbols
                                     row['fear_and_greed_index'] = 'N/A'
+                                    row['classification'] = 'N/A (BTC only)'
+                                    row['completeness_%'] = 0
+                                    row['status'] = 'N/A'
+                                    row['total_candles'] = 0
+                            # Special handling for Fear & Greed Index from CoinMarketCap
+                            elif indicator_type == 'coinmarketcap_fear_greed':
+                                # CoinMarketCap Fear & Greed only applies to BTCUSDT
+                                if symbol == 'BTCUSDT':
+                                    count_col = "fear_and_greed_index_coinmarketcap_count"
+                                    max_col = "fear_and_greed_index_coinmarketcap_max"
+                                    class_col = "fear_and_greed_index_coinmarketcap_classification"
+
+                                    if count_col in date_data.columns:
+                                        count_val = date_data.iloc[0][count_col]
+                                        if pd.notna(count_val) and count_val > 0:
+                                            row['fear_and_greed_index_coinmarketcap'] = date_data.iloc[0][max_col] if max_col in date_data.columns else 0
+                                            row['classification'] = date_data.iloc[0][class_col] if class_col in date_data.columns else 'N/A'
+                                            row['completeness_%'] = 100.0  # If we have data, it's complete
+                                            row['status'] = 'COMPLETE'
+                                            row['total_candles'] = expected_count  # All candles have the same value
+                                        else:
+                                            row['fear_and_greed_index_coinmarketcap'] = 0
+                                            row['classification'] = 'NO_DATA'
+                                            row['completeness_%'] = 0
+                                            row['status'] = 'NO_DATA'
+                                            row['total_candles'] = 0
+                                    else:
+                                        row['fear_and_greed_index_coinmarketcap'] = 0
+                                        row['classification'] = 'NO_DATA'
+                                        row['completeness_%'] = 0
+                                        row['status'] = 'NO_DATA'
+                                        row['total_candles'] = 0
+                                else:
+                                    # CoinMarketCap Fear & Greed is not applicable for non-BTCUSDT symbols
+                                    row['fear_and_greed_index_coinmarketcap'] = 'N/A'
                                     row['classification'] = 'N/A (BTC only)'
                                     row['completeness_%'] = 0
                                     row['status'] = 'N/A'
@@ -305,10 +348,16 @@ class OptimizedIndicatorChecker:
                     # Reorder columns for better readability
                     base_cols = ['date', 'day_of_week', 'status', 'completeness_%', 'total_candles', 'expected_candles']
 
-                    # Special columns for Fear & Greed
+                    # Special columns for Fear & Greed from Alternative.me
                     if indicator_type == 'fear_greed':
                         if 'fear_and_greed_index' in df.columns:
                             extra_cols = ['fear_and_greed_index', 'classification']
+                        else:
+                            extra_cols = []
+                    # Special columns for Fear & Greed from CoinMarketCap
+                    elif indicator_type == 'coinmarketcap_fear_greed':
+                        if 'fear_and_greed_index_coinmarketcap' in df.columns:
+                            extra_cols = ['fear_and_greed_index_coinmarketcap', 'classification']
                         else:
                             extra_cols = []
                     else:
@@ -453,13 +502,13 @@ def save_excel_report(filename: str, sheets: Dict[str, pd.DataFrame], summary_df
                         elif cell.value == 'N/A':
                             cell.fill = gray_fill
 
-                # Special formatting for Fear & Greed sheets
+                # Special formatting for Fear & Greed sheets (both Alternative.me and CoinMarketCap)
                 if 'fear_greed' in sheet_name.lower():
                     # Find Fear & Greed index column
                     fg_index_col = None
                     classification_col = None
                     for idx, cell in enumerate(ws[1], 1):
-                        if cell.value == 'fear_and_greed_index':
+                        if cell.value in ('fear_and_greed_index', 'fear_and_greed_index_coinmarketcap'):
                             fg_index_col = openpyxl.utils.get_column_letter(idx)
                         elif cell.value == 'classification':
                             classification_col = openpyxl.utils.get_column_letter(idx)
