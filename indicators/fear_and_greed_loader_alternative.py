@@ -122,8 +122,8 @@ class FearAndGreedLoader:
 
                     # Проверяем и создаем колонки
                     for column_name, column_type in [
-                        ('fear_and_greed_index', 'SMALLINT'),
-                        ('fear_and_greed_classification', 'VARCHAR(20)')
+                        ('fear_and_greed_index_alternative', 'SMALLINT'),
+                        ('fear_and_greed_index_classification_alternative', 'VARCHAR(20)')
                     ]:
                         cur.execute("""
                             SELECT EXISTS (
@@ -217,7 +217,7 @@ class FearAndGreedLoader:
                 SELECT MAX(timestamp)
                 FROM {table_name}
                 WHERE symbol = %s
-                  AND fear_and_greed_index IS NOT NULL
+                  AND fear_and_greed_index_alternative IS NOT NULL
             """, (self.symbol,))
 
             result = cur.fetchone()
@@ -276,8 +276,8 @@ class FearAndGreedLoader:
                 # Обновляем все записи за день для BTCUSDT
                 cur.execute(f"""
                     UPDATE {table_name}
-                    SET fear_and_greed_index = %s,
-                        fear_and_greed_classification = %s
+                    SET fear_and_greed_index_alternative = %s,
+                        fear_and_greed_index_classification_alternative = %s
                     WHERE symbol = %s
                       AND timestamp >= %s
                       AND timestamp < %s
@@ -317,12 +317,12 @@ class FearAndGreedLoader:
 
                 # Получаем уникальные значения за день
                 cur.execute(f"""
-                    SELECT DISTINCT fear_and_greed_index, fear_and_greed_classification
+                    SELECT DISTINCT fear_and_greed_index_alternative, fear_and_greed_index_classification_alternative
                     FROM {table_name}
                     WHERE symbol = %s
                       AND timestamp >= %s
                       AND timestamp < %s
-                      AND fear_and_greed_index IS NOT NULL
+                      AND fear_and_greed_index_alternative IS NOT NULL
                 """, (self.symbol, start_time, end_time))
 
                 results = cur.fetchall()
