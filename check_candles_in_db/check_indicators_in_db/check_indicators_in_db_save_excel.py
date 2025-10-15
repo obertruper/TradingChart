@@ -47,6 +47,7 @@ INDICATORS = {
     'sma': ['sma_10', 'sma_30', 'sma_50', 'sma_100', 'sma_200'],
     'ema': ['ema_9', 'ema_12', 'ema_21', 'ema_26', 'ema_50', 'ema_100', 'ema_200'],
     'rsi': ['rsi_7', 'rsi_9', 'rsi_14', 'rsi_21', 'rsi_25'],
+    'vma': ['vma_10', 'vma_20', 'vma_50', 'vma_100', 'vma_200'],  # Volume Moving Average
     'fear_greed': ['fear_and_greed_index_alternative'],  # Fear & Greed Index from Alternative.me (only for BTCUSDT)
     'coinmarketcap_fear_greed': ['fear_and_greed_index_coinmarketcap']  # Fear & Greed Index from CoinMarketCap (only for BTCUSDT)
 }
