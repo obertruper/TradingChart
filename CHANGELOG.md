@@ -1,5 +1,104 @@
 # CHANGELOG
 
+## [2025-10-16] - Bollinger Bands Indicator Implementation
+
+### 🚀 New Features
+
+#### Bollinger Bands Indicator Loader
+- **bollinger_bands_loader.py**: Comprehensive Bollinger Bands calculator with multiple configurations
+- 13 configurations total: 11 SMA-based + 2 EMA-based variants
+- 78 columns in database: 13 configs × 6 components (upper, middle, lower, %B, bandwidth, squeeze)
+- Multi-timeframe support: 1m, 15m, 1h with automatic aggregation from base 1m data
+- Sequential configuration processing for better interrupt/resume capability
+- Batch processing with 1-day batches for precise progress control
+
+#### BB Configurations
+**SMA-based (11)**: ultrafast (3,2.0), scalping (5,2.0), short (10,1.5), intraday (14,2.0), tight (20,1.0), golden (20,1.618), classic (20,2.0), wide (20,3.0), fibonacci (21,2.0), fibonacci_medium (34,2.0), fibonacci_long (89,2.0)
+
+**EMA-based (2)**: classic_ema (20,2.0), golden_ema (20,1.618)
+
+#### Technical Implementation
+- **Middle Band**: SMA or EMA of close prices
+- **Upper/Lower Bands**: Middle ± (k × σ), where σ = standard deviation
+- **%B (Percent B)**: (Close - Lower) / (Upper - Lower) - position within bands (0.0-1.0)
+- **Bandwidth**: (Upper - Lower) / Middle × 100 - width in percentage
+- **Squeeze**: Boolean flag when Bandwidth < 5% (low volatility, potential breakout)
+- Independent SMA/EMA calculation (doesn't depend on sma_loader/ema_loader)
+- Lookback period: period × 3 for accuracy at batch boundaries
+- Processing order: shortest to longest (3 → 89)
+
+#### Type Conversion & Database Management
+- **Decimal → float**: Automatic conversion of PostgreSQL Decimal types for pandas operations
+- **numpy → Python native**: Convert np.float64/np.bool_ to float/bool before DB insertion
+- Direct use of `self.db.get_connection()` context manager
+- Automatic column creation with proper data types (DECIMAL for numbers, BOOLEAN for squeeze)
+- Column existence check before data queries
+
+#### Verification Tools
+- **check_bollinger_status.py**: BB-specific status checker
+- Displays fill statistics per configuration and timeframe
+- Shows latest BB values with interpretation (overbought/oversold based on %B)
+- Gap detection for last 30 days
+- Squeeze events detection (low volatility periods)
+- Example values for verification with TradingView/Bybit
+
+### 🐛 Bug Fixes
+
+#### Fixed Context Manager Issue
+- **Problem**: `'_GeneratorContextManager' object has no attribute 'close'`
+- **Cause**: Double-wrapping of context manager (custom wrapper over DatabaseConnection's context manager)
+- **Solution**: Removed custom `get_connection()` method, using `self.db.get_connection()` directly
+- **Impact**: Fixed all 4 locations in the code
+
+#### Fixed Column Creation Order
+- **Problem**: `column "bollinger_bands_*" does not exist`
+- **Cause**: Calling `get_last_processed_date()` before `ensure_columns_exist()`
+- **Solution**: Added `ensure_columns_exist()` call before checking last date in config loop
+- **Impact**: Columns now created automatically before first use
+
+#### Fixed Decimal Type Incompatibility
+- **Problem**: `unsupported operand type(s) for -: 'decimal.Decimal' and 'float'`
+- **Cause**: PostgreSQL returns Decimal types, pandas operations expect float
+- **Solution**: Added `close_prices.astype(float)` at start of `calculate_bollinger_bands()`
+- **Impact**: All pandas calculations work correctly with DB data
+
+#### Fixed numpy Type SQL Error
+- **Problem**: `schema "np" does not exist` when inserting data
+- **Cause**: numpy types (np.float64) passed directly to SQL query
+- **Solution**: Explicit conversion to Python native types using `float()` and `bool()`
+- **Impact**: All UPDATE queries execute successfully
+
+### 📝 Documentation Updates
+
+#### README.md
+- Added Bollinger Bands to implemented indicators list
+- Added usage examples with command-line options
+- Added "Known Issues and Solutions" section with all 4 fixed bugs
+- Updated file structure with bollinger_bands_loader.py and check_bollinger_status.py
+- Added log file naming: bollinger_bands_*.log
+
+#### INDICATORS_REFERENCE.md
+- Added comprehensive BB documentation (~720 lines)
+- Detailed explanation of all 6 components
+- All 13 configurations with use cases
+- Type conversion and DB management details
+- 5 trading strategies with SQL examples
+- Best practices and common pitfalls
+- Technical implementation details
+
+#### File Renaming
+- Renamed: `bollinger_loader.py` → `bollinger_bands_loader.py`
+- Updated all references in documentation
+- Updated log file names: `bollinger_loader_*` → `bollinger_bands_*`
+
+### 🔧 Technical Improvements
+- Removed unused import: `from contextlib import contextmanager`
+- Consistent naming convention across all files
+- Proper error handling with detailed traceback
+- Progress bars with day-based tracking
+
+---
+
 ## [2025-10-16] - ATR (Average True Range) Indicator Implementation
 
 ### 🚀 New Features

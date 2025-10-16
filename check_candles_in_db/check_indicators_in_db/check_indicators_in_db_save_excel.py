@@ -59,6 +59,47 @@ INDICATORS = {
         'macd_21_55_13_line', 'macd_21_55_13_signal', 'macd_21_55_13_histogram',  # Longterm
         'macd_50_200_9_line', 'macd_50_200_9_signal', 'macd_50_200_9_histogram'  # Ultralong
     ],
+    'bollinger_bands': [  # Bollinger Bands - индикатор волатильности (13 конфигураций × 6 компонентов = 78 колонок)
+        # Ultra Fast BB (3, 2.0) SMA
+        'bollinger_bands_sma_3_2_0_upper', 'bollinger_bands_sma_3_2_0_middle', 'bollinger_bands_sma_3_2_0_lower',
+        'bollinger_bands_sma_3_2_0_percent_b', 'bollinger_bands_sma_3_2_0_bandwidth', 'bollinger_bands_sma_3_2_0_squeeze',
+        # Scalping BB (5, 2.0) SMA
+        'bollinger_bands_sma_5_2_0_upper', 'bollinger_bands_sma_5_2_0_middle', 'bollinger_bands_sma_5_2_0_lower',
+        'bollinger_bands_sma_5_2_0_percent_b', 'bollinger_bands_sma_5_2_0_bandwidth', 'bollinger_bands_sma_5_2_0_squeeze',
+        # Short BB (10, 1.5) SMA
+        'bollinger_bands_sma_10_1_5_upper', 'bollinger_bands_sma_10_1_5_middle', 'bollinger_bands_sma_10_1_5_lower',
+        'bollinger_bands_sma_10_1_5_percent_b', 'bollinger_bands_sma_10_1_5_bandwidth', 'bollinger_bands_sma_10_1_5_squeeze',
+        # Intraday BB (14, 2.0) SMA
+        'bollinger_bands_sma_14_2_0_upper', 'bollinger_bands_sma_14_2_0_middle', 'bollinger_bands_sma_14_2_0_lower',
+        'bollinger_bands_sma_14_2_0_percent_b', 'bollinger_bands_sma_14_2_0_bandwidth', 'bollinger_bands_sma_14_2_0_squeeze',
+        # Tight BB (20, 1.0) SMA
+        'bollinger_bands_sma_20_1_0_upper', 'bollinger_bands_sma_20_1_0_middle', 'bollinger_bands_sma_20_1_0_lower',
+        'bollinger_bands_sma_20_1_0_percent_b', 'bollinger_bands_sma_20_1_0_bandwidth', 'bollinger_bands_sma_20_1_0_squeeze',
+        # Golden BB (20, 1.618) SMA
+        'bollinger_bands_sma_20_1_618_upper', 'bollinger_bands_sma_20_1_618_middle', 'bollinger_bands_sma_20_1_618_lower',
+        'bollinger_bands_sma_20_1_618_percent_b', 'bollinger_bands_sma_20_1_618_bandwidth', 'bollinger_bands_sma_20_1_618_squeeze',
+        # Classic BB (20, 2.0) SMA - стандарт индустрии
+        'bollinger_bands_sma_20_2_0_upper', 'bollinger_bands_sma_20_2_0_middle', 'bollinger_bands_sma_20_2_0_lower',
+        'bollinger_bands_sma_20_2_0_percent_b', 'bollinger_bands_sma_20_2_0_bandwidth', 'bollinger_bands_sma_20_2_0_squeeze',
+        # Wide BB (20, 3.0) SMA
+        'bollinger_bands_sma_20_3_0_upper', 'bollinger_bands_sma_20_3_0_middle', 'bollinger_bands_sma_20_3_0_lower',
+        'bollinger_bands_sma_20_3_0_percent_b', 'bollinger_bands_sma_20_3_0_bandwidth', 'bollinger_bands_sma_20_3_0_squeeze',
+        # Fibonacci BB (21, 2.0) SMA
+        'bollinger_bands_sma_21_2_0_upper', 'bollinger_bands_sma_21_2_0_middle', 'bollinger_bands_sma_21_2_0_lower',
+        'bollinger_bands_sma_21_2_0_percent_b', 'bollinger_bands_sma_21_2_0_bandwidth', 'bollinger_bands_sma_21_2_0_squeeze',
+        # Fibonacci Medium BB (34, 2.0) SMA
+        'bollinger_bands_sma_34_2_0_upper', 'bollinger_bands_sma_34_2_0_middle', 'bollinger_bands_sma_34_2_0_lower',
+        'bollinger_bands_sma_34_2_0_percent_b', 'bollinger_bands_sma_34_2_0_bandwidth', 'bollinger_bands_sma_34_2_0_squeeze',
+        # Fibonacci Long BB (89, 2.0) SMA
+        'bollinger_bands_sma_89_2_0_upper', 'bollinger_bands_sma_89_2_0_middle', 'bollinger_bands_sma_89_2_0_lower',
+        'bollinger_bands_sma_89_2_0_percent_b', 'bollinger_bands_sma_89_2_0_bandwidth', 'bollinger_bands_sma_89_2_0_squeeze',
+        # Classic EMA BB (20, 2.0) EMA
+        'bollinger_bands_ema_20_2_0_upper', 'bollinger_bands_ema_20_2_0_middle', 'bollinger_bands_ema_20_2_0_lower',
+        'bollinger_bands_ema_20_2_0_percent_b', 'bollinger_bands_ema_20_2_0_bandwidth', 'bollinger_bands_ema_20_2_0_squeeze',
+        # Golden EMA BB (20, 1.618) EMA
+        'bollinger_bands_ema_20_1_618_upper', 'bollinger_bands_ema_20_1_618_middle', 'bollinger_bands_ema_20_1_618_lower',
+        'bollinger_bands_ema_20_1_618_percent_b', 'bollinger_bands_ema_20_1_618_bandwidth', 'bollinger_bands_ema_20_1_618_squeeze'
+    ],
     'fear_greed': ['fear_and_greed_index_alternative'],  # Fear & Greed Index from Alternative.me (only for BTCUSDT)
     'coinmarketcap_fear_greed': ['fear_and_greed_index_coinmarketcap']  # Fear & Greed Index from CoinMarketCap (only for BTCUSDT)
 }

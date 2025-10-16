@@ -18,23 +18,27 @@
 
 ```
 indicators/
-├── sma_loader.py          # Универсальный загрузчик SMA с мульти-таймфрейм поддержкой
-├── ema_loader.py          # Загрузчик EMA с батчевой обработкой и checkpoint
-├── rsi_loader.py          # Загрузчик RSI с автоопределением пустых столбцов
-├── vma_loader.py          # Загрузчик VMA с последовательной обработкой периодов
-├── atr_loader.py          # Загрузчик ATR с сглаживанием Уайлдера
-├── macd_loader.py         # Загрузчик MACD с независимым расчётом EMA
-├── check_vma_status.py    # Проверка статуса VMA в базе данных
-├── check_atr_status.py    # Проверка статуса ATR в базе данных
-├── check_macd_status.py   # Проверка статуса MACD в базе данных
-├── database.py            # Модуль работы с БД
-├── indicators_config.yaml # Конфигурация (таймфреймы, периоды SMA/EMA/RSI/VMA/ATR, символы)
-├── logs/                  # Папка с лог-файлами
-│   ├── sma_*.log         # Логи SMA загрузчика
-│   ├── ema_*.log         # Логи EMA загрузчика
-│   ├── rsi_*.log         # Логи RSI загрузчика
-│   ├── vma_*.log         # Логи VMA загрузчика
-│   └── atr_*.log         # Логи ATR загрузчика
+├── sma_loader.py             # Универсальный загрузчик SMA с мульти-таймфрейм поддержкой
+├── ema_loader.py             # Загрузчик EMA с батчевой обработкой и checkpoint
+├── rsi_loader.py             # Загрузчик RSI с автоопределением пустых столбцов
+├── vma_loader.py             # Загрузчик VMA с последовательной обработкой периодов
+├── atr_loader.py             # Загрузчик ATR с сглаживанием Уайлдера
+├── macd_loader.py            # Загрузчик MACD с независимым расчётом EMA
+├── bollinger_bands_loader.py # Загрузчик Bollinger Bands с SMA/EMA базой
+├── check_vma_status.py       # Проверка статуса VMA в базе данных
+├── check_atr_status.py       # Проверка статуса ATR в базе данных
+├── check_macd_status.py      # Проверка статуса MACD в базе данных
+├── check_bollinger_status.py # Проверка статуса Bollinger Bands в базе данных
+├── database.py               # Модуль работы с БД
+├── indicators_config.yaml    # Конфигурация (таймфреймы, периоды SMA/EMA/RSI/VMA/ATR/MACD/BB, символы)
+├── logs/                     # Папка с лог-файлами
+│   ├── sma_*.log            # Логи SMA загрузчика
+│   ├── ema_*.log            # Логи EMA загрузчика
+│   ├── rsi_*.log            # Логи RSI загрузчика
+│   ├── vma_*.log            # Логи VMA загрузчика
+│   ├── atr_*.log            # Логи ATR загрузчика
+│   ├── macd_*.log           # Логи MACD загрузчика
+│   └── bollinger_bands_*.log # Логи Bollinger Bands загрузчика
 ├── tools/                 # Утилиты
 │   ├── manage_columns.py # Управление колонками БД
 │   ├── view_logs.py      # Просмотр и анализ логов
@@ -100,6 +104,15 @@ indicators:
       - {name: "crypto", fast: 6, slow: 13, signal: 5}    # Для криптовалют
     batch_days: 1  # Размер батча (1 день для точного контроля)
     lookback_multiplier: 3  # Множитель lookback для точности EMA
+  bollinger_bands:
+    enabled: true
+    configurations:  # 13 конфигураций BB (11 SMA + 2 EMA)
+      - {name: "classic", period: 20, std_dev: 2.0, base: "sma"}  # Стандарт индустрии (Джон Боллинджер)
+      - {name: "golden", period: 20, std_dev: 1.618, base: "sma"}  # Золотое сечение Фибоначчи
+      - {name: "classic_ema", period: 20, std_dev: 2.0, base: "ema"}  # Быстрая реакция (EMA база)
+    batch_days: 1  # Размер батча (1 день для точного контроля)
+    lookback_multiplier: 3  # Множитель lookback для точности
+    squeeze_threshold: 5.0  # Порог для определения squeeze (bandwidth < 5%)
 ```
 
 ### Использование
@@ -231,6 +244,62 @@ python indicators/check_macd_status.py --gaps      # Проверить проп
 # - Checkpoint система для возобновления
 ```
 
+#### Загрузка Bollinger Bands:
+```bash
+# Базовый запуск (все 13 конфигураций BB)
+python indicators/bollinger_bands_loader.py
+
+# Указать символ
+python indicators/bollinger_bands_loader.py --symbol BTCUSDT
+
+# Указать таймфрейм
+python indicators/bollinger_bands_loader.py --timeframe 1h
+
+# Изменить размер батча (по умолчанию 1 день)
+python indicators/bollinger_bands_loader.py --batch-days 3
+
+# Проверка статуса Bollinger Bands
+python indicators/check_bollinger_status.py
+python indicators/check_bollinger_status.py --examples    # Показать примеры значений
+python indicators/check_bollinger_status.py --gaps        # Проверить пропуски
+python indicators/check_bollinger_status.py --squeeze     # Показать события сжатия
+
+# Bollinger Bands особенности:
+# - 13 конфигураций (11 SMA + 2 EMA базированных)
+# - Каждая конфигурация = 6 колонок (upper, middle, lower, %B, bandwidth, squeeze)
+# - Всего 78 колонок в БД (13 × 6)
+# - Последовательная обработка конфигураций (можно прервать)
+# - Независимый расчёт SMA/EMA (не зависит от sma_loader.py/ema_loader.py)
+# - Lookback = period × 3 для точности на границах батчей
+# - Для таймфреймов > 1m использует LAST(close) для агрегации
+# - Squeeze threshold = 5% (bandwidth < 5% → squeeze = true)
+# - Checkpoint система для возобновления
+# - Порядок обработки: от коротких к длинным (3 → 89)
+# - Автоматическая конвертация типов (Decimal → float, numpy → Python)
+```
+
+### 🐛 Известные проблемы и решения
+
+#### Bollinger Bands: Исправленные ошибки при первом запуске
+
+**Проблема 1**: `'_GeneratorContextManager' object has no attribute 'close'`
+- **Причина**: Двойная обертка context manager
+- **Решение**: Использование `self.db.get_connection()` напрямую (2025-10-16)
+
+**Проблема 2**: `column "bollinger_bands_*" does not exist`
+- **Причина**: Проверка данных до создания колонок
+- **Решение**: Вызов `ensure_columns_exist()` перед `get_last_processed_date()` (2025-10-16)
+
+**Проблема 3**: `unsupported operand type(s) for -: 'decimal.Decimal' and 'float'`
+- **Причина**: PostgreSQL возвращает Decimal, pandas работает с float
+- **Решение**: `close_prices.astype(float)` в начале расчетов (2025-10-16)
+
+**Проблема 4**: `schema "np" does not exist`
+- **Причина**: numpy типы (np.float64) передаются в SQL без конвертации
+- **Решение**: Конвертация в Python native типы через `float()` перед записью в БД (2025-10-16)
+
+Все проблемы исправлены, скрипт полностью рабочий! ✅
+
 ### 🔄 Пример работы при добавлении нового периода
 
 ```bash
@@ -319,6 +388,22 @@ CREATE TABLE indicators_bybit_futures_1m (
     macd_10_21_9_line DECIMAL(20,8), macd_10_21_9_signal DECIMAL(20,8), macd_10_21_9_histogram DECIMAL(20,8),  -- Swing
     macd_21_55_13_line DECIMAL(20,8), macd_21_55_13_signal DECIMAL(20,8), macd_21_55_13_histogram DECIMAL(20,8),  -- Longterm
     macd_50_200_9_line DECIMAL(20,8), macd_50_200_9_signal DECIMAL(20,8), macd_50_200_9_histogram DECIMAL(20,8),  -- Ultralong
+    -- Bollinger Bands колонки (13 конфигураций × 6 компонентов = 78 колонок)
+    -- SMA-based (11 конфигураций)
+    bollinger_bands_sma_3_2_0_upper DECIMAL(20,8), bollinger_bands_sma_3_2_0_middle DECIMAL(20,8), bollinger_bands_sma_3_2_0_lower DECIMAL(20,8), bollinger_bands_sma_3_2_0_percent_b DECIMAL(10,4), bollinger_bands_sma_3_2_0_bandwidth DECIMAL(10,4), bollinger_bands_sma_3_2_0_squeeze BOOLEAN,  -- Ultrafast
+    bollinger_bands_sma_5_2_0_upper DECIMAL(20,8), bollinger_bands_sma_5_2_0_middle DECIMAL(20,8), bollinger_bands_sma_5_2_0_lower DECIMAL(20,8), bollinger_bands_sma_5_2_0_percent_b DECIMAL(10,4), bollinger_bands_sma_5_2_0_bandwidth DECIMAL(10,4), bollinger_bands_sma_5_2_0_squeeze BOOLEAN,  -- Scalping
+    bollinger_bands_sma_10_1_5_upper DECIMAL(20,8), bollinger_bands_sma_10_1_5_middle DECIMAL(20,8), bollinger_bands_sma_10_1_5_lower DECIMAL(20,8), bollinger_bands_sma_10_1_5_percent_b DECIMAL(10,4), bollinger_bands_sma_10_1_5_bandwidth DECIMAL(10,4), bollinger_bands_sma_10_1_5_squeeze BOOLEAN,  -- Short
+    bollinger_bands_sma_14_2_0_upper DECIMAL(20,8), bollinger_bands_sma_14_2_0_middle DECIMAL(20,8), bollinger_bands_sma_14_2_0_lower DECIMAL(20,8), bollinger_bands_sma_14_2_0_percent_b DECIMAL(10,4), bollinger_bands_sma_14_2_0_bandwidth DECIMAL(10,4), bollinger_bands_sma_14_2_0_squeeze BOOLEAN,  -- Intraday
+    bollinger_bands_sma_20_1_0_upper DECIMAL(20,8), bollinger_bands_sma_20_1_0_middle DECIMAL(20,8), bollinger_bands_sma_20_1_0_lower DECIMAL(20,8), bollinger_bands_sma_20_1_0_percent_b DECIMAL(10,4), bollinger_bands_sma_20_1_0_bandwidth DECIMAL(10,4), bollinger_bands_sma_20_1_0_squeeze BOOLEAN,  -- Tight
+    bollinger_bands_sma_20_1_618_upper DECIMAL(20,8), bollinger_bands_sma_20_1_618_middle DECIMAL(20,8), bollinger_bands_sma_20_1_618_lower DECIMAL(20,8), bollinger_bands_sma_20_1_618_percent_b DECIMAL(10,4), bollinger_bands_sma_20_1_618_bandwidth DECIMAL(10,4), bollinger_bands_sma_20_1_618_squeeze BOOLEAN,  -- Golden
+    bollinger_bands_sma_20_2_0_upper DECIMAL(20,8), bollinger_bands_sma_20_2_0_middle DECIMAL(20,8), bollinger_bands_sma_20_2_0_lower DECIMAL(20,8), bollinger_bands_sma_20_2_0_percent_b DECIMAL(10,4), bollinger_bands_sma_20_2_0_bandwidth DECIMAL(10,4), bollinger_bands_sma_20_2_0_squeeze BOOLEAN,  -- Classic
+    bollinger_bands_sma_20_3_0_upper DECIMAL(20,8), bollinger_bands_sma_20_3_0_middle DECIMAL(20,8), bollinger_bands_sma_20_3_0_lower DECIMAL(20,8), bollinger_bands_sma_20_3_0_percent_b DECIMAL(10,4), bollinger_bands_sma_20_3_0_bandwidth DECIMAL(10,4), bollinger_bands_sma_20_3_0_squeeze BOOLEAN,  -- Wide
+    bollinger_bands_sma_21_2_0_upper DECIMAL(20,8), bollinger_bands_sma_21_2_0_middle DECIMAL(20,8), bollinger_bands_sma_21_2_0_lower DECIMAL(20,8), bollinger_bands_sma_21_2_0_percent_b DECIMAL(10,4), bollinger_bands_sma_21_2_0_bandwidth DECIMAL(10,4), bollinger_bands_sma_21_2_0_squeeze BOOLEAN,  -- Fibonacci
+    bollinger_bands_sma_34_2_0_upper DECIMAL(20,8), bollinger_bands_sma_34_2_0_middle DECIMAL(20,8), bollinger_bands_sma_34_2_0_lower DECIMAL(20,8), bollinger_bands_sma_34_2_0_percent_b DECIMAL(10,4), bollinger_bands_sma_34_2_0_bandwidth DECIMAL(10,4), bollinger_bands_sma_34_2_0_squeeze BOOLEAN,  -- Fibonacci Medium
+    bollinger_bands_sma_89_2_0_upper DECIMAL(20,8), bollinger_bands_sma_89_2_0_middle DECIMAL(20,8), bollinger_bands_sma_89_2_0_lower DECIMAL(20,8), bollinger_bands_sma_89_2_0_percent_b DECIMAL(10,4), bollinger_bands_sma_89_2_0_bandwidth DECIMAL(10,4), bollinger_bands_sma_89_2_0_squeeze BOOLEAN,  -- Fibonacci Long
+    -- EMA-based (2 конфигурации)
+    bollinger_bands_ema_20_2_0_upper DECIMAL(20,8), bollinger_bands_ema_20_2_0_middle DECIMAL(20,8), bollinger_bands_ema_20_2_0_lower DECIMAL(20,8), bollinger_bands_ema_20_2_0_percent_b DECIMAL(10,4), bollinger_bands_ema_20_2_0_bandwidth DECIMAL(10,4), bollinger_bands_ema_20_2_0_squeeze BOOLEAN,  -- Classic EMA
+    bollinger_bands_ema_20_1_618_upper DECIMAL(20,8), bollinger_bands_ema_20_1_618_middle DECIMAL(20,8), bollinger_bands_ema_20_1_618_lower DECIMAL(20,8), bollinger_bands_ema_20_1_618_percent_b DECIMAL(10,4), bollinger_bands_ema_20_1_618_bandwidth DECIMAL(10,4), bollinger_bands_ema_20_1_618_squeeze BOOLEAN,  -- Golden EMA
     -- Колонки добавляются динамически при необходимости
     PRIMARY KEY (timestamp, symbol)
 );
@@ -366,6 +451,25 @@ CREATE TABLE indicators_bybit_futures_1m (
 - **Агрегация**: Для таймфреймов > 1m: Close=LAST(close) из минутных свечей
 - **Lookback**: max(slow, signal) × 3 для точности EMA
 - **Применение**: Определение тренда, точки входа/выхода, дивергенции, импульс движения
+
+#### Bollinger Bands (BB):
+- **Компоненты**: Upper Band (Middle + k×σ), Middle Band (SMA/EMA), Lower Band (Middle - k×σ), %B, Bandwidth, Squeeze
+- **Формулы**:
+  - Middle Band = SMA(period) или EMA(period)
+  - Upper Band = Middle + (std_dev × σ)
+  - Lower Band = Middle - (std_dev × σ)
+  - %B (Percent B) = (Close - Lower) / (Upper - Lower) — позиция цены внутри полос (0.0-1.0)
+  - Bandwidth = (Upper - Lower) / Middle × 100 — ширина полос в процентах
+  - Squeeze = Bandwidth < 5% — флаг сжатия полос (низкая волатильность)
+- **13 конфигураций**:
+  - **SMA-based (11)**: ultrafast (3,2.0), scalping (5,2.0), short (10,1.5), intraday (14,2.0), tight (20,1.0), golden (20,1.618), classic (20,2.0), wide (20,3.0), fibonacci (21,2.0), fibonacci_medium (34,2.0), fibonacci_long (89,2.0)
+  - **EMA-based (2)**: classic_ema (20,2.0), golden_ema (20,1.618)
+- **Независимый расчёт**: SMA/EMA рассчитывается на лету (не зависит от sma_loader/ema_loader)
+- **Агрегация**: Для таймфреймов > 1m: Close=LAST(close), затем расчёт σ от агрегированных цен
+- **Lookback**: period × 3 для точности на границах батчей
+- **Squeeze threshold**: Фиксированный порог 5% для определения сжатия
+- **Порядок обработки**: От коротких к длинным (3 → 89)
+- **Применение**: Определение волатильности, перекупленность/перепроданность (%B), breakthrough/breakout (squeeze), поддержка/сопротивление
 
 ## Тестовые скрипты и утилиты
 
@@ -478,9 +582,20 @@ GROUP BY symbol;
   - Использует построчные UPDATE из-за последовательной природы EMA
   - Lookback период = max(slow, signal) × 3 для точности
 
+- **Bollinger Bands** (BB) - `bollinger_bands_loader.py`
+  - 13 конфигураций (11 SMA-based + 2 EMA-based): ultrafast (3,2.0), scalping (5,2.0), short (10,1.5), intraday (14,2.0), tight (20,1.0), golden (20,1.618), classic (20,2.0), wide (20,3.0), fibonacci (21,2.0), fibonacci_medium (34,2.0), fibonacci_long (89,2.0), classic_ema (20,2.0), golden_ema (20,1.618)
+  - Каждая конфигурация = 6 колонок (upper, middle, lower, %B, bandwidth, squeeze) = 78 колонок всего
+  - Время загрузки: ~30-40 часов для полной истории 1m (зависит от таймфрейма)
+  - Конфигурации обрабатываются последовательно (от коротких к длинным)
+  - Независимый расчёт SMA/EMA (не требует sma_loader.py/ema_loader.py)
+  - Автоматическая конвертация типов (Decimal → float, numpy → Python native)
+  - Использует batch UPDATE для производительности
+  - Lookback период = period × 3 для точности на границах батчей
+  - Squeeze threshold = 5% (фиксированный)
+  - Checkpoint система для возобновления
+
 ### 📋 Планируемые индикаторы:
 - `stochastic_loader.py` - Stochastic Oscillator
-- `bollinger_loader.py` - Bollinger Bands
 - И другие...
 
 Каждый загрузчик будет использовать тот же принцип:
