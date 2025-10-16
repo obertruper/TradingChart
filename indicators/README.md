@@ -23,8 +23,10 @@ indicators/
 ├── rsi_loader.py          # Загрузчик RSI с автоопределением пустых столбцов
 ├── vma_loader.py          # Загрузчик VMA с последовательной обработкой периодов
 ├── atr_loader.py          # Загрузчик ATR с сглаживанием Уайлдера
+├── macd_loader.py         # Загрузчик MACD с независимым расчётом EMA
 ├── check_vma_status.py    # Проверка статуса VMA в базе данных
 ├── check_atr_status.py    # Проверка статуса ATR в базе данных
+├── check_macd_status.py   # Проверка статуса MACD в базе данных
 ├── database.py            # Модуль работы с БД
 ├── indicators_config.yaml # Конфигурация (таймфреймы, периоды SMA/EMA/RSI/VMA/ATR, символы)
 ├── logs/                  # Папка с лог-файлами
@@ -91,6 +93,13 @@ indicators:
     enabled: true
     periods: [7, 14, 21, 30, 50, 100]  # Периоды ATR для анализа волатильности
     batch_days: 1  # Размер батча (1 день, последовательный расчет)
+  macd:
+    enabled: true
+    configurations:  # 8 конфигураций MACD (classic, crypto, aggressive, balanced, scalping, swing, longterm, ultralong)
+      - {name: "classic", fast: 12, slow: 26, signal: 9}  # Стандарт индустрии
+      - {name: "crypto", fast: 6, slow: 13, signal: 5}    # Для криптовалют
+    batch_days: 1  # Размер батча (1 день для точного контроля)
+    lookback_multiplier: 3  # Множитель lookback для точности EMA
 ```
 
 ### Использование
@@ -194,6 +203,34 @@ python indicators/atr_loader.py --timeframe 1h --batch-days 1
 # - Последовательный расчет (каждое значение зависит от предыдущего)
 ```
 
+#### Загрузка MACD:
+```bash
+# Загрузка MACD для всех таймфреймов и конфигураций из indicators_config.yaml
+python indicators/macd_loader.py
+
+# Загрузка конкретного таймфрейма
+python indicators/macd_loader.py --timeframe 1m --batch-days 1
+python indicators/macd_loader.py --timeframe 15m --batch-days 1
+python indicators/macd_loader.py --timeframe 1h --batch-days 1
+
+# Использование больших батчей для ускорения
+python indicators/macd_loader.py --batch-days 7
+
+# Проверка статуса MACD
+python indicators/check_macd_status.py
+python indicators/check_macd_status.py --examples  # Показать примеры значений
+python indicators/check_macd_status.py --gaps      # Проверить пропуски
+
+# MACD особенности:
+# - 8 конфигураций (classic, crypto, aggressive, balanced, scalping, swing, longterm, ultralong)
+# - Каждая конфигурация = 3 колонки (line, signal, histogram)
+# - Последовательная обработка конфигураций (можно прервать)
+# - Независимый расчёт EMA (не зависит от ema_loader.py)
+# - Lookback = max(slow, signal) × 3 для точности EMA
+# - Для таймфреймов > 1m использует LAST(close) для агрегации
+# - Checkpoint система для возобновления
+```
+
 ### 🔄 Пример работы при добавлении нового периода
 
 ```bash
@@ -273,6 +310,15 @@ CREATE TABLE indicators_bybit_futures_1m (
     atr_30 DECIMAL(20,8),
     atr_50 DECIMAL(20,8),
     atr_100 DECIMAL(20,8),
+    -- MACD колонки (8 конфигураций × 3 компонента = 24 колонки)
+    macd_12_26_9_line DECIMAL(20,8), macd_12_26_9_signal DECIMAL(20,8), macd_12_26_9_histogram DECIMAL(20,8),  -- Classic
+    macd_6_13_5_line DECIMAL(20,8), macd_6_13_5_signal DECIMAL(20,8), macd_6_13_5_histogram DECIMAL(20,8),  -- Crypto
+    macd_5_35_5_line DECIMAL(20,8), macd_5_35_5_signal DECIMAL(20,8), macd_5_35_5_histogram DECIMAL(20,8),  -- Aggressive
+    macd_8_17_9_line DECIMAL(20,8), macd_8_17_9_signal DECIMAL(20,8), macd_8_17_9_histogram DECIMAL(20,8),  -- Balanced
+    macd_5_13_3_line DECIMAL(20,8), macd_5_13_3_signal DECIMAL(20,8), macd_5_13_3_histogram DECIMAL(20,8),  -- Scalping
+    macd_10_21_9_line DECIMAL(20,8), macd_10_21_9_signal DECIMAL(20,8), macd_10_21_9_histogram DECIMAL(20,8),  -- Swing
+    macd_21_55_13_line DECIMAL(20,8), macd_21_55_13_signal DECIMAL(20,8), macd_21_55_13_histogram DECIMAL(20,8),  -- Longterm
+    macd_50_200_9_line DECIMAL(20,8), macd_50_200_9_signal DECIMAL(20,8), macd_50_200_9_histogram DECIMAL(20,8),  -- Ultralong
     -- Колонки добавляются динамически при необходимости
     PRIMARY KEY (timestamp, symbol)
 );
@@ -312,6 +358,15 @@ CREATE TABLE indicators_bybit_futures_1m (
 - **Lookback**: period × 2 для стабильности сглаживания
 - **Применение**: Измерение волатильности, динамические стоп-лоссы, размер позиции
 
+#### MACD (Moving Average Convergence Divergence):
+- **Компоненты**: MACD Line (Fast EMA - Slow EMA), Signal Line (EMA от MACD), Histogram (MACD - Signal)
+- **Формула**: MACD = EMA(fast) - EMA(slow), Signal = EMA(MACD, signal), Histogram = MACD - Signal
+- **8 конфигураций**: classic (12,26,9), crypto (6,13,5), aggressive (5,35,5), balanced (8,17,9), scalping (5,13,3), swing (10,21,9), longterm (21,55,13), ultralong (50,200,9)
+- **Независимый расчёт**: EMA рассчитывается на лету из close цен (не зависит от ema_loader)
+- **Агрегация**: Для таймфреймов > 1m: Close=LAST(close) из минутных свечей
+- **Lookback**: max(slow, signal) × 3 для точности EMA
+- **Применение**: Определение тренда, точки входа/выхода, дивергенции, импульс движения
+
 ## Тестовые скрипты и утилиты
 
 ### Проверка подключения:
@@ -342,6 +397,11 @@ python indicators/check_vma_status.py
 
 # Проверка только ATR индикаторов
 python indicators/check_atr_status.py
+
+# Проверка только MACD индикаторов
+python indicators/check_macd_status.py
+python indicators/check_macd_status.py --examples  # С примерами значений
+python indicators/check_macd_status.py --gaps      # С проверкой пропусков
 ```
 
 ## Примеры запросов к БД
@@ -409,8 +469,16 @@ GROUP BY symbol;
   - Использует сглаживание Уайлдера для плавности
   - Lookback период = period × 2 для стабильности
 
+- **MACD** (Moving Average Convergence Divergence) - `macd_loader.py`
+  - 8 конфигураций: classic (12,26,9), crypto (6,13,5), aggressive (5,35,5), balanced (8,17,9), scalping (5,13,3), swing (10,21,9), longterm (21,55,13), ultralong (50,200,9)
+  - Каждая конфигурация = 3 колонки (line, signal, histogram) = 24 колонки всего
+  - Время загрузки: ~30-40 часов для полной истории 1m (зависит от таймфрейма)
+  - Конфигурации обрабатываются последовательно
+  - Независимый расчёт EMA (не требует ema_loader.py)
+  - Использует построчные UPDATE из-за последовательной природы EMA
+  - Lookback период = max(slow, signal) × 3 для точности
+
 ### 📋 Планируемые индикаторы:
-- `macd_loader.py` - MACD (будет использовать существующие EMA_12 и EMA_26)
 - `stochastic_loader.py` - Stochastic Oscillator
 - `bollinger_loader.py` - Bollinger Bands
 - И другие...

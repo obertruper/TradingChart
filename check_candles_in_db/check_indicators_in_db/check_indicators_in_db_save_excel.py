@@ -49,6 +49,16 @@ INDICATORS = {
     'rsi': ['rsi_7', 'rsi_9', 'rsi_14', 'rsi_21', 'rsi_25'],
     'vma': ['vma_10', 'vma_20', 'vma_50', 'vma_100', 'vma_200'],  # Volume Moving Average
     'atr': ['atr_7', 'atr_14', 'atr_21', 'atr_30', 'atr_50', 'atr_100'],  # Average True Range
+    'macd': [  # MACD - Moving Average Convergence Divergence
+        'macd_12_26_9_line', 'macd_12_26_9_signal', 'macd_12_26_9_histogram',  # Classic
+        'macd_6_13_5_line', 'macd_6_13_5_signal', 'macd_6_13_5_histogram',  # Crypto
+        'macd_5_35_5_line', 'macd_5_35_5_signal', 'macd_5_35_5_histogram',  # Aggressive
+        'macd_8_17_9_line', 'macd_8_17_9_signal', 'macd_8_17_9_histogram',  # Balanced
+        'macd_5_13_3_line', 'macd_5_13_3_signal', 'macd_5_13_3_histogram',  # Scalping
+        'macd_10_21_9_line', 'macd_10_21_9_signal', 'macd_10_21_9_histogram',  # Swing
+        'macd_21_55_13_line', 'macd_21_55_13_signal', 'macd_21_55_13_histogram',  # Longterm
+        'macd_50_200_9_line', 'macd_50_200_9_signal', 'macd_50_200_9_histogram'  # Ultralong
+    ],
     'fear_greed': ['fear_and_greed_index_alternative'],  # Fear & Greed Index from Alternative.me (only for BTCUSDT)
     'coinmarketcap_fear_greed': ['fear_and_greed_index_coinmarketcap']  # Fear & Greed Index from CoinMarketCap (only for BTCUSDT)
 }
