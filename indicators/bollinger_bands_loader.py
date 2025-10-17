@@ -328,8 +328,8 @@ class BollingerBandsLoader:
 
         # Определяем правило агрегации
         rule_map = {
-            '15m': '15T',
-            '1h': '1H',
+            '15m': '15min',
+            '1h': '1h',
         }
 
         if timeframe not in rule_map:

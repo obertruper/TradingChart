@@ -1,5 +1,20 @@
 # CHANGELOG
 
+## [2025-10-16] - Bollinger Bands: Fix pandas FutureWarning
+
+### 🔧 Technical Improvements
+
+#### Fixed pandas resample deprecation warnings
+- **Problem**: `FutureWarning: 'H' is deprecated and will be removed in a future version, please use 'h' instead`
+- **Cause**: Using deprecated uppercase timeframe aliases in pandas resample ('H' for hour, 'T' for minute)
+- **Solution**: Updated to new lowercase format in `bollinger_bands_loader.py`:
+  - `'1H'` → `'1h'` (hourly timeframe)
+  - `'15T'` → `'15min'` (15-minute timeframe)
+- **Impact**: Eliminates FutureWarning messages in console output
+- **Compatibility**: Ensures compatibility with future pandas versions (2.x+)
+
+---
+
 ## [2025-10-16] - Bollinger Bands Indicator Implementation
 
 ### 🚀 New Features
