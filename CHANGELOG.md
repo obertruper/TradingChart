@@ -1,5 +1,164 @@
 # CHANGELOG
 
+## [2025-10-17] - ADX (Average Directional Index) Indicator Implementation
+
+### 🚀 New Features
+
+#### ADX Indicator Loader
+- **adx_loader.py**: Comprehensive ADX calculator with Wilder's smoothing method
+- 8 periods total: 7, 10, 14, 20, 21, 25, 30, 50
+- 24 columns in database: 8 periods × 3 components (adx, +DI, -DI)
+- Multi-timeframe support: 1m, 15m, 1h with automatic aggregation from base 1m data
+- Sequential period processing for better interrupt/resume capability
+- Batch processing with 1-day batches for precise progress control
+
+#### ADX Periods
+**8 periods**: 7 (scalping), 10 (short-term swing), 14 (classic Wilder's original), 20 (medium-term), 21 (Fibonacci), 25 (balanced), 30 (monthly), 50 (long-term)
+
+#### Technical Implementation
+- **ADX Line**: Measures trend strength (0-100), does NOT show direction
+- **+DI (Plus Directional Indicator)**: Bullish directional movement
+- **-DI (Minus Directional Indicator)**: Bearish directional movement
+- **Double Wilder Smoothing**: TR/+DM/-DM → smoothing → +DI/-DI → DX → smoothing → ADX
+- True Range calculation: TR = max(High-Low, |High-PrevClose|, |Low-PrevClose|)
+- Directional Movement: +DM/-DM based on high/low changes
+- Independent calculation (doesn't depend on other loaders)
+- Lookback period: period × 4 for accuracy with double smoothing
+- Processing order: shortest to longest (7 → 50)
+
+#### ADX Interpretation
+- **0-25**: Weak/absent trend (sideways movement) - avoid trend strategies
+- **25-50**: Strong trend - good for trend-following strategies
+- **50-75**: Very strong trend - excellent trending conditions
+- **75-100**: Extremely strong trend - possible exhaustion, be cautious
+- **+DI > -DI**: Bullish trend (upward)
+- **-DI > +DI**: Bearish trend (downward)
+- Difference between +DI/-DI shows direction strength
+
+#### Type Conversion & Database Management
+- **Decimal → float**: Automatic conversion of PostgreSQL Decimal types for pandas operations
+- **numpy → Python native**: Convert np.float64 to float before DB insertion
+- Direct use of `self.db.get_connection()` context manager
+- Automatic column creation with proper data types (DECIMAL(10,4) for all components)
+- Column existence check before data queries
+
+#### Verification Tools
+- **check_adx_status.py**: ADX-specific status checker
+- Displays fill statistics per period and timeframe
+- Shows latest ADX values with interpretation (trend strength and direction)
+- Gap detection for last 30 days
+- Trend analysis: ADX strength + +DI/-DI direction
+- Example values for verification with TradingView/Bybit
+
+### 📝 Documentation Updates
+
+#### README.md
+- Added ADX to file structure documentation
+- Added usage examples with command-line options
+- Updated database schema with 24 ADX columns
+- Added ADX to implemented indicators list with all technical details
+
+#### INDICATORS_REFERENCE.md
+- Added comprehensive ADX documentation (~650 lines)
+- Detailed explanation of all 3 components (ADX, +DI, -DI)
+- All 8 periods with use cases
+- Complete formulas and calculation steps
+- 5 trading strategies with SQL examples
+- Combinations with other indicators (SMA/EMA, RSI, MACD, Bollinger Bands, ATR)
+- Limitations, best practices, and interesting facts
+- Technical implementation details
+
+#### File Naming
+- Loader: `adx_loader.py`
+- Status checker: `check_adx_status.py`
+- Log files: `adx_*.log`
+
+### 🗄️ Database Schema
+
+#### New Columns in indicators_bybit_futures_{1m,15m,1h}:
+```sql
+-- Period 7
+adx_7             DECIMAL(10,4)  -- ADX line
+adx_7_plus_di     DECIMAL(10,4)  -- +DI line
+adx_7_minus_di    DECIMAL(10,4)  -- -DI line
+
+-- Period 10
+adx_10            DECIMAL(10,4)
+adx_10_plus_di    DECIMAL(10,4)
+adx_10_minus_di   DECIMAL(10,4)
+
+-- Period 14 (classic Wilder's original)
+adx_14            DECIMAL(10,4)
+adx_14_plus_di    DECIMAL(10,4)
+adx_14_minus_di   DECIMAL(10,4)
+
+-- Period 20
+adx_20            DECIMAL(10,4)
+adx_20_plus_di    DECIMAL(10,4)
+adx_20_minus_di   DECIMAL(10,4)
+
+-- Period 21 (Fibonacci)
+adx_21            DECIMAL(10,4)
+adx_21_plus_di    DECIMAL(10,4)
+adx_21_minus_di   DECIMAL(10,4)
+
+-- Period 25
+adx_25            DECIMAL(10,4)
+adx_25_plus_di    DECIMAL(10,4)
+adx_25_minus_di   DECIMAL(10,4)
+
+-- Period 30
+adx_30            DECIMAL(10,4)
+adx_30_plus_di    DECIMAL(10,4)
+adx_30_minus_di   DECIMAL(10,4)
+
+-- Period 50
+adx_50            DECIMAL(10,4)
+adx_50_plus_di    DECIMAL(10,4)
+adx_50_minus_di   DECIMAL(10,4)
+```
+
+### 📈 Usage Examples
+
+```bash
+# Load ADX for all timeframes (1m, 15m, 1h)
+cd indicators
+python3 adx_loader.py
+
+# Load ADX for specific timeframe
+python3 adx_loader.py --timeframe 1m
+
+# Load specific period only
+python3 adx_loader.py --period 14
+
+# Use larger batches for faster processing
+python3 adx_loader.py --batch-days 3
+
+# Check ADX status in database
+python3 check_adx_status.py
+
+# Show values for TradingView comparison
+python3 check_adx_status.py --comparison
+```
+
+### 🔧 Technical Improvements
+- Consistent naming convention across all files
+- Proper error handling with detailed traceback
+- Progress bars with day-based tracking
+- Checkpoint system for resumable loading
+- Applied lessons learned from Bollinger Bands implementation
+
+### 📦 Files Changed
+- **Added**: indicators/adx_loader.py (~660 lines)
+- **Added**: indicators/check_adx_status.py (~350 lines)
+- **Modified**: indicators/indicators_config.yaml (+7 lines for ADX section)
+- **Modified**: check_indicators_in_db_save_excel.py (+18 lines for 24 ADX columns)
+- **Modified**: indicators/README.md (+70 lines)
+- **Modified**: indicators/INDICATORS_REFERENCE.md (+650 lines)
+- **Modified**: CHANGELOG.md (this file)
+
+---
+
 ## [2025-10-16] - Bollinger Bands: Fix pandas FutureWarning
 
 ### 🔧 Technical Improvements

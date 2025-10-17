@@ -100,6 +100,24 @@ INDICATORS = {
         'bollinger_bands_ema_20_1_618_upper', 'bollinger_bands_ema_20_1_618_middle', 'bollinger_bands_ema_20_1_618_lower',
         'bollinger_bands_ema_20_1_618_percent_b', 'bollinger_bands_ema_20_1_618_bandwidth', 'bollinger_bands_ema_20_1_618_squeeze'
     ],
+    'adx': [  # ADX - Average Directional Index (8 периодов × 3 компонента = 24 колонки)
+        # Period 7
+        'adx_7', 'adx_7_plus_di', 'adx_7_minus_di',
+        # Period 10
+        'adx_10', 'adx_10_plus_di', 'adx_10_minus_di',
+        # Period 14 (classic Wilder's original)
+        'adx_14', 'adx_14_plus_di', 'adx_14_minus_di',
+        # Period 20
+        'adx_20', 'adx_20_plus_di', 'adx_20_minus_di',
+        # Period 21 (Fibonacci)
+        'adx_21', 'adx_21_plus_di', 'adx_21_minus_di',
+        # Period 25
+        'adx_25', 'adx_25_plus_di', 'adx_25_minus_di',
+        # Period 30
+        'adx_30', 'adx_30_plus_di', 'adx_30_minus_di',
+        # Period 50
+        'adx_50', 'adx_50_plus_di', 'adx_50_minus_di'
+    ],
     'fear_greed': ['fear_and_greed_index_alternative'],  # Fear & Greed Index from Alternative.me (only for BTCUSDT)
     'coinmarketcap_fear_greed': ['fear_and_greed_index_coinmarketcap']  # Fear & Greed Index from CoinMarketCap (only for BTCUSDT)
 }
