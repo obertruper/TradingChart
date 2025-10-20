@@ -14,7 +14,7 @@ Date: 2025-10-17
 
 import os
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 import logging
@@ -83,7 +83,10 @@ class ADXLoader:
         self,
         symbol: str = 'BTCUSDT',
         batch_days: int = BATCH_DAYS,
-        lookback_multiplier: int = LOOKBACK_MULTIPLIER
+        lookback_multiplier: int = LOOKBACK_MULTIPLIER,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
+        force_reload: bool = False
     ):
         """
         Initialize ADX Loader
@@ -92,10 +95,16 @@ class ADXLoader:
             symbol: Trading pair symbol
             batch_days: Number of days to process in each batch
             lookback_multiplier: Multiplier for lookback period (period × multiplier)
+            start_date: Custom start date (optional)
+            end_date: Custom end date (optional)
+            force_reload: Force reload even if data exists (default: False)
         """
         self.symbol = symbol
         self.batch_days = batch_days
         self.lookback_multiplier = lookback_multiplier
+        self.custom_start_date = start_date
+        self.custom_end_date = end_date
+        self.force_reload = force_reload
         self.db = DatabaseConnection()
         self.logger = setup_logging(symbol)
 
@@ -103,6 +112,12 @@ class ADXLoader:
         self.logger.info(f"Periods: {PERIODS}")
         self.logger.info(f"Batch size: {batch_days} days")
         self.logger.info(f"Lookback multiplier: {lookback_multiplier}")
+        if start_date:
+            self.logger.info(f"Custom start date: {start_date.date()}")
+        if end_date:
+            self.logger.info(f"Custom end date: {end_date.date()}")
+        if force_reload:
+            self.logger.info("Force reload mode: ENABLED")
 
     def get_column_names(self, period: int) -> Dict[str, str]:
         """
@@ -135,14 +150,19 @@ class ADXLoader:
             with conn.cursor() as cur:
                 for col_name in columns.values():
                     # Check if column exists
-                    cur.execute(f"""
-                        SELECT column_name
-                        FROM information_schema.columns
-                        WHERE table_name = '{table_name}'
-                        AND column_name = '{col_name}'
-                    """)
+                    cur.execute("""
+                        SELECT EXISTS (
+                            SELECT 1
+                            FROM information_schema.columns
+                            WHERE table_schema = 'public'
+                            AND table_name = %s
+                            AND column_name = %s
+                        )
+                    """, (table_name, col_name))
 
-                    if not cur.fetchone():
+                    exists = cur.fetchone()[0]
+
+                    if not exists:
                         # Create column
                         self.logger.info(f"Creating column {col_name} in {table_name}")
                         cur.execute(f"""
@@ -192,6 +212,12 @@ class ADXLoader:
         Returns:
             Tuple of (start_date, end_date)
         """
+        # If custom dates are provided, use them
+        if self.custom_start_date and self.custom_end_date:
+            self.logger.info(f"Using custom date range: {self.custom_start_date.date()} to {self.custom_end_date.date()}")
+            return self.custom_start_date, self.custom_end_date
+
+        # Otherwise, query database for available data range
         # Always read from 1m base table
         table_name = 'candles_bybit_futures_1m'
 
@@ -431,17 +457,20 @@ class ADXLoader:
         # Ensure columns exist
         self.ensure_columns_exist(timeframe, period)
 
-        # Get last processed date
-        last_date = self.get_last_processed_date(timeframe, period)
+        # Get last processed date (skip checkpoint if force reload)
+        if not self.force_reload:
+            last_date = self.get_last_processed_date(timeframe, period)
 
-        if last_date:
-            # Start from next day after last processed
-            start_date = max(start_date, last_date + timedelta(days=1))
-            self.logger.info(f"Resuming from {start_date.date()} (last: {last_date.date()})")
+            if last_date:
+                # Start from next day after last processed
+                start_date = max(start_date, last_date + timedelta(days=1))
+                self.logger.info(f"Resuming from {start_date.date()} (last: {last_date.date()})")
 
-        if start_date >= end_date:
-            self.logger.info(f"ADX_{period} {timeframe} already up to date")
-            return
+            if start_date >= end_date:
+                self.logger.info(f"ADX_{period} {timeframe} already up to date")
+                return
+        else:
+            self.logger.info(f"Force reload: Skipping checkpoint, will reload all data in range")
 
         # Calculate lookback period
         lookback_days = period * self.lookback_multiplier
@@ -665,8 +694,37 @@ def main():
         default=BATCH_DAYS,
         help=f'Batch size in days (default: {BATCH_DAYS})'
     )
+    parser.add_argument(
+        '--start-date',
+        type=str,
+        help='Custom start date (format: YYYY-MM-DD)'
+    )
+    parser.add_argument(
+        '--end-date',
+        type=str,
+        help='Custom end date (format: YYYY-MM-DD)'
+    )
+    parser.add_argument(
+        '--force-reload',
+        action='store_true',
+        help='Force reload even if data exists (ignores checkpoint)'
+    )
 
     args = parser.parse_args()
+
+    # Parse custom dates if provided
+    start_date = None
+    end_date = None
+    if args.start_date:
+        start_date = datetime.strptime(args.start_date, '%Y-%m-%d').replace(tzinfo=timezone.utc)
+    if args.end_date:
+        end_date = datetime.strptime(args.end_date, '%Y-%m-%d').replace(tzinfo=timezone.utc)
+
+    # Validate date range
+    if (start_date and not end_date) or (end_date and not start_date):
+        parser.error("Both --start-date and --end-date must be provided together")
+    if start_date and end_date and start_date >= end_date:
+        parser.error("--start-date must be before --end-date")
 
     # Prepare timeframes
     timeframes = TIMEFRAMES if args.timeframe == 'all' else [args.timeframe]
@@ -677,7 +735,10 @@ def main():
     # Create loader and run
     loader = ADXLoader(
         symbol=args.symbol,
-        batch_days=args.batch_days
+        batch_days=args.batch_days,
+        start_date=start_date,
+        end_date=end_date,
+        force_reload=args.force_reload
     )
 
     loader.load_all(timeframes=timeframes, periods=periods)
