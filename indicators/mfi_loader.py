@@ -1,21 +1,20 @@
 #!/usr/bin/env python3
 """
-VWAP (Volume Weighted Average Price) Loader
+MFI (Money Flow Index) Loader
 
-Загрузка индикатора VWAP для множества символов и таймфреймов.
+Загрузка индикатора MFI для множества символов и таймфреймов.
 
-VWAP = Σ(Typical Price × Volume) / Σ(Volume)
-где Typical Price = (High + Low + Close) / 3
+MFI = 100 - (100 / (1 + Money Flow Ratio))
+где Money Flow Ratio = Σ(Positive MF, N) / Σ(Negative MF, N)
 
-Реализует два типа VWAP:
-1. Daily VWAP - сбрасывается каждый день в 00:00 UTC
-2. Rolling VWAP - скользящее окно фиксированного размера
+Money Flow = Typical Price × Volume
+Typical Price = (High + Low + Close) / 3
 
 Usage:
-    python3 vwap_loader.py                                    # Все символы, все таймфреймы
-    python3 vwap_loader.py --symbol BTCUSDT                   # Конкретный символ
-    python3 vwap_loader.py --symbol BTCUSDT --timeframe 1m    # Символ + таймфрейм
-    python3 vwap_loader.py --batch-days 7                     # Изменить размер батча
+    python3 mfi_loader.py                                    # Все символы, все таймфреймы
+    python3 mfi_loader.py --symbol BTCUSDT                   # Конкретный символ
+    python3 mfi_loader.py --symbol BTCUSDT --timeframe 1m    # Символ + таймфрейм
+    python3 mfi_loader.py --batch-days 7                     # Изменить размер батча
 """
 
 import sys
@@ -41,12 +40,12 @@ from indicators.database import DatabaseConnection
 logger = logging.getLogger(__name__)
 
 
-class VWAPLoader:
-    """Загрузчик индикатора VWAP для торговых данных"""
+class MFILoader:
+    """Загрузчик индикатора MFI (Money Flow Index) для торговых данных"""
 
     def __init__(self, symbol: str, timeframe: str, config: dict):
         """
-        Инициализация загрузчика VWAP
+        Инициализация загрузчика MFI
 
         Args:
             symbol: Торговая пара (например, BTCUSDT)
@@ -58,14 +57,13 @@ class VWAPLoader:
         self.timeframe_minutes = self._parse_timeframe(timeframe)
 
         # Настройки из конфига
-        vwap_config = config['indicators']['vwap']
-        self.daily_enabled = vwap_config['daily_enabled']
-        self.rolling_periods = vwap_config['rolling_periods']
-        self.batch_days = vwap_config.get('batch_days', 1)
-        self.lookback_multiplier = vwap_config.get('lookback_multiplier', 2)
+        mfi_config = config['indicators']['mfi']
+        self.periods = mfi_config['periods']
+        self.batch_days = mfi_config.get('batch_days', 1)
+        self.lookback_multiplier = mfi_config.get('lookback_multiplier', 2)
 
         # Вычисляем lookback
-        max_period = max(self.rolling_periods)
+        max_period = max(self.periods)
         self.lookback_periods = max_period * self.lookback_multiplier
 
         # Для прогресс-бара (устанавливается извне)
@@ -73,12 +71,11 @@ class VWAPLoader:
 
         # База данных
         self.db = DatabaseConnection()
-        self.candles_table = "candles_bybit_futures_1m"  # Всегда используем 1m таблицу
+        self.candles_table = f"candles_bybit_futures_{timeframe}"
         self.indicators_table = f"indicators_bybit_futures_{timeframe}"
 
-        logger.info(f"Инициализирован VWAPLoader для {symbol} на {timeframe}")
-        logger.info(f"Daily VWAP: {self.daily_enabled}, Rolling периоды: {len(self.rolling_periods)}")
-        logger.info(f"Lookback: {self.lookback_periods} периодов")
+        logger.info(f"Инициализирован MFILoader для {symbol} на {timeframe}")
+        logger.info(f"Периоды: {self.periods}, Lookback: {self.lookback_periods} периодов")
 
     def _parse_timeframe(self, tf: str) -> int:
         """
@@ -100,9 +97,9 @@ class VWAPLoader:
             raise ValueError(f"Неизвестный формат таймфрейма: {tf}")
 
     def ensure_columns_exist(self):
-        """Проверка и создание колонок VWAP в таблице indicators"""
+        """Проверка и создание колонок MFI в таблице indicators"""
 
-        logger.info("Проверка наличия колонок VWAP в таблице...")
+        logger.info("Проверка наличия колонок MFI в таблице...")
 
         with self.db.get_connection() as conn:
             with conn.cursor() as cur:
@@ -117,16 +114,10 @@ class VWAPLoader:
                 # Список колонок для создания
                 columns_to_add = []
 
-                # Daily VWAP
-                if self.daily_enabled and 'vwap_daily' not in existing_columns:
-                    columns_to_add.append('vwap_daily DECIMAL(20,8)')
-                    logger.info("  - vwap_daily (будет создана)")
-
-                # Rolling VWAP
-                for period in self.rolling_periods:
-                    col_name = f'vwap_{period}'
+                for period in self.periods:
+                    col_name = f'mfi_{period}'
                     if col_name not in existing_columns:
-                        columns_to_add.append(f'{col_name} DECIMAL(20,8)')
+                        columns_to_add.append(f'{col_name} DECIMAL(10,2)')
                         logger.info(f"  - {col_name} (будет создана)")
 
                 # Создаем колонки если нужно
@@ -140,7 +131,7 @@ class VWAPLoader:
                         logger.info(f"  ✅ Создана колонка: {col_name}")
 
                     conn.commit()
-                    logger.info("✅ Все колонки VWAP созданы")
+                    logger.info("✅ Все колонки MFI созданы")
                 else:
                     logger.info("✅ Все необходимые колонки уже существуют")
 
@@ -154,14 +145,14 @@ class VWAPLoader:
 
         with self.db.get_connection() as conn:
             with conn.cursor() as cur:
-                # 1. Проверяем последнюю дату VWAP в indicators таблице
+                # 1. Проверяем последнюю дату MFI в indicators таблице (используем mfi_14 как референс)
                 cur.execute(f"""
                     SELECT MAX(timestamp)
                     FROM {self.indicators_table}
-                    WHERE symbol = %s AND vwap_daily IS NOT NULL
+                    WHERE symbol = %s AND mfi_14 IS NOT NULL
                 """, (self.symbol,))
 
-                last_vwap_date = cur.fetchone()[0]
+                last_mfi_date = cur.fetchone()[0]
 
                 # 2. Получаем диапазон данных в candles таблице
                 cur.execute(f"""
@@ -177,30 +168,26 @@ class VWAPLoader:
                     return None, None
 
                 # 3. Определяем start_date
-                if last_vwap_date is None:
+                if last_mfi_date is None:
                     # Данных нет - начинаем с начала
                     start_date = min_candle_date
-                    logger.info(f"📅 Данных VWAP нет. Начинаем с: {start_date}")
+                    logger.info(f"📅 Данных MFI нет. Начинаем с: {start_date}")
                 else:
                     # Продолжаем с последней даты
-                    start_date = last_vwap_date + timedelta(minutes=self.timeframe_minutes)
-                    logger.info(f"📅 Последняя дата VWAP: {last_vwap_date}")
+                    start_date = last_mfi_date + timedelta(minutes=self.timeframe_minutes)
+                    logger.info(f"📅 Последняя дата MFI: {last_mfi_date}")
                     logger.info(f"▶️  Продолжаем с: {start_date}")
 
                 # 4. Определяем end_date (последняя завершенная свеча)
-                # Ограничиваем до последней полной свечи минус 1 период для безопасности
                 end_date = max_candle_date
 
                 # Выравниваем до начала периода
                 if self.timeframe == '1m':
-                    # Для 1m - ограничиваем до последней полной минуты
                     end_date = end_date.replace(second=0, microsecond=0)
                 elif self.timeframe == '15m':
-                    # Для 15m - выравниваем до кратного 15 минут
                     minutes = (end_date.minute // 15) * 15
                     end_date = end_date.replace(minute=minutes, second=0, microsecond=0)
                 elif self.timeframe == '1h':
-                    # Для 1h - выравниваем до начала часа
                     end_date = end_date.replace(minute=0, second=0, microsecond=0)
 
                 logger.info(f"📅 Диапазон данных в БД: {min_candle_date} - {max_candle_date}")
@@ -208,91 +195,84 @@ class VWAPLoader:
 
                 return start_date, end_date
 
-    def calculate_daily_vwap(self, df: pd.DataFrame) -> pd.Series:
+    def calculate_mfi(self, df: pd.DataFrame, period: int) -> pd.Series:
         """
-        Расчет Daily VWAP с reset в 00:00 UTC
+        Расчет MFI для заданного периода
 
         Formula:
-        - Typical Price (TP) = (High + Low + Close) / 3
-        - VWAP = Σ(TP × Volume) / Σ(Volume)
-        - Группировка по дате, cumsum внутри каждой группы
+        1. Typical Price (TP) = (High + Low + Close) / 3
+        2. Money Flow (MF) = TP × Volume
+        3. Positive/Negative разделение:
+           - Если TP > TP_prev: Positive_MF = MF, Negative_MF = 0
+           - Если TP < TP_prev: Positive_MF = 0, Negative_MF = MF
+           - Если TP == TP_prev: оба = 0 (игнорируем)
+        4. Rolling sum за period периодов
+        5. Money Flow Ratio = Σ(Positive_MF) / Σ(Negative_MF)
+        6. MFI = 100 - (100 / (1 + Ratio))
 
-        Args:
-            df: DataFrame с колонками high, low, close, volume, timestamp
-
-        Returns:
-            pd.Series с vwap_daily значениями (может содержать NaN)
-        """
-
-        # 1. Вычисляем Typical Price
-        df['tp'] = (df['high'] + df['low'] + df['close']) / 3
-        df['tp_volume'] = df['tp'] * df['volume']
-
-        # 2. Добавляем колонку date (без времени)
-        df['date'] = df.index.date
-
-        # 3. Фильтруем свечи с volume > 0
-        df_filtered = df[df['volume'] > 0].copy()
-
-        if len(df_filtered) == 0:
-            # Все свечи с нулевым объемом
-            return pd.Series(np.nan, index=df.index)
-
-        # 4. Группируем по дате и делаем cumsum внутри каждой группы
-        df_filtered['cum_tp_volume'] = df_filtered.groupby('date')['tp_volume'].cumsum()
-        df_filtered['cum_volume'] = df_filtered.groupby('date')['volume'].cumsum()
-
-        # 5. Вычисляем VWAP
-        df_filtered['vwap_daily'] = df_filtered['cum_tp_volume'] / df_filtered['cum_volume']
-
-        # 6. Возвращаем Series с правильным индексом (заполняем NaN для пропущенных)
-        return df_filtered['vwap_daily'].reindex(df.index)
-
-    def calculate_rolling_vwap(self, df: pd.DataFrame, period: int) -> pd.Series:
-        """
-        Расчет Rolling VWAP для заданного периода
-
-        Formula:
-        - VWAP = Σ(TP × Volume)_last_N / Σ(Volume)_last_N
-        - Rolling window размером period
+        Edge cases:
+        - Volume = 0: MF = 0 (учитываем в rolling window, но вклад = 0)
+        - Negative_Sum = 0: MFI = 100.0 (только покупки)
+        - Positive_Sum = 0: MFI = 0.0 (только продажи)
+        - Оба = 0: MFI = NaN (нет движения)
+        - Первые (period-1) свечей: MFI = NaN
 
         Args:
             df: DataFrame с колонками high, low, close, volume
-                (tp и tp_volume уже должны быть вычислены)
-            period: Размер окна (количество периодов)
+            period: Период MFI (7, 10, 14, 20, 25)
 
         Returns:
-            pd.Series с vwap_{period} значениями
+            pd.Series с MFI значениями
         """
 
-        # tp и tp_volume уже вычислены в calculate_daily_vwap
-        # Если нет - вычисляем
-        if 'tp' not in df.columns:
-            df['tp'] = (df['high'] + df['low'] + df['close']) / 3
-            df['tp_volume'] = df['tp'] * df['volume']
+        # 1. Typical Price
+        tp = (df['high'] + df['low'] + df['close']) / 3
 
-        # Rolling sum для tp_volume и volume
-        # min_periods=1 означает что будем считать даже если данных меньше period
-        rolling_tp_volume = df['tp_volume'].rolling(window=period, min_periods=1).sum()
-        rolling_volume = df['volume'].rolling(window=period, min_periods=1).sum()
+        # 2. Money Flow (не фильтруем volume = 0, просто считаем)
+        money_flow = tp * df['volume']
 
-        # Избегаем деления на ноль
-        vwap = np.where(
-            rolling_volume > 0,
-            rolling_tp_volume / rolling_volume,
-            np.nan
-        )
+        # 3. Разделение на Positive/Negative
+        tp_diff = tp.diff()  # TP - TP_prev
 
-        # Первые (period-1) значений = NULL (недостаточно данных)
-        vwap[:period-1] = np.nan
+        # Если TP > TP_prev (растет) → positive_mf = money_flow, negative_mf = 0
+        # Если TP < TP_prev (падает) → positive_mf = 0, negative_mf = money_flow
+        # Если TP == TP_prev (не изменилась) → оба = 0
+        positive_mf = pd.Series(np.where(tp_diff > 0, money_flow, 0), index=df.index)
+        negative_mf = pd.Series(np.where(tp_diff < 0, money_flow, 0), index=df.index)
 
-        return pd.Series(vwap, index=df.index, name=f'vwap_{period}')
+        # 4. Rolling sum (min_periods=period → NULL для первых period-1 свечей)
+        positive_sum = positive_mf.rolling(window=period, min_periods=period).sum()
+        negative_sum = negative_mf.rolling(window=period, min_periods=period).sum()
+
+        # 5. MFI с обработкой деления на ноль
+        mfi = pd.Series(index=df.index, dtype=float)
+
+        for i in range(len(df)):
+            pos_sum = positive_sum.iloc[i]
+            neg_sum = negative_sum.iloc[i]
+
+            if pd.isna(pos_sum) or pd.isna(neg_sum):
+                # Первые (period-1) свечей - недостаточно данных
+                mfi.iloc[i] = np.nan
+            elif pos_sum == 0 and neg_sum == 0:
+                # Нет движения цены за весь период
+                mfi.iloc[i] = np.nan
+            elif neg_sum == 0:
+                # Только покупки (только рост TP)
+                mfi.iloc[i] = 100.0
+            elif pos_sum == 0:
+                # Только продажи (только падение TP)
+                mfi.iloc[i] = 0.0
+            else:
+                # Нормальный расчет
+                ratio = pos_sum / neg_sum
+                mfi.iloc[i] = 100 - (100 / (1 + ratio))
+
+        return mfi
 
     def load_candles_with_lookback(self, start_date, end_date):
         """
         Загрузка свечей из БД с lookback периодом
-
-        Для таймфреймов 15m и 1h агрегирует данные из 1m свечей
 
         Args:
             start_date: Начало батча
@@ -306,49 +286,21 @@ class VWAPLoader:
         lookback_start = start_date - timedelta(minutes=self.lookback_periods * self.timeframe_minutes)
 
         with self.db.get_connection() as conn:
-            if self.timeframe == '1m':
-                # Для 1m - читаем напрямую
-                query = f"""
-                    SELECT timestamp, high, low, close, volume
-                    FROM {self.candles_table}
-                    WHERE symbol = %s
-                      AND timestamp >= %s
-                      AND timestamp <= %s
-                    ORDER BY timestamp ASC
-                """
+            query = f"""
+                SELECT timestamp, high, low, close, volume
+                FROM {self.candles_table}
+                WHERE symbol = %s
+                  AND timestamp >= %s
+                  AND timestamp <= %s
+                ORDER BY timestamp ASC
+            """
 
-                df = pd.read_sql_query(
-                    query,
-                    conn,
-                    params=(self.symbol, lookback_start, end_date),
-                    parse_dates=['timestamp']
-                )
-            else:
-                # Для 15m и 1h - агрегируем из 1m данных
-                interval_minutes = self.timeframe_minutes
-                query = f"""
-                    SELECT
-                        date_trunc('hour', timestamp) +
-                        INTERVAL '{interval_minutes} minutes' * (EXTRACT(MINUTE FROM timestamp)::INTEGER / {interval_minutes}) as timestamp,
-                        MAX(high) as high,
-                        MIN(low) as low,
-                        (array_agg(close ORDER BY timestamp DESC))[1] as close,
-                        SUM(volume) as volume
-                    FROM {self.candles_table}
-                    WHERE symbol = %s
-                      AND timestamp >= %s
-                      AND timestamp <= %s
-                    GROUP BY date_trunc('hour', timestamp) +
-                             INTERVAL '{interval_minutes} minutes' * (EXTRACT(MINUTE FROM timestamp)::INTEGER / {interval_minutes})
-                    ORDER BY timestamp ASC
-                """
-
-                df = pd.read_sql_query(
-                    query,
-                    conn,
-                    params=(self.symbol, lookback_start, end_date),
-                    parse_dates=['timestamp']
-                )
+            df = pd.read_sql_query(
+                query,
+                conn,
+                params=(self.symbol, lookback_start, end_date),
+                parse_dates=['timestamp']
+            )
 
             if df.empty:
                 return pd.DataFrame()
@@ -363,10 +315,10 @@ class VWAPLoader:
         Сохранение данных в indicators таблицу
 
         Args:
-            df: DataFrame с рассчитанными VWAP значениями
+            df: DataFrame с рассчитанными MFI значениями
             batch_start: Начало батча (для фильтрации)
             batch_end: Конец батча (для фильтрации)
-            columns: Список колонок для сохранения (например, ['vwap_daily'] или ['vwap_100'])
+            columns: Список колонок для сохранения (например, ['mfi_14'])
         """
 
         # Фильтруем только батч (без lookback)
@@ -403,23 +355,16 @@ class VWAPLoader:
 
                 conn.commit()
 
-    def load_vwap_for_symbol(self):
-        """Основной метод загрузки VWAP для символа"""
+    def load_mfi_for_symbol(self):
+        """Основной метод загрузки MFI для символа"""
 
         logger.info("")
         logger.info("=" * 80)
-        logger.info(f"📊 {self.symbol} {self.symbol_progress} Загрузка VWAP")
+        logger.info(f"📊 {self.symbol} {self.symbol_progress} Загрузка MFI")
         logger.info("=" * 80)
         logger.info(f"⏰ Таймфрейм: {self.timeframe}")
         logger.info(f"📦 Batch size: {self.batch_days} день(дней)")
-
-        periods_info = "daily" if self.daily_enabled else ""
-        if self.rolling_periods:
-            if periods_info:
-                periods_info += f" + {len(self.rolling_periods)} rolling"
-            else:
-                periods_info = f"{len(self.rolling_periods)} rolling"
-        logger.info(f"📊 Периоды: {periods_info}")
+        logger.info(f"📊 Периоды: {self.periods}")
 
         # 1. Проверяем и создаем колонки
         self.ensure_columns_exist()
@@ -432,7 +377,7 @@ class VWAPLoader:
             return
 
         if start_date >= end_date:
-            logger.info(f"✅ {self.symbol} - данные VWAP актуальны")
+            logger.info(f"✅ {self.symbol} - данные MFI актуальны")
             return
 
         # 3. Рассчитываем количество батчей
@@ -443,19 +388,16 @@ class VWAPLoader:
         logger.info(f"📊 Всего дней: {total_days}, батчей: {total_batches}")
         logger.info("")
 
-        # Определяем общее количество этапов
-        total_indicators = (1 if self.daily_enabled else 0) + len(self.rolling_periods)
-
-        # 4. Daily VWAP
-        if self.daily_enabled:
-            logger.info(f"[1/{total_indicators}] Daily VWAP")
+        # 4. Обработка каждого периода MFI
+        for idx, period in enumerate(self.periods, start=1):
+            logger.info(f"[{idx}/{len(self.periods)}] MFI период {period}")
 
             current_date = start_date
             batch_num = 0
 
             pbar = tqdm(
                 total=total_batches,
-                desc=f"{self.symbol} {self.symbol_progress} {self.timeframe} Daily VWAP",
+                desc=f"{self.symbol} {self.symbol_progress} MFI-{period}",
                 unit="батч"
             )
 
@@ -466,42 +408,9 @@ class VWAPLoader:
                 df = self.load_candles_with_lookback(current_date, batch_end)
 
                 if not df.empty:
-                    # Рассчитываем Daily VWAP
-                    df['vwap_daily'] = self.calculate_daily_vwap(df)
-
-                    # Записываем в БД (только батч, без lookback)
-                    self.save_to_db(df, current_date, batch_end, ['vwap_daily'])
-
-                batch_num += 1
-                pbar.update(1)
-                current_date = batch_end
-
-            pbar.close()
-
-        # 5. Rolling VWAP (все периоды)
-        for idx, period in enumerate(self.rolling_periods):
-            indicator_num = (1 if self.daily_enabled else 0) + idx + 1
-            logger.info(f"[{indicator_num}/{total_indicators}] Rolling VWAP (period={period})")
-
-            current_date = start_date
-            batch_num = 0
-
-            pbar = tqdm(
-                total=total_batches,
-                desc=f"{self.symbol} {self.symbol_progress} {self.timeframe} VWAP-{period}",
-                unit="батч"
-            )
-
-            while current_date < end_date:
-                batch_end = min(current_date + timedelta(days=self.batch_days), end_date)
-
-                # Загружаем данные с lookback
-                df = self.load_candles_with_lookback(current_date, batch_end)
-
-                if not df.empty:
-                    # Рассчитываем Rolling VWAP для этого периода
-                    col_name = f'vwap_{period}'
-                    df[col_name] = self.calculate_rolling_vwap(df, period)
+                    # Рассчитываем MFI для этого периода
+                    col_name = f'mfi_{period}'
+                    df[col_name] = self.calculate_mfi(df, period)
 
                     # Записываем в БД
                     self.save_to_db(df, current_date, batch_end, [col_name])
@@ -511,6 +420,7 @@ class VWAPLoader:
                 current_date = batch_end
 
             pbar.close()
+            logger.info("")
 
         logger.info(f"✅ {self.symbol} завершен")
         logger.info("")
@@ -525,7 +435,7 @@ def setup_logging():
 
     # Имя файла лога с текущей датой и временем
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    log_file = logs_dir / f'vwap_loader_{timestamp}.log'
+    log_file = logs_dir / f'mfi_loader_{timestamp}.log'
 
     # Настройка формата
     log_format = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -549,15 +459,15 @@ def parse_args():
     """Парсинг аргументов командной строки"""
 
     parser = argparse.ArgumentParser(
-        description='VWAP Loader - загрузка индикатора VWAP для торговых данных',
+        description='MFI Loader - загрузка индикатора MFI для торговых данных',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Примеры использования:
-  python3 vwap_loader.py                                    # Все символы, все таймфреймы
-  python3 vwap_loader.py --symbol BTCUSDT                   # Конкретный символ
-  python3 vwap_loader.py --symbol BTCUSDT --timeframe 1m    # Символ + таймфрейм
-  python3 vwap_loader.py --symbol BTCUSDT ETHUSDT           # Несколько символов
-  python3 vwap_loader.py --batch-days 7                     # Изменить размер батча
+  python3 mfi_loader.py                                    # Все символы, все таймфреймы
+  python3 mfi_loader.py --symbol BTCUSDT                   # Конкретный символ
+  python3 mfi_loader.py --symbol BTCUSDT --timeframe 1m    # Символ + таймфрейм
+  python3 mfi_loader.py --symbol BTCUSDT ETHUSDT           # Несколько символов
+  python3 mfi_loader.py --batch-days 7                     # Изменить размер батча
         """
     )
 
@@ -602,7 +512,7 @@ def main():
     log_file = setup_logging()
 
     logger.info("=" * 80)
-    logger.info("🚀 VWAP Loader - Запуск")
+    logger.info("🚀 MFI Loader - Запуск")
     logger.info("=" * 80)
 
     # 2. Парсинг аргументов
@@ -637,10 +547,10 @@ def main():
 
     # 6. Переопределяем batch_days если указан
     if args.batch_days:
-        config['indicators']['vwap']['batch_days'] = args.batch_days
+        config['indicators']['mfi']['batch_days'] = args.batch_days
         logger.info(f"📦 Размер батча из аргументов: {args.batch_days} дней")
 
-    logger.info(f"📊 Индикатор: VWAP")
+    logger.info(f"📊 Индикатор: MFI")
     logger.info("")
 
     # 7. Обработка
@@ -656,11 +566,11 @@ def main():
         for timeframe in timeframes:
             try:
                 # Создаем экземпляр загрузчика
-                loader = VWAPLoader(symbol, timeframe, config)
+                loader = MFILoader(symbol, timeframe, config)
                 loader.symbol_progress = f"[{symbol_idx}/{total_symbols}]"
 
                 # Запускаем загрузку
-                loader.load_vwap_for_symbol()
+                loader.load_mfi_for_symbol()
 
             except Exception as e:
                 logger.error(f"❌ Ошибка обработки {symbol} на {timeframe}: {e}", exc_info=True)
@@ -668,7 +578,7 @@ def main():
 
     logger.info("")
     logger.info("=" * 80)
-    logger.info("✅ VWAP Loader - Завершено")
+    logger.info("✅ MFI Loader - Завершено")
     logger.info(f"📝 Лог-файл: {log_file}")
     logger.info("=" * 80)
 
