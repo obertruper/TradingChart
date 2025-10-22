@@ -615,8 +615,10 @@ class VMALoader:
 def main():
     """Основная функция с поддержкой параметров командной строки"""
     parser = argparse.ArgumentParser(description='VMA (Volume Moving Average) Loader')
-    parser.add_argument('--symbol', type=str, default='BTCUSDT',
-                      help='Торговая пара (по умолчанию BTCUSDT)')
+    parser.add_argument('--symbol', type=str, default=None,
+                      help='Одна торговая пара (например, BTCUSDT)')
+    parser.add_argument('--symbols', type=str, default=None,
+                      help='Несколько торговых пар через запятую (например, BTCUSDT,ETHUSDT)')
     parser.add_argument('--timeframes', type=str, default=None,
                       help='Таймфреймы через запятую (1m,15m,1h) или пусто для всех из config.yaml')
     parser.add_argument('--timeframe', type=str, default=None,
@@ -628,6 +630,20 @@ def main():
 
     args = parser.parse_args()
 
+    # Определяем символы для обработки
+    if args.symbols:
+        symbols = [s.strip() for s in args.symbols.split(',')]
+    elif args.symbol:
+        symbols = [args.symbol]
+    else:
+        config_path = os.path.join(os.path.dirname(__file__), 'indicators_config.yaml')
+        if os.path.exists(config_path):
+            with open(config_path, 'r', encoding='utf-8') as f:
+                config = yaml.safe_load(f)
+                symbols = config.get('symbols', ['BTCUSDT'])
+        else:
+            symbols = ['BTCUSDT']
+
     # Обратная совместимость: если указан --timeframe, используем его
     if args.timeframe:
         timeframes = [args.timeframe]
@@ -636,14 +652,27 @@ def main():
     else:
         timeframes = None  # Будут использованы из config.yaml
 
-    # Создаем и запускаем загрузчик
-    loader = VMALoader(symbol=args.symbol)
+    logger.info(f"🎯 Обработка символов: {symbols}")
 
-    # Если указан конкретный таймфрейм, обрабатываем только его
-    if timeframes and len(timeframes) == 1:
-        loader.process_timeframe(timeframes[0])
-    else:
-        loader.run(timeframes=timeframes)
+    # Цикл по всем символам
+    total_symbols = len(symbols)
+    for idx, symbol in enumerate(symbols, 1):
+        logger.info(f"\n{'='*80}")
+        logger.info(f"📊 Начинаем обработку символа: {symbol} [{idx}/{total_symbols}]")
+        logger.info(f"{'='*80}\n")
+
+        # Создаем и запускаем загрузчик для текущего символа
+        loader = VMALoader(symbol=symbol)
+
+        # Если указан конкретный таймфрейм, обрабатываем только его
+        if timeframes and len(timeframes) == 1:
+            loader.process_timeframe(timeframes[0])
+        else:
+            loader.run(timeframes=timeframes)
+
+        logger.info(f"\n✅ Символ {symbol} обработан\n")
+
+    logger.info(f"\n🎉 Все символы обработаны: {symbols}")
 
 
 if __name__ == "__main__":

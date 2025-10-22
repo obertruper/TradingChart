@@ -561,7 +561,10 @@ def setup_logging():
 def main():
     """Основная функция"""
     parser = argparse.ArgumentParser(description='Загрузка Bollinger Bands индикаторов')
-    parser.add_argument('--symbol', type=str, default='BTCUSDT', help='Торговая пара (по умолчанию BTCUSDT)')
+    parser.add_argument('--symbol', type=str, default=None,
+                       help='Одна торговая пара (например, BTCUSDT)')
+    parser.add_argument('--symbols', type=str, default=None,
+                       help='Несколько торговых пар через запятую (например, BTCUSDT,ETHUSDT)')
     parser.add_argument('--timeframe', type=str, help='Конкретный таймфрейм (1m, 15m, 1h)')
     parser.add_argument('--timeframes', type=str, help='Таймфреймы через запятую (например, 1m,15m,1h)')
     parser.add_argument('--batch-days', type=int, default=1, help='Размер батча в днях (по умолчанию 1)')
@@ -571,6 +574,21 @@ def main():
 
     # Настройка логирования
     logger = setup_logging()
+
+    # Определяем символы для обработки
+    if args.symbols:
+        symbols = [s.strip() for s in args.symbols.split(',')]
+    elif args.symbol:
+        symbols = [args.symbol]
+    else:
+        config_path = os.path.join(os.path.dirname(__file__), 'indicators_config.yaml')
+        if os.path.exists(config_path):
+            import yaml
+            with open(config_path, 'r', encoding='utf-8') as f:
+                config = yaml.safe_load(f)
+                symbols = config.get('symbols', ['BTCUSDT'])
+        else:
+            symbols = ['BTCUSDT']
 
     # Определяем таймфреймы для обработки
     if args.timeframe:
@@ -591,25 +609,34 @@ def main():
     else:
         configs = BOLLINGER_CONFIGS
 
-    logger.info(f"🚀 Запуск Bollinger Bands Loader для {args.symbol}")
+    logger.info(f"🎯 Обработка символов: {symbols}")
     logger.info(f"📊 Конфигурации: {[c['name'] for c in configs]}")
     logger.info(f"📦 Batch size: {args.batch_days} дней")
 
-    # Создаём загрузчик
-    loader = BollingerBandsLoader(symbol=args.symbol, batch_days=args.batch_days)
+    # Цикл по всем символам
+    total_symbols = len(symbols)
+    for idx, symbol in enumerate(symbols, 1):
+        logger.info(f"\n{'='*80}")
+        logger.info(f"📊 Начинаем обработку символа: {symbol} [{idx}/{total_symbols}]")
+        logger.info(f"{'='*80}\n")
 
-    # Обрабатываем каждый таймфрейм
-    for timeframe in timeframes:
-        try:
-            loader.load_timeframe(timeframe, configs)
-        except KeyboardInterrupt:
-            logger.warning("\n⚠️  Прервано пользователем. Прогресс сохранён.")
-            break
-        except Exception as e:
-            logger.error(f"❌ Ошибка при обработке {timeframe}: {e}", exc_info=True)
-            continue
+        # Создаём загрузчик для текущего символа
+        loader = BollingerBandsLoader(symbol=symbol, batch_days=args.batch_days)
 
-    logger.info("\n🎉 Bollinger Bands загрузка завершена!")
+        # Обрабатываем каждый таймфрейм
+        for timeframe in timeframes:
+            try:
+                loader.load_timeframe(timeframe, configs)
+            except KeyboardInterrupt:
+                logger.warning("\n⚠️  Прервано пользователем. Прогресс сохранён.")
+                break
+            except Exception as e:
+                logger.error(f"❌ Ошибка при обработке {timeframe}: {e}", exc_info=True)
+                continue
+
+        logger.info(f"\n✅ Символ {symbol} обработан\n")
+
+    logger.info(f"\n🎉 Все символы обработаны: {symbols}")
 
 
 if __name__ == '__main__':

@@ -672,8 +672,14 @@ def main():
     parser.add_argument(
         '--symbol',
         type=str,
-        default='BTCUSDT',
-        help='Trading pair symbol (default: BTCUSDT)'
+        default=None,
+        help='One trading pair symbol (e.g., BTCUSDT)'
+    )
+    parser.add_argument(
+        '--symbols',
+        type=str,
+        default=None,
+        help='Multiple trading pair symbols separated by comma (e.g., BTCUSDT,ETHUSDT)'
     )
     parser.add_argument(
         '--timeframe',
@@ -712,6 +718,21 @@ def main():
 
     args = parser.parse_args()
 
+    # Determine symbols to process
+    if args.symbols:
+        symbols = [s.strip() for s in args.symbols.split(',')]
+    elif args.symbol:
+        symbols = [args.symbol]
+    else:
+        import yaml
+        config_path = Path(__file__).parent / 'indicators_config.yaml'
+        if config_path.exists():
+            with open(config_path, 'r', encoding='utf-8') as f:
+                config = yaml.safe_load(f)
+                symbols = config.get('symbols', ['BTCUSDT'])
+        else:
+            symbols = ['BTCUSDT']
+
     # Parse custom dates if provided
     start_date = None
     end_date = None
@@ -732,16 +753,29 @@ def main():
     # Prepare periods
     periods = PERIODS if args.period is None else [args.period]
 
-    # Create loader and run
-    loader = ADXLoader(
-        symbol=args.symbol,
-        batch_days=args.batch_days,
-        start_date=start_date,
-        end_date=end_date,
-        force_reload=args.force_reload
-    )
+    print(f"🎯 Processing symbols: {symbols}")
 
-    loader.load_all(timeframes=timeframes, periods=periods)
+    # Loop through all symbols
+    total_symbols = len(symbols)
+    for idx, symbol in enumerate(symbols, 1):
+        print(f"\n{'='*80}")
+        print(f"📊 Starting processing for symbol: {symbol} [{idx}/{total_symbols}]")
+        print(f"{'='*80}\n")
+
+        # Create loader and run for current symbol
+        loader = ADXLoader(
+            symbol=symbol,
+            batch_days=args.batch_days,
+            start_date=start_date,
+            end_date=end_date,
+            force_reload=args.force_reload
+        )
+
+        loader.load_all(timeframes=timeframes, periods=periods)
+
+        print(f"\n✅ Symbol {symbol} processed\n")
+
+    print(f"\n🎉 All symbols processed: {symbols}")
 
 
 if __name__ == '__main__':

@@ -666,14 +666,45 @@ class MACDLoader:
 def main():
     """Основная функция"""
     parser = argparse.ArgumentParser(description='MACD Loader для разных таймфреймов')
-    parser.add_argument('--symbol', type=str, default='BTCUSDT', help='Торговая пара')
+    parser.add_argument('--symbol', type=str, default=None,
+                       help='Одна торговая пара (например, BTCUSDT)')
+    parser.add_argument('--symbols', type=str, default=None,
+                       help='Несколько торговых пар через запятую (например, BTCUSDT,ETHUSDT)')
     parser.add_argument('--timeframe', type=str, help='Конкретный таймфрейм (1m, 15m, 1h)')
     parser.add_argument('--batch-days', type=int, help='Размер батча в днях')
 
     args = parser.parse_args()
 
-    loader = MACDLoader(symbol=args.symbol)
-    loader.run(timeframe=args.timeframe, batch_days=args.batch_days)
+    # Определяем символы для обработки
+    if args.symbols:
+        symbols = [s.strip() for s in args.symbols.split(',')]
+    elif args.symbol:
+        symbols = [args.symbol]
+    else:
+        config_path = os.path.join(os.path.dirname(__file__), 'indicators_config.yaml')
+        if os.path.exists(config_path):
+            import yaml
+            with open(config_path, 'r', encoding='utf-8') as f:
+                config = yaml.safe_load(f)
+                symbols = config.get('symbols', ['BTCUSDT'])
+        else:
+            symbols = ['BTCUSDT']
+
+    logger.info(f"🎯 Обработка символов: {symbols}")
+
+    # Цикл по всем символам
+    total_symbols = len(symbols)
+    for idx, symbol in enumerate(symbols, 1):
+        logger.info(f"\n{'='*80}")
+        logger.info(f"📊 Начинаем обработку символа: {symbol} [{idx}/{total_symbols}]")
+        logger.info(f"{'='*80}\n")
+
+        loader = MACDLoader(symbol=symbol)
+        loader.run(timeframe=args.timeframe, batch_days=args.batch_days)
+
+        logger.info(f"\n✅ Символ {symbol} обработан\n")
+
+    logger.info(f"\n🎉 Все символы обработаны: {symbols}")
 
 
 if __name__ == "__main__":

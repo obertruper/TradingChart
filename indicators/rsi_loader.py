@@ -178,7 +178,8 @@ class RSILoader:
 
             logger.info(f"\n🔍 Анализ существующих данных RSI:")
 
-            for period in periods:
+            for period in tqdm(periods, desc="  Проверка периодов RSI", unit="период",
+                              leave=False, bar_format='{desc}: {n}/{total} [{elapsed}]'):
                 col_name = f'rsi_{period}'
 
                 # Получаем статистику заполнения

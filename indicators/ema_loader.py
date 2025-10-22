@@ -73,6 +73,7 @@ class EMALoader:
         self.db = DatabaseConnection()
         self.symbol = symbol
         self.config = self.load_config()
+        self.symbol_progress = ""  # Будет установлено из main() для отображения прогресса
         self.timeframe_minutes = self._parse_timeframes()
 
     def _parse_timeframes(self) -> dict:
@@ -492,8 +493,9 @@ class EMALoader:
             # Обработка батчами с прогресс-баром
             logger.info(f"\n🚀 Начинаю обработку...")
 
+            progress_desc = f"{self.symbol} {self.symbol_progress} EMA {periods} {timeframe.upper()}" if self.symbol_progress else f"{self.symbol} EMA {periods} {timeframe.upper()}"
             with tqdm(total=total_batches,
-                     desc=f"Обработка EMA {periods}",
+                     desc=f"📊 {progress_desc}",
                      unit='batch',
                      bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]') as pbar:
 
@@ -618,8 +620,10 @@ def main():
         """
     )
 
-    parser.add_argument('--symbol', type=str, default='BTCUSDT',
-                       help='Торговый символ (по умолчанию: BTCUSDT)')
+    parser.add_argument('--symbol', type=str, default=None,
+                       help='Одна торговая пара (например, BTCUSDT)')
+    parser.add_argument('--symbols', type=str, default=None,
+                       help='Несколько торговых пар через запятую (например, BTCUSDT,ETHUSDT)')
     parser.add_argument('--timeframe', type=str,
                        help='Один таймфрейм для обработки')
     parser.add_argument('--timeframes', type=str,
@@ -630,6 +634,23 @@ def main():
                        help='Начальная дата в формате YYYY-MM-DD (если не указана, продолжает с checkpoint)')
 
     args = parser.parse_args()
+
+    # Определяем символы для обработки
+    if args.symbols:
+        # Если указаны конкретные символы через аргумент --symbols
+        symbols = [s.strip() for s in args.symbols.split(',')]
+    elif args.symbol:
+        # Если указан один символ через аргумент --symbol
+        symbols = [args.symbol]
+    else:
+        # Читаем символы из config.yaml
+        config_path = os.path.join(os.path.dirname(__file__), 'indicators_config.yaml')
+        if os.path.exists(config_path):
+            with open(config_path, 'r', encoding='utf-8') as f:
+                config = yaml.safe_load(f)
+                symbols = config.get('symbols', ['BTCUSDT'])
+        else:
+            symbols = ['BTCUSDT']
 
     # Определяем таймфреймы
     timeframes = None
@@ -647,18 +668,31 @@ def main():
             logger.error(f"❌ Неверный формат даты: {args.start_date}. Используйте YYYY-MM-DD")
             sys.exit(1)
 
-    # Создаем загрузчик и запускаем
-    try:
-        loader = EMALoader(symbol=args.symbol)
-        loader.run(timeframes, args.batch_days, start_date)
-    except KeyboardInterrupt:
-        logger.info("\n⚠️ Прервано пользователем. Можно продолжить позже с этого места.")
-        sys.exit(0)
-    except Exception as e:
-        logger.error(f"❌ Критическая ошибка: {e}")
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
+    logger.info(f"🎯 Обработка символов: {symbols}")
+
+    # Цикл по всем символам
+    total_symbols = len(symbols)
+    for idx, symbol in enumerate(symbols, 1):
+        logger.info(f"\n{'='*80}")
+        logger.info(f"📊 Начинаем обработку символа: {symbol} [{idx}/{total_symbols}]")
+        logger.info(f"{'='*80}\n")
+
+        # Создаем загрузчик и запускаем для текущего символа
+        try:
+            loader = EMALoader(symbol=symbol)
+            loader.symbol_progress = f"[{idx}/{total_symbols}]"
+            loader.run(timeframes, args.batch_days, start_date)
+            logger.info(f"\n✅ Символ {symbol} обработан\n")
+        except KeyboardInterrupt:
+            logger.info("\n⚠️ Прервано пользователем. Можно продолжить позже с этого места.")
+            sys.exit(0)
+        except Exception as e:
+            logger.error(f"❌ Критическая ошибка для символа {symbol}: {e}")
+            import traceback
+            traceback.print_exc()
+            continue
+
+    logger.info(f"\n🎉 Все символы обработаны: {symbols}")
 
 if __name__ == "__main__":
     main()
