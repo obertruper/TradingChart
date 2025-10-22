@@ -71,7 +71,7 @@ class MFILoader:
 
         # База данных
         self.db = DatabaseConnection()
-        self.candles_table = f"candles_bybit_futures_{timeframe}"
+        self.candles_table = "candles_bybit_futures_1m"  # Всегда используем 1m таблицу
         self.indicators_table = f"indicators_bybit_futures_{timeframe}"
 
         logger.info(f"Инициализирован MFILoader для {symbol} на {timeframe}")
@@ -274,6 +274,8 @@ class MFILoader:
         """
         Загрузка свечей из БД с lookback периодом
 
+        Для таймфреймов 15m и 1h агрегирует данные из 1m свечей
+
         Args:
             start_date: Начало батча
             end_date: Конец батча
@@ -286,21 +288,49 @@ class MFILoader:
         lookback_start = start_date - timedelta(minutes=self.lookback_periods * self.timeframe_minutes)
 
         with self.db.get_connection() as conn:
-            query = f"""
-                SELECT timestamp, high, low, close, volume
-                FROM {self.candles_table}
-                WHERE symbol = %s
-                  AND timestamp >= %s
-                  AND timestamp <= %s
-                ORDER BY timestamp ASC
-            """
+            if self.timeframe == '1m':
+                # Для 1m - читаем напрямую
+                query = f"""
+                    SELECT timestamp, high, low, close, volume
+                    FROM {self.candles_table}
+                    WHERE symbol = %s
+                      AND timestamp >= %s
+                      AND timestamp <= %s
+                    ORDER BY timestamp ASC
+                """
 
-            df = pd.read_sql_query(
-                query,
-                conn,
-                params=(self.symbol, lookback_start, end_date),
-                parse_dates=['timestamp']
-            )
+                df = pd.read_sql_query(
+                    query,
+                    conn,
+                    params=(self.symbol, lookback_start, end_date),
+                    parse_dates=['timestamp']
+                )
+            else:
+                # Для 15m и 1h - агрегируем из 1m данных
+                interval_minutes = self.timeframe_minutes
+                query = f"""
+                    SELECT
+                        date_trunc('hour', timestamp) +
+                        INTERVAL '{interval_minutes} minutes' * (EXTRACT(MINUTE FROM timestamp)::INTEGER / {interval_minutes}) as timestamp,
+                        MAX(high) as high,
+                        MIN(low) as low,
+                        (array_agg(close ORDER BY timestamp DESC))[1] as close,
+                        SUM(volume) as volume
+                    FROM {self.candles_table}
+                    WHERE symbol = %s
+                      AND timestamp >= %s
+                      AND timestamp <= %s
+                    GROUP BY date_trunc('hour', timestamp) +
+                             INTERVAL '{interval_minutes} minutes' * (EXTRACT(MINUTE FROM timestamp)::INTEGER / {interval_minutes})
+                    ORDER BY timestamp ASC
+                """
+
+                df = pd.read_sql_query(
+                    query,
+                    conn,
+                    params=(self.symbol, lookback_start, end_date),
+                    parse_dates=['timestamp']
+                )
 
             if df.empty:
                 return pd.DataFrame()
@@ -397,7 +427,7 @@ class MFILoader:
 
             pbar = tqdm(
                 total=total_batches,
-                desc=f"{self.symbol} {self.symbol_progress} MFI-{period}",
+                desc=f"{self.symbol} {self.symbol_progress} {self.timeframe} MFI-{period}",
                 unit="батч"
             )
 
@@ -420,7 +450,6 @@ class MFILoader:
                 current_date = batch_end
 
             pbar.close()
-            logger.info("")
 
         logger.info(f"✅ {self.symbol} завершен")
         logger.info("")
