@@ -4,11 +4,11 @@
 
 ### ✨ Improvements
 
-#### All Indicator Loaders (RSI, SMA, EMA, VMA, ATR)
+#### All Indicator Loaders (RSI, SMA, EMA, VMA, ATR, OBV)
 - **Performance tracking**: Added automatic display of total execution time at the end of processing
   - Format: `⏱️  Total time: Xm Ys` (minutes and seconds)
   - Helps users track processing efficiency and estimate future runs
-  - Added to: `rsi_loader.py`, `sma_loader.py`, `ema_loader.py`, `vma_loader.py`, `atr_loader.py`
+  - Added to: `rsi_loader.py`, `sma_loader.py`, `ema_loader.py`, `vma_loader.py`, `atr_loader.py`, `obv_loader.py`
 
 #### RSI Loader Console Output
 - **Cleaner output**: Removed redundant configuration file loading messages
@@ -18,6 +18,12 @@
   - After: `🔍 BTCUSDT [1/10]. Анализ данных RSI [7, 9, 14, 21, 25]:`
 - **Removed decorative lines**: Eliminated unnecessary `====` separators throughout the output
 - **Removed empty log lines**: Cleaned up blank logger.info() calls
+
+#### OBV Loader Console Output
+- **Progress display**: Added trading pair progress counter to OBV calculation message
+  - Before: `🔄 [XLMUSDT] [1m] OBV: Кумулятивный расчёт от начала истории до текущей даты`
+  - After: `🔄 [XLMUSDT] [8/10] [1m] OBV: Кумулятивный расчёт от начала истории до текущей даты`
+- Shows which symbol is being processed out of total symbols for better progress tracking
 
 #### Documentation Updates
 - Updated `indicators/README.md` with new "Отслеживание времени обработки" feature
