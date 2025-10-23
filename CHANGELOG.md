@@ -4,11 +4,11 @@
 
 ### ✨ Improvements
 
-#### All Indicator Loaders (RSI, SMA, EMA, VMA, ATR, OBV, MACD)
+#### All Indicator Loaders (RSI, SMA, EMA, VMA, ATR, OBV, MACD, Long/Short Ratio)
 - **Performance tracking**: Added automatic display of total execution time at the end of processing
   - Format: `⏱️  Total time: Xm Ys` (minutes and seconds)
   - Helps users track processing efficiency and estimate future runs
-  - Added to: `rsi_loader.py`, `sma_loader.py`, `ema_loader.py`, `vma_loader.py`, `atr_loader.py`, `obv_loader.py`, `macd_loader.py`
+  - Added to: `rsi_loader.py`, `sma_loader.py`, `ema_loader.py`, `vma_loader.py`, `atr_loader.py`, `obv_loader.py`, `macd_loader.py`, `long_short_ratio_loader.py`
 
 #### RSI Loader Console Output
 - **Cleaner output**: Removed redundant configuration file loading messages
@@ -32,6 +32,15 @@
 - Now displays: symbol name, trading pair progress [x/y], configuration name, and parameters (fast, slow, signal)
 - Makes it clear which symbol, configuration, and parameters are currently being processed
 
+#### Long/Short Ratio Loader - Critical Bug Fix
+- **Fixed data not saving to database** (CRITICAL FIX)
+  - Problem: Used UPDATE instead of INSERT - data only saved if records already existed
+  - Solution: Changed to INSERT...ON CONFLICT DO UPDATE pattern
+  - Now creates new records if they don't exist, updates existing ones if they do
+  - Works independently without requiring other indicators to be loaded first
+- **Added performance tracking**: Total time display at completion
+- **Improved logging**: Shows inserted vs updated record counts
+
 #### Documentation Updates
 - Updated `indicators/README.md` with new "Отслеживание времени обработки" feature
 - Updated `CLAUDE.md` Recent Improvements section with console output enhancements
@@ -43,6 +52,112 @@ These changes make it easier to:
 - Visually distinguish between different trading pairs during multi-symbol processing
 - Quickly identify which symbol and periods are currently being analyzed
 - Have cleaner, more professional console output
+
+### 🐛 Bug Fixes
+- **Long/Short Ratio Loader**: Fixed critical bug preventing data from saving to database
+  - The loader now works independently and doesn't require other indicators to be loaded first
+  - Data is properly saved using INSERT...ON CONFLICT pattern instead of UPDATE-only approach
+- **check_indicators_db.py**: Fixed incorrect detection of Long/Short Ratio data
+  - Problem: Script only checked 1m timeframe where Long/Short Ratio is NULL by design
+  - Solution: Added INDICATOR_TIMEFRAMES mapping to check appropriate timeframes (15m, 1h for Long/Short)
+  - Now correctly shows ✓ for all 10 trading pairs with Long/Short Ratio data
+  - Multi-timeframe detection allows proper verification of indicators that don't support 1m period
+
+### 🤖 Automation
+
+#### Orchestrator - Automatic Sequential Indicator Loading
+- **Created start_all_loaders.py**: Automated orchestrator for sequential loading of all indicators
+  - Reads configuration from `indicators_config.yaml` (new `orchestrator.loaders` section)
+  - Executes loaders sequentially in the order defined in config file
+  - Smart handling of stochastic + williams_r (both indicators in one file)
+  - Stops execution on first error for easy debugging
+  - Comprehensive logging: console + file (`indicators/logs/start_all_loaders_YYYYMMDD_HHMMSS.log`)
+  - Execution statistics: time per loader + total time
+  - Color-coded console output for better readability
+
+- **Added orchestrator configuration** to `indicators_config.yaml`:
+  - Section `orchestrator.loaders` with true/false flags for each indicator
+  - Currently enabled: sma, ema, rsi, vma, atr, obv (data already loaded)
+  - Temporarily disabled: macd, bollinger_bands, adx, stochastic, williams_r, vwap, mfi, long_short_ratio, fear_and_greed (long loading times)
+  - Easy to enable/disable loaders for incremental data loading
+
+- **Usage**:
+  ```bash
+  cd indicators
+  python3 start_all_loaders.py
+  ```
+
+- **Benefits**:
+  - No need to run each loader manually
+  - Consistent execution order
+  - Easy progress tracking
+  - Perfect for cron jobs (automated daily updates)
+  - Detailed logs for troubleshooting
+
+### 🔍 Research & Analysis
+
+#### CoinMarketCap Global Metrics API - Market Capitalization Data
+- **Researched and validated** CoinMarketCap API for obtaining global cryptocurrency market metrics
+- **Status**: Ready for future implementation
+
+**Available Endpoint** (Free Plan):
+```
+GET https://pro-api.coinmarketcap.com/v1/global-metrics/quotes/latest
+```
+
+**Available Metrics**:
+
+1. **Market Capitalization**:
+   - `total_market_cap` - Total crypto market cap (currently $3.68T)
+   - `altcoin_market_cap` - Altcoins market cap (currently $1.50T)
+   - `defi_market_cap` - DeFi market cap (currently $95.21B)
+   - `stablecoin_market_cap` - Stablecoins market cap (currently $284.08B)
+
+2. **Trading Volumes (24h)**:
+   - `total_volume_24h` - Total 24h volume (currently $181.85B)
+   - `altcoin_volume_24h` - Altcoins 24h volume (currently $111.99B)
+   - `defi_volume_24h` - DeFi 24h volume (currently $21.72B)
+   - `stablecoin_volume_24h` - Stablecoins 24h volume (currently $181.30B)
+   - `derivatives_volume_24h` - Derivatives 24h volume (currently $1.55T)
+
+3. **Dominance Metrics**:
+   - `btc_dominance` - Bitcoin market dominance % (currently 59.20%)
+   - `eth_dominance` - Ethereum market dominance % (currently 12.63%)
+   - `btc_dominance_24h_percentage_change` - BTC dominance change
+   - `eth_dominance_24h_percentage_change` - ETH dominance change
+
+4. **Market Statistics**:
+   - `active_cryptocurrencies` - Number of active cryptocurrencies (9,441)
+   - `total_cryptocurrencies` - Total cryptocurrencies (36,363)
+   - `active_market_pairs` - Active trading pairs (114,993)
+   - `active_exchanges` - Active exchanges (876)
+
+5. **Change Metrics**:
+   - `total_market_cap_yesterday_percentage_change` - Market cap 24h change %
+   - `total_volume_24h_yesterday_percentage_change` - Volume 24h change %
+
+**Update Frequency**:
+- **Official documentation**: Every 5 minutes
+- **Actual testing**: Every 1 minute (last_updated timestamp changes every minute)
+- **Recommendation**: Query every 1 hour (optimal for 1h timeframe)
+
+**API Limits** (Free Plan):
+- 10,000 calls/month
+- **Hourly updates**: 24 calls/day = 720 calls/month (7.2% of limit) ✅ Recommended
+- **15-min updates**: 96 calls/day = 2,880 calls/month (28.8% of limit) ⚠️ Acceptable
+- **5-min updates**: 288 calls/day = 8,640 calls/month (86.4% of limit) ⚠️ High usage
+
+**Limitations**:
+- ❌ Historical endpoint (`/v1/global-metrics/quotes/historical`) requires paid plan ($79+/month)
+- ✅ Solution: Build own historical database by saving latest data periodically
+
+**Future Implementation**:
+- Create `market_cap_global_loader.py` to fetch and store global metrics
+- Store in `indicators_bybit_futures_1h` table (or 15m for more detail)
+- Run via cron every hour for automatic updates
+- Duplicate values to 1m table (metrics don't change significantly minute-to-minute)
+
+**API Key**: Already configured in `indicators_config.yaml` (coinmarketcap_fear_and_greed.api_key)
 
 ## [2025-10-17] - ADX (Average Directional Index) Indicator Implementation
 

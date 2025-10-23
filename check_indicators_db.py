@@ -52,6 +52,13 @@ INDICATORS_MAP = {
 }
 
 
+# Mapping of indicators to timeframes where they are available
+# Indicators not listed here default to checking '1m' timeframe
+INDICATOR_TIMEFRAMES = {
+    'Long/Short': ['15m', '1h'],  # API doesn't support 1m, check 15m and 1h instead
+}
+
+
 def get_database_connection():
     """Create database connection"""
     try:
@@ -92,16 +99,29 @@ def check_indicator_status(conn, symbols, days_back=7):
             results[symbol] = {}
 
             for indicator_name, column_name in INDICATORS_MAP.items():
-                # Check if data exists for this indicator and symbol
-                cur.execute(f"""
-                    SELECT COUNT({column_name}) as count
-                    FROM indicators_bybit_futures_1m
-                    WHERE symbol = %s
-                    AND timestamp >= NOW() - INTERVAL '{days_back} days'
-                """, (symbol,))
+                # Determine which timeframes to check for this indicator
+                timeframes = INDICATOR_TIMEFRAMES.get(indicator_name, ['1m'])
 
-                count = cur.fetchone()[0]
-                results[symbol][indicator_name] = count > 0
+                # Check if data exists in ANY of the timeframes
+                has_data = False
+                for timeframe in timeframes:
+                    try:
+                        cur.execute(f"""
+                            SELECT COUNT({column_name}) as count
+                            FROM indicators_bybit_futures_{timeframe}
+                            WHERE symbol = %s
+                            AND timestamp >= NOW() - INTERVAL '{days_back} days'
+                        """, (symbol,))
+
+                        count = cur.fetchone()[0]
+                        if count > 0:
+                            has_data = True
+                            break  # Found data, no need to check other timeframes
+                    except Exception:
+                        # Table or column might not exist for this timeframe, skip
+                        continue
+
+                results[symbol][indicator_name] = has_data
 
     return results
 
@@ -112,15 +132,27 @@ def get_indicator_details(conn):
 
     with conn.cursor() as cur:
         for indicator_name, column_name in INDICATORS_MAP.items():
-            # Count symbols with this indicator
-            cur.execute(f"""
-                SELECT COUNT(DISTINCT symbol) as symbol_count
-                FROM indicators_bybit_futures_1m
-                WHERE {column_name} IS NOT NULL
-                AND timestamp >= NOW() - INTERVAL '7 days'
-            """)
+            # Determine which timeframes to check for this indicator
+            timeframes = INDICATOR_TIMEFRAMES.get(indicator_name, ['1m'])
 
-            symbol_count = cur.fetchone()[0]
+            # Count symbols with this indicator across all relevant timeframes
+            symbol_count = 0
+            for timeframe in timeframes:
+                try:
+                    cur.execute(f"""
+                        SELECT COUNT(DISTINCT symbol) as symbol_count
+                        FROM indicators_bybit_futures_{timeframe}
+                        WHERE {column_name} IS NOT NULL
+                        AND timestamp >= NOW() - INTERVAL '7 days'
+                    """)
+
+                    count = cur.fetchone()[0]
+                    # Use the maximum count across all timeframes
+                    symbol_count = max(symbol_count, count)
+                except Exception:
+                    # Table or column might not exist for this timeframe, skip
+                    continue
+
             details[indicator_name] = {
                 'symbol_count': symbol_count,
                 'column': column_name

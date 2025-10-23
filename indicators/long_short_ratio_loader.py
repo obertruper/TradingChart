@@ -265,7 +265,8 @@ class LongShortRatioLoader:
         """
         Сохранение данных в indicators таблицу
 
-        Обновляет только те записи, где long_short_ratio IS NULL
+        Использует INSERT...ON CONFLICT для создания/обновления записей.
+        Обновляет только те записи, где long_short_ratio IS NULL.
 
         Args:
             data: Список словарей с данными от API
@@ -274,7 +275,8 @@ class LongShortRatioLoader:
         if not data:
             return
 
-        update_count = 0
+        inserted_count = 0
+        updated_count = 0
 
         with self.db.get_connection() as conn:
             with conn.cursor() as cur:
@@ -291,27 +293,33 @@ class LongShortRatioLoader:
                     else:
                         ratio = None
 
-                    # UPDATE только если long_short_ratio IS NULL
+                    # INSERT...ON CONFLICT для создания/обновления записей
                     sql = f"""
-                        UPDATE {self.indicators_table}
-                        SET
-                            long_short_buy_ratio = %s,
-                            long_short_sell_ratio = %s,
-                            long_short_ratio = %s
-                        WHERE timestamp = %s
-                          AND symbol = %s
-                          AND long_short_ratio IS NULL
+                        INSERT INTO {self.indicators_table}
+                            (timestamp, symbol, long_short_buy_ratio, long_short_sell_ratio, long_short_ratio)
+                        VALUES (%s, %s, %s, %s, %s)
+                        ON CONFLICT (timestamp, symbol)
+                        DO UPDATE SET
+                            long_short_buy_ratio = EXCLUDED.long_short_buy_ratio,
+                            long_short_sell_ratio = EXCLUDED.long_short_sell_ratio,
+                            long_short_ratio = EXCLUDED.long_short_ratio
+                        WHERE {self.indicators_table}.long_short_ratio IS NULL
                     """
 
-                    cur.execute(sql, (buy_ratio, sell_ratio, ratio, timestamp, self.symbol))
+                    cur.execute(sql, (timestamp, self.symbol, buy_ratio, sell_ratio, ratio))
 
                     if cur.rowcount > 0:
-                        update_count += 1
+                        # Проверяем, была ли это вставка или обновление
+                        # rowcount = 1 для INSERT, 2 для UPDATE в PostgreSQL
+                        if cur.rowcount == 1:
+                            inserted_count += 1
+                        else:
+                            updated_count += 1
 
                 conn.commit()
 
-        if update_count > 0:
-            logger.debug(f"Обновлено {update_count} записей в БД")
+        if inserted_count > 0 or updated_count > 0:
+            logger.debug(f"Вставлено: {inserted_count}, Обновлено: {updated_count} записей в БД")
 
     def set_null_for_existing_records(self):
         """
@@ -602,6 +610,9 @@ def main():
     logger.info(f"📊 Индикатор: Long/Short Ratio")
     logger.info("")
 
+    # Засекаем время начала обработки
+    start_time = time.time()
+
     # 6. Обработка: символ → таймфреймы (последовательно)
     total_symbols = len(symbols)
 
@@ -631,9 +642,15 @@ def main():
                 logger.error(f"❌ Ошибка обработки {symbol} на {timeframe}: {e}", exc_info=True)
                 continue
 
+    # Вычисляем общее время обработки
+    elapsed_time = time.time() - start_time
+    minutes = int(elapsed_time // 60)
+    seconds = int(elapsed_time % 60)
+
     logger.info("")
     logger.info("=" * 80)
     logger.info("✅ Long/Short Ratio Loader - Завершено")
+    logger.info(f"⏱️  Total time: {minutes}m {seconds}s")
     logger.info(f"📝 Лог-файл: {log_file}")
     logger.info("=" * 80)
 
