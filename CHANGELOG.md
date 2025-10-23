@@ -4,11 +4,11 @@
 
 ### ✨ Improvements
 
-#### All Indicator Loaders (RSI, SMA, EMA, VMA, ATR, OBV)
+#### All Indicator Loaders (RSI, SMA, EMA, VMA, ATR, OBV, MACD)
 - **Performance tracking**: Added automatic display of total execution time at the end of processing
   - Format: `⏱️  Total time: Xm Ys` (minutes and seconds)
   - Helps users track processing efficiency and estimate future runs
-  - Added to: `rsi_loader.py`, `sma_loader.py`, `ema_loader.py`, `vma_loader.py`, `atr_loader.py`, `obv_loader.py`
+  - Added to: `rsi_loader.py`, `sma_loader.py`, `ema_loader.py`, `vma_loader.py`, `atr_loader.py`, `obv_loader.py`, `macd_loader.py`
 
 #### RSI Loader Console Output
 - **Cleaner output**: Removed redundant configuration file loading messages
@@ -24,6 +24,13 @@
   - Before: `🔄 [XLMUSDT] [1m] OBV: Кумулятивный расчёт от начала истории до текущей даты`
   - After: `🔄 [XLMUSDT] [8/10] [1m] OBV: Кумулятивный расчёт от начала истории до текущей даты`
 - Shows which symbol is being processed out of total symbols for better progress tracking
+
+#### MACD Loader Console Output
+- **Enhanced progress bar**: Added symbol, progress counter, and configuration parameters to MACD progress bar
+  - Before: `📊 MACD classic 1M:  19%|███...`
+  - After: `📊 ETHUSDT [2/10] MACD classic (12, 26, 9) 1M:  19%|███...`
+- Now displays: symbol name, trading pair progress [x/y], configuration name, and parameters (fast, slow, signal)
+- Makes it clear which symbol, configuration, and parameters are currently being processed
 
 #### Documentation Updates
 - Updated `indicators/README.md` with new "Отслеживание времени обработки" feature

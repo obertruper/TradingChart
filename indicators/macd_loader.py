@@ -71,6 +71,7 @@ class MACDLoader:
         self.db = DatabaseConnection()
         self.symbol = symbol
         self.config = self.load_config()
+        self.symbol_progress = ""  # Будет установлено из main() для отображения прогресса
 
         # Динамический мапинг таймфреймов на минуты
         self.timeframe_minutes = self._parse_timeframes()
@@ -537,7 +538,7 @@ class MACDLoader:
             logger.info(f"🔙 Lookback период: {lookback_minutes} минут ({lookback_periods} периодов × {self.timeframe_minutes[timeframe]} мин)")
 
             with tqdm(total=total_days,
-                     desc=f"📊 MACD {config['name']} {timeframe.upper()}",
+                     desc=f"📊 {self.symbol} {self.symbol_progress}MACD {config['name']} ({config['fast']}, {config['slow']}, {config['signal']}) {timeframe.upper()}",
                      unit="day",
                      bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}] {postfix}') as pbar:
                 while current_date <= max_date:
@@ -692,6 +693,9 @@ def main():
 
     logger.info(f"🎯 Обработка символов: {symbols}")
 
+    # Засекаем время начала обработки
+    start_time = time.time()
+
     # Цикл по всем символам
     total_symbols = len(symbols)
     for idx, symbol in enumerate(symbols, 1):
@@ -700,11 +704,18 @@ def main():
         logger.info(f"{'='*80}\n")
 
         loader = MACDLoader(symbol=symbol)
+        loader.symbol_progress = f"[{idx}/{total_symbols}] "
         loader.run(timeframe=args.timeframe, batch_days=args.batch_days)
 
         logger.info(f"\n✅ Символ {symbol} обработан\n")
 
+    # Вычисляем общее время обработки
+    elapsed_time = time.time() - start_time
+    minutes = int(elapsed_time // 60)
+    seconds = int(elapsed_time % 60)
+
     logger.info(f"\n🎉 Все символы обработаны: {symbols}")
+    logger.info(f"⏱️  Total time: {minutes}m {seconds}s")
 
 
 if __name__ == "__main__":
