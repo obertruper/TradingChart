@@ -24,6 +24,7 @@ import yaml
 from tqdm import tqdm
 import argparse
 import warnings
+import time
 
 warnings.filterwarnings('ignore')
 
@@ -83,7 +84,6 @@ class RSILoader:
         config_path = os.path.join(os.path.dirname(__file__), 'indicators_config.yaml')
         with open(config_path, 'r') as f:
             config = yaml.safe_load(f)
-        logger.info(f"📋 Конфигурация загружена из {config_path}")
         return config
 
     def _parse_timeframes(self) -> dict:
@@ -176,26 +176,37 @@ class RSILoader:
         with self.db.get_connection() as conn:
             cur = conn.cursor()
 
-            logger.info(f"\n🔍 Анализ существующих данных RSI:")
+            logger.info(f"🔍 {self.symbol} {self.symbol_progress}. Анализ данных RSI {periods}:")
 
-            for period in tqdm(periods, desc="  Проверка периодов RSI", unit="период",
-                              leave=False, bar_format='{desc}: {n}/{total} [{elapsed}]'):
+            # Строим динамический SQL для проверки всех периодов одним запросом
+            select_parts = ["COUNT(*) as total"]
+            for period in periods:
                 col_name = f'rsi_{period}'
+                select_parts.append(f"COUNT({col_name}) as filled_{period}")
+                select_parts.append(f"MIN(timestamp) FILTER (WHERE {col_name} IS NOT NULL) as first_{period}")
+                select_parts.append(f"MAX(timestamp) FILTER (WHERE {col_name} IS NOT NULL) as last_{period}")
 
-                # Получаем статистику заполнения
-                cur.execute(f"""
-                    SELECT
-                        COUNT(*) as total,
-                        COUNT({col_name}) as filled,
-                        MIN(timestamp) FILTER (WHERE {col_name} IS NOT NULL) as first_rsi,
-                        MAX(timestamp) FILTER (WHERE {col_name} IS NOT NULL) as last_rsi
-                    FROM {table_name}
-                    WHERE symbol = %s
-                """, (self.symbol,))
+            query = f"""
+                SELECT {', '.join(select_parts)}
+                FROM {table_name}
+                WHERE symbol = %s
+            """
 
-                result = cur.fetchone()
-                if result:
-                    total, filled, first_rsi, last_rsi = result
+            # Один запрос для всех периодов (вместо N запросов)
+            cur.execute(query, (self.symbol,))
+            result = cur.fetchone()
+
+            if result:
+                total = result[0]
+
+                # Парсим результаты для каждого периода
+                idx = 1
+                for period in periods:
+                    filled = result[idx]
+                    # first_rsi = result[idx + 1]  # Не используется, но доступно при необходимости
+                    last_rsi = result[idx + 2]
+                    idx += 3
+
                     if total > 0:
                         fill_percent = (filled / total) * 100 if filled else 0
 
@@ -213,7 +224,9 @@ class RSILoader:
                     else:
                         groups['empty'].append(period)
                         logger.info(f"  📝 RSI_{period}: нет данных в таблице (будет загружен с начала)")
-                else:
+            else:
+                # Если нет результата - все периоды пустые
+                for period in periods:
                     groups['empty'].append(period)
                     logger.info(f"  📝 RSI_{period}: нет данных (будет загружен с начала)")
 
@@ -546,12 +559,10 @@ class RSILoader:
         periods = self.config.get('indicators', {}).get('rsi', {}).get('periods', [14])
         batch_days = self.config.get('indicators', {}).get('rsi', {}).get('batch_days', batch_days)
 
-        logger.info(f"\n{'='*60}")
         logger.info(f"📊 Обработка RSI для таймфрейма {timeframe}")
         logger.info(f"📈 Периоды RSI: {periods}")
         logger.info(f"🎯 Символ: {self.symbol}")
         logger.info(f"📦 Размер батча: {batch_days} дней")
-        logger.info(f"{'='*60}")
 
         # Создаем колонки если нужно
         if not self.create_rsi_columns(timeframe, periods):
@@ -562,7 +573,7 @@ class RSILoader:
 
         # Выводим план загрузки
         if groups['empty'] or groups['partial'] or groups['complete']:
-            logger.info(f"\n📋 План загрузки:")
+            logger.info(f"📋 План загрузки:")
             if groups['empty']:
                 logger.info(f"  🔄 Полная загрузка с начала для периодов: {groups['empty']}")
             if groups['partial']:
@@ -572,23 +583,23 @@ class RSILoader:
 
         # Обрабатываем пустые периоды (с начала)
         if groups['empty']:
-            logger.info(f"\n🚀 Начинаю загрузку пустых периодов RSI: {groups['empty']}")
+            logger.info(f"🚀 Начинаю загрузку пустых периодов RSI: {groups['empty']}")
             self.process_periods_group(timeframe, groups['empty'], batch_days, start_date, from_beginning=True)
 
         # Обрабатываем частично заполненные периоды (с checkpoint'а)
         if groups['partial']:
-            logger.info(f"\n🚀 Продолжаю загрузку частичных периодов RSI: {groups['partial']}")
+            logger.info(f"🚀 Продолжаю загрузку частичных периодов RSI: {groups['partial']}")
             self.process_periods_group(timeframe, groups['partial'], batch_days, start_date, from_beginning=False)
 
         # Обрабатываем полные периоды (обновление последних данных)
         if groups['complete']:
-            logger.info(f"\n🚀 Обновляю полные периоды RSI: {groups['complete']}")
+            logger.info(f"🚀 Обновляю полные периоды RSI: {groups['complete']}")
             self.process_periods_group(timeframe, groups['complete'], batch_days, start_date, from_beginning=False)
 
         if not groups['empty'] and not groups['partial'] and not groups['complete']:
-            logger.info(f"\n✅ Все периоды RSI для {timeframe} уже актуальны!")
+            logger.info(f"✅ Все периоды RSI для {timeframe} уже актуальны!")
 
-        logger.info(f"\n✅ Обработка RSI для {timeframe} завершена!")
+        logger.info(f"✅ Обработка RSI для {timeframe} завершена!")
 
     def run(self, timeframes: List[str] = None, batch_days: int = 7,
             start_date: Optional[datetime] = None):
@@ -603,7 +614,6 @@ class RSILoader:
         if not timeframes:
             timeframes = self.config.get('timeframes', ['1m'])
 
-        logger.info(f"\n{'='*60}")
         logger.info(f"🚀 Запуск RSI Loader")
         logger.info(f"📊 Таймфреймы: {timeframes}")
         logger.info(f"🎯 Символ: {self.symbol}")
@@ -612,7 +622,6 @@ class RSILoader:
             logger.info(f"📅 Начальная дата: {start_date}")
         else:
             logger.info(f"♻️ Режим: автоматическое определение пустых столбцов")
-        logger.info(f"{'='*60}")
 
         for timeframe in timeframes:
             if timeframe not in self.timeframe_minutes:
@@ -621,9 +630,7 @@ class RSILoader:
 
             self.process_timeframe(timeframe, batch_days, start_date)
 
-        logger.info(f"\n{'='*60}")
         logger.info(f"✅ Обработка всех таймфреймов завершена!")
-        logger.info(f"{'='*60}")
 
 def main():
     """Основная функция"""
@@ -692,21 +699,27 @@ def main():
 
     logger.info(f"🎯 Обработка символов: {symbols}")
 
+    # Засекаем время начала обработки
+    start_time = time.time()
+
     # Цикл по всем символам
     total_symbols = len(symbols)
     for idx, symbol in enumerate(symbols, 1):
-        logger.info(f"\n{'='*80}")
+        # Добавляем разделитель между торговыми парами (но не перед первой)
+        if idx > 1:
+            logger.info("")
+            logger.info("=" * 80)
+
         logger.info(f"📊 Начинаем обработку символа: {symbol} [{idx}/{total_symbols}]")
-        logger.info(f"{'='*80}\n")
 
         # Создаем загрузчик и запускаем для текущего символа
         try:
             loader = RSILoader(symbol=symbol)
             loader.symbol_progress = f"[{idx}/{total_symbols}]"
             loader.run(timeframes, args.batch_days, start_date)
-            logger.info(f"\n✅ Символ {symbol} обработан\n")
+            logger.info(f"✅ Символ {symbol} обработан")
         except KeyboardInterrupt:
-            logger.info("\n⚠️ Прервано пользователем. Можно продолжить позже с этого места.")
+            logger.info("⚠️ Прервано пользователем. Можно продолжить позже с этого места.")
             sys.exit(0)
         except Exception as e:
             logger.error(f"❌ Критическая ошибка для символа {symbol}: {e}")
@@ -714,7 +727,13 @@ def main():
             traceback.print_exc()
             continue
 
-    logger.info(f"\n🎉 Все символы обработаны: {symbols}")
+    # Вычисляем общее время обработки
+    elapsed_time = time.time() - start_time
+    minutes = int(elapsed_time // 60)
+    seconds = int(elapsed_time % 60)
+
+    logger.info(f"🎉 Все символы обработаны: {symbols}")
+    logger.info(f"⏱️  Total time: {minutes}m {seconds}s")
 
 if __name__ == "__main__":
     main()

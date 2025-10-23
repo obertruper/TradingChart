@@ -22,6 +22,7 @@ import numpy as np
 from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Tuple
 from tqdm import tqdm
+import time
 
 # Добавляем путь к корню проекта
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -670,6 +671,9 @@ def main():
 
     logger.info(f"🎯 Обработка символов: {symbols}")
 
+    # Засекаем время начала обработки
+    start_time = time.time()
+
     # Цикл по всем символам
     total_symbols = len(symbols)
     for idx, symbol in enumerate(symbols, 1):
@@ -692,7 +696,13 @@ def main():
             traceback.print_exc()
             continue
 
+    # Вычисляем общее время обработки
+    elapsed_time = time.time() - start_time
+    minutes = int(elapsed_time // 60)
+    seconds = int(elapsed_time % 60)
+
     logger.info(f"\n🎉 Все символы обработаны: {symbols}")
+    logger.info(f"⏱️  Total time: {minutes}m {seconds}s")
 
 if __name__ == "__main__":
     main()

@@ -23,6 +23,7 @@ import os
 import warnings
 import yaml
 import argparse
+import time
 
 # Игнорируем предупреждение pandas о psycopg2
 warnings.filterwarnings('ignore', message='pandas only supports SQLAlchemy')
@@ -671,6 +672,9 @@ def main():
 
     logger.info(f"🎯 Обработка символов: {symbols}")
 
+    # Засекаем время начала обработки
+    start_time = time.time()
+
     # Цикл по всем символам
     total_symbols = len(symbols)
     for idx, symbol in enumerate(symbols, 1):
@@ -691,7 +695,13 @@ def main():
 
         logger.info(f"\n✅ Символ {symbol} обработан\n")
 
+    # Вычисляем общее время обработки
+    elapsed_time = time.time() - start_time
+    minutes = int(elapsed_time // 60)
+    seconds = int(elapsed_time % 60)
+
     logger.info(f"\n🎉 Все символы обработаны: {symbols}")
+    logger.info(f"⏱️  Total time: {minutes}m {seconds}s")
 
 
 if __name__ == "__main__":

@@ -1,5 +1,36 @@
 # CHANGELOG
 
+## [2025-10-23] - Enhanced Console Output and Performance Tracking
+
+### ✨ Improvements
+
+#### All Indicator Loaders (RSI, SMA, EMA, VMA, ATR)
+- **Performance tracking**: Added automatic display of total execution time at the end of processing
+  - Format: `⏱️  Total time: Xm Ys` (minutes and seconds)
+  - Helps users track processing efficiency and estimate future runs
+  - Added to: `rsi_loader.py`, `sma_loader.py`, `ema_loader.py`, `vma_loader.py`, `atr_loader.py`
+
+#### RSI Loader Console Output
+- **Cleaner output**: Removed redundant configuration file loading messages
+- **Visual separators**: Added clear dividers (`=====`) between trading pairs for better readability
+- **Optimized analysis display**: Improved formatting of RSI analysis messages
+  - Before: `🔍 Анализ существующих данных RSI (оптимизированный):`
+  - After: `🔍 BTCUSDT [1/10]. Анализ данных RSI [7, 9, 14, 21, 25]:`
+- **Removed decorative lines**: Eliminated unnecessary `====` separators throughout the output
+- **Removed empty log lines**: Cleaned up blank logger.info() calls
+
+#### Documentation Updates
+- Updated `indicators/README.md` with new "Отслеживание времени обработки" feature
+- Updated `CLAUDE.md` Recent Improvements section with console output enhancements
+- Added performance tracking documentation
+
+### 📊 User Experience
+These changes make it easier to:
+- Track processing time for capacity planning
+- Visually distinguish between different trading pairs during multi-symbol processing
+- Quickly identify which symbol and periods are currently being analyzed
+- Have cleaner, more professional console output
+
 ## [2025-10-17] - ADX (Average Directional Index) Indicator Implementation
 
 ### 🚀 New Features
