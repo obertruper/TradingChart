@@ -78,3 +78,6 @@ CLAUDE.md
 
 # Indicators config with passwords
 indicators/indicators_config.yaml
+
+# Archive of old/test files
+_archive_old_files/

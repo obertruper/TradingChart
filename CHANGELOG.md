@@ -1,5 +1,27 @@
 # CHANGELOG
 
+## [2025-10-24] - Project Cleanup
+
+### 🧹 Maintenance
+
+#### Archived Old and Test Files
+Moved 105+ temporary, test, and obsolete files to `_archive_old_files/` directory:
+- Old loader versions (4 files)
+- Test and demonstration scripts (30+ files)
+- One-time checks and verifications (15+ files)
+- Temporary documentation (7 MD files)
+- Completed SQL migrations (8 files)
+- Test directories (csv_candles, check_candles_in_db, indicators_example, vps_deployment)
+
+**Total archived:** ~14 MB
+
+**Files changed:** .gitignore (added _archive_old_files/)
+
+All production loaders, utilities, and documentation remain active.
+Archive can be safely deleted if disk space is needed.
+
+---
+
 ## [2025-10-24] - Unified Progress Bar Format Across All Loaders
 
 ### 🐛 Bug Fixes
