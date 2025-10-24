@@ -460,7 +460,7 @@ class SMALoader:
                 sma_list = ','.join([str(p) for p in periods])
                 progress_desc = f"{self.symbol} {self.symbol_progress} SMA[{sma_list}] {timeframe.upper()}" if self.symbol_progress else f"{self.symbol} SMA[{sma_list}] {timeframe.upper()}"
                 with tqdm(total=total_batches,
-                         desc=f"📊 {progress_desc}",
+                         desc=progress_desc,
                          unit="batch",
                          bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]') as pbar:
 
@@ -682,18 +682,27 @@ def main():
         logger.info(f"📊 Начинаем обработку символа: {symbol} [{idx}/{total_symbols}]")
         logger.info(f"{'='*80}\n")
 
-        # Создаем и запускаем загрузчик для текущего символа
-        loader = SMALoader(symbol=symbol)
-        # Устанавливаем информацию о прогрессе символов
-        loader.symbol_progress = f"[{idx}/{total_symbols}]"
+        try:
+            # Создаем и запускаем загрузчик для текущего символа
+            loader = SMALoader(symbol=symbol)
+            # Устанавливаем информацию о прогрессе символов
+            loader.symbol_progress = f"[{idx}/{total_symbols}]"
 
-        # Если указан конкретный таймфрейм, обрабатываем только его
-        if timeframes and len(timeframes) == 1:
-            loader.process_timeframe(timeframes[0])
-        else:
-            loader.run(timeframes=timeframes)
+            # Если указан конкретный таймфрейм, обрабатываем только его
+            if timeframes and len(timeframes) == 1:
+                loader.process_timeframe(timeframes[0])
+            else:
+                loader.run(timeframes=timeframes)
 
-        logger.info(f"\n✅ Символ {symbol} обработан\n")
+            logger.info(f"\n✅ Символ {symbol} обработан\n")
+        except KeyboardInterrupt:
+            logger.info("\n⚠️ Прервано пользователем. Можно продолжить позже с этого места.")
+            sys.exit(0)
+        except Exception as e:
+            logger.error(f"❌ Критическая ошибка для символа {symbol}: {e}")
+            import traceback
+            traceback.print_exc()
+            continue
 
     # Вычисляем общее время обработки
     elapsed_time = time.time() - start_time

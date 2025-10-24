@@ -1,5 +1,223 @@
 # CHANGELOG
 
+## [2025-10-24] - Unified Progress Bar Format Across All Loaders
+
+### 🐛 Bug Fixes
+
+#### KeyboardInterrupt Handling in All Indicator Loaders (12 files)
+Added proper KeyboardInterrupt (Ctrl+C) handling to all indicator loaders for graceful script termination.
+
+**Problem:**
+- 11 indicator loaders had NO KeyboardInterrupt handling - script would crash with ugly traceback when pressing Ctrl+C
+- 1 indicator loader (bollinger_bands) had INCORRECT handling - used `break` instead of `sys.exit(0)`, only exiting timeframe loop
+- Users could not gracefully stop long-running indicator calculations
+- Progress bars (tqdm) remained in inconsistent states after interrupt
+- Database connections might not close properly
+
+**Solution:**
+- Added `try-except KeyboardInterrupt` blocks with `sys.exit(0)` to all 12 indicator loaders
+- Now all loaders match correct behavior from rsi_loader.py and ema_loader.py (already had proper handling)
+- Clean exit with informative message: "⚠️ Прервано пользователем. Можно продолжить позже с этого места."
+- Proper cleanup and graceful termination
+
+**Files changed (12 total):**
+
+1. `indicators/bollinger_bands_loader.py` - FIXED incorrect `break` → `sys.exit(0)` (line 634)
+2. `indicators/sma_loader.py` - ADDED KeyboardInterrupt handling (lines 685-705)
+3. `indicators/atr_loader.py` - ADDED KeyboardInterrupt handling (lines 684-696)
+4. `indicators/adx_loader.py` - ADDED KeyboardInterrupt handling (lines 766-787)
+5. `indicators/vma_loader.py` - ADDED KeyboardInterrupt handling (lines 668-687)
+6. `indicators/mfi_loader.py` - ADDED KeyboardInterrupt handling (lines 604-606)
+7. `indicators/vwap_loader.py` - ADDED KeyboardInterrupt handling (lines 665-667)
+8. `indicators/macd_loader.py` - ADDED KeyboardInterrupt handling (lines 706-718)
+9. `indicators/long_short_ratio_loader.py` - ADDED KeyboardInterrupt handling (lines 641-643)
+10. `indicators/stochastic_williams_loader.py` - ADDED KeyboardInterrupt handling (lines 1204-1211)
+11. `indicators/obv_loader.py` - ADDED KeyboardInterrupt handling (lines 556-558)
+12. `indicators/fear_and_greed_coinmarketcap_loader.py` - ADDED KeyboardInterrupt handling (lines 570-572)
+
+**Code pattern used:**
+```python
+try:
+    # Loader logic here
+    loader.run(...)
+    logger.info(f"✅ Символ {symbol} обработан")
+except KeyboardInterrupt:
+    logger.info("\n⚠️ Прервано пользователем. Можно продолжить позже с этого места.")
+    sys.exit(0)
+except Exception as e:
+    logger.error(f"❌ Критическая ошибка для символа {symbol}: {e}")
+    import traceback
+    traceback.print_exc()
+    continue
+```
+
+---
+
+### ✨ Improvements
+
+#### Progress Bar Standardization (12 Indicator Loaders)
+Unified all progress bars to consistent format: `SYMBOL [x/y] INDICATOR TIMEFRAME`
+
+**Changes applied:**
+- **Removed emojis 📊**: Cleaned up progress bars for better readability and cleaner terminal output
+- **Fixed spacing issues**: Corrected missing spaces between `symbol_progress` and indicator names (MACD, OBV)
+- **Standardized order**: All progress bars now follow `INDICATOR TIMEFRAME` format (some had `TIMEFRAME INDICATOR`)
+- **Added missing `symbol_progress`**: 3 loaders (ADX, Bollinger Bands, VMA) now properly show `[x/y]` counter
+
+**Updated loaders (12 files):**
+
+1. **sma_loader.py**
+   - Removed: `📊` emoji from progress bar
+   - Format: `BTCUSDT [1/10] SMA[10,30,50,100,200] 1M`
+
+2. **ema_loader.py**
+   - Removed: `📊` emoji
+   - Changed: `EMA {periods}` → `EMA[{periods_str}]` for consistency with SMA/RSI
+   - Format: `BTCUSDT [1/10] EMA[9,12,21,26,50,100,200] 1M`
+
+3. **rsi_loader.py**
+   - Removed: `📊` emoji
+   - Changed: `RSI {periods}` → `RSI[{periods_str}]` for consistency
+   - Format: `BTCUSDT [1/10] RSI[7,9,14,21,25] 1M - Загрузка`
+
+4. **atr_loader.py**
+   - Changed order: `{timeframe} ATR-{period}` → `ATR-{period} {timeframe}`
+   - Format: `BTCUSDT [1/10] ATR-14 1M`
+
+5. **mfi_loader.py**
+   - Changed order: `{timeframe} MFI-{period}` → `MFI-{period} {timeframe}`
+   - Format: `BTCUSDT [1/10] MFI-14 1M`
+
+6. **vwap_loader.py**
+   - Changed order for both daily and rolling VWAP
+   - Daily: `{timeframe} Daily VWAP` → `VWAP-daily {timeframe}`
+   - Rolling: `{timeframe} VWAP-{period}` → `VWAP-{period} {timeframe}`
+   - Format: `BTCUSDT [1/10] VWAP-daily 1M`, `BTCUSDT [1/10] VWAP-20 1M`
+
+7. **long_short_ratio_loader.py**
+   - Changed: `{timeframe} Long/Short Ratio` → `LONG-SHORT {timeframe}`
+   - Format: `BTCUSDT [1/10] LONG-SHORT 1M`
+
+8. **macd_loader.py**
+   - Added: `symbol_progress` attribute in `__init__` and main()
+   - Removed: `📊` emoji
+   - Fixed: Missing space between `symbol_progress` and `MACD`
+   - Changed: `MACD {name} ({params})` → `MACD-{name}({params})` (compact format)
+   - Format: `BTCUSDT [1/10] MACD-classic(12,26,9) 1M`
+
+9. **obv_loader.py**
+   - Removed: `📊` emoji
+   - Fixed: Missing space between `symbol_progress` and timeframe
+   - Added: `OBV` label for clarity
+   - Format: `BTCUSDT [1/10] OBV 1M - Обновление БД`
+
+10. **adx_loader.py**
+    - Added: `symbol_progress` attribute in `__init__` and main()
+    - Changed: `ADX_{period} {timeframe}` → `{symbol} {symbol_progress} ADX-{period} {timeframe}`
+    - Format: `BTCUSDT [1/10] ADX-14 1M`
+
+11. **bollinger_bands_loader.py**
+    - Added: `symbol_progress` attribute in `__init__` and main()
+    - Changed: `BB {name} ({period}, {std_dev}) {base} | {timeframe}` → `{symbol} {symbol_progress} BB-{name}({period},{std_dev},{base}) {timeframe}`
+    - Format: `BTCUSDT [1/10] BB-classic(20,2.0,SMA) 1M`
+
+12. **vma_loader.py**
+    - Added: `symbol_progress` attribute in `__init__` and main()
+    - Removed: `📊` emoji
+    - Changed: `VMA_{period} {timeframe}` → `{symbol} {symbol_progress} VMA-{period} {timeframe}`
+    - Format: `BTCUSDT [1/10] VMA-20 1M`
+
+**Not modified:**
+- `stochastic_williams_loader.py` - Already in correct format ✅
+- `fear_and_greed_*.py` - Kept as-is (different logic for global metrics)
+
+#### Before vs After Examples
+
+**Before (inconsistent formats):**
+```
+📊 BTCUSDT [1/10] SMA[10,30,50,100,200] 1M
+📊 BTCUSDT [1/10] EMA [9,12,21,26,50,100,200] 1M
+📊 BTCUSDT [1/10] RSI [7,9,14,21,25] 1M - Загрузка
+BTCUSDT [1/10] 1M ATR-14
+ADX_21 1m:  75%|████████████...
+BB classic (20, 2.0) SMA | 1m:  35%|████...
+📊 VMA_20 1M
+📊 BTCUSDT [1/10]MACD classic (12, 26, 9) 1M    ← missing space
+📊 BTCUSDT [1/10]1M - Обновление БД              ← missing space
+```
+
+**After (unified format):**
+```
+BTCUSDT [1/10] SMA[10,30,50,100,200] 1M
+BTCUSDT [1/10] EMA[9,12,21,26,50,100,200] 1M
+BTCUSDT [1/10] RSI[7,9,14,21,25] 1M - Загрузка
+BTCUSDT [1/10] ATR-14 1M
+BTCUSDT [1/10] ADX-14 1M
+BTCUSDT [1/10] BB-classic(20,2.0,SMA) 1M
+BTCUSDT [1/10] VMA-20 1M
+BTCUSDT [1/10] MACD-classic(12,26,9) 1M
+BTCUSDT [1/10] OBV 1M - Обновление БД
+BTCUSDT [1/10] VWAP-daily 1M
+BTCUSDT [1/10] VWAP-20 1M
+BTCUSDT [1/10] MFI-14 1M
+BTCUSDT [1/10] STOCH[scalping,classic,swing] 1M
+BTCUSDT [1/10] WILLIAMS[6,10,14,20,30] 1M
+BTCUSDT [1/10] LONG-SHORT 1M
+```
+
+### 📊 User Experience
+
+These changes make it easier to:
+- **Track multi-symbol processing**: Clear `[x/y]` counter shows which symbol is being processed
+- **Visual consistency**: All progress bars follow same format regardless of indicator type
+- **Cleaner terminal output**: Removed unnecessary emojis that cluttered the display
+- **Better readability**: Fixed spacing issues that made progress bars harder to read
+- **Monitor parallel runs**: Consistent format helps when viewing logs from multiple loaders
+- **Quick status checks**: Instantly see symbol, progress, indicator, and timeframe at a glance
+
+### 🔧 Technical Details
+
+**Pattern used:**
+```python
+# Initialize in __init__
+self.symbol_progress = ""  # Will be set from main()
+
+# Set in main() loop
+for idx, symbol in enumerate(symbols, 1):
+    loader = IndicatorLoader(symbol=symbol)
+    loader.symbol_progress = f"[{idx}/{total_symbols}] "
+
+# Use in progress bar
+desc=f"{self.symbol} {self.symbol_progress} INDICATOR-{param} {timeframe.upper()}"
+```
+
+**Naming conventions:**
+- Dashes for single values: `ATR-14`, `VMA-20`, `MFI-14`
+- Square brackets for lists: `SMA[10,30,50]`, `RSI[7,9,14]`
+- Parentheses for configs: `MACD-classic(12,26,9)`, `BB-golden(20,1.618,SMA)`
+
+### 📦 Files Changed
+
+- **Modified (12 files)**:
+  - `indicators/sma_loader.py` (1 line changed)
+  - `indicators/ema_loader.py` (3 lines changed)
+  - `indicators/rsi_loader.py` (3 lines changed)
+  - `indicators/atr_loader.py` (1 line changed)
+  - `indicators/mfi_loader.py` (1 line changed)
+  - `indicators/vwap_loader.py` (2 lines changed)
+  - `indicators/long_short_ratio_loader.py` (1 line changed)
+  - `indicators/macd_loader.py` (2 lines changed)
+  - `indicators/obv_loader.py` (2 lines changed)
+  - `indicators/adx_loader.py` (3 lines changed)
+  - `indicators/bollinger_bands_loader.py` (3 lines changed)
+  - `indicators/vma_loader.py` (3 lines changed)
+
+- **Not modified (2 files)**:
+  - `indicators/stochastic_williams_loader.py` (already correct)
+  - `indicators/fear_and_greed_*.py` (different format by design)
+
+---
+
 ## [2025-10-23] - Enhanced Console Output and Performance Tracking
 
 ### ✨ Improvements

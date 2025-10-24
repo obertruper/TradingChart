@@ -462,7 +462,7 @@ class LongShortRatioLoader:
 
         pbar = tqdm(
             total=total_batches,
-            desc=f"{self.symbol} {self.symbol_progress} {self.timeframe.upper()} Long/Short Ratio",
+            desc=f"{self.symbol} {self.symbol_progress} LONG-SHORT {self.timeframe.upper()}",
             unit="батч"
         )
 
@@ -638,6 +638,9 @@ def main():
                     # Для 15m и 1h загружаем реальные данные
                     loader.load_ratio_for_symbol()
 
+            except KeyboardInterrupt:
+                logger.info("\n⚠️ Прервано пользователем. Можно продолжить позже с этого места.")
+                sys.exit(0)
             except Exception as e:
                 logger.error(f"❌ Ошибка обработки {symbol} на {timeframe}: {e}", exc_info=True)
                 continue

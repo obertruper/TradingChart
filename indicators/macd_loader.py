@@ -538,7 +538,7 @@ class MACDLoader:
             logger.info(f"🔙 Lookback период: {lookback_minutes} минут ({lookback_periods} периодов × {self.timeframe_minutes[timeframe]} мин)")
 
             with tqdm(total=total_days,
-                     desc=f"📊 {self.symbol} {self.symbol_progress}MACD {config['name']} ({config['fast']}, {config['slow']}, {config['signal']}) {timeframe.upper()}",
+                     desc=f"{self.symbol} {self.symbol_progress} MACD-{config['name']}({config['fast']},{config['slow']},{config['signal']}) {timeframe.upper()}",
                      unit="day",
                      bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}] {postfix}') as pbar:
                 while current_date <= max_date:
@@ -703,11 +703,19 @@ def main():
         logger.info(f"📊 Начинаем обработку символа: {symbol} [{idx}/{total_symbols}]")
         logger.info(f"{'='*80}\n")
 
-        loader = MACDLoader(symbol=symbol)
-        loader.symbol_progress = f"[{idx}/{total_symbols}] "
-        loader.run(timeframe=args.timeframe, batch_days=args.batch_days)
-
-        logger.info(f"\n✅ Символ {symbol} обработан\n")
+        try:
+            loader = MACDLoader(symbol=symbol)
+            loader.symbol_progress = f"[{idx}/{total_symbols}] "
+            loader.run(timeframe=args.timeframe, batch_days=args.batch_days)
+            logger.info(f"\n✅ Символ {symbol} обработан\n")
+        except KeyboardInterrupt:
+            logger.info("\n⚠️ Прервано пользователем. Можно продолжить позже с этого места.")
+            sys.exit(0)
+        except Exception as e:
+            logger.error(f"❌ Критическая ошибка для символа {symbol}: {e}")
+            import traceback
+            traceback.print_exc()
+            continue
 
     # Вычисляем общее время обработки
     elapsed_time = time.time() - start_time

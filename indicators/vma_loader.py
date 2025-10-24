@@ -69,6 +69,7 @@ class VMALoader:
         """
         self.db = DatabaseConnection()
         self.symbol = symbol
+        self.symbol_progress = ""  # Будет установлено из main() для отображения прогресса
         self.config = self.load_config()
 
         # Динамический мапинг таймфреймов на минуты
@@ -483,7 +484,7 @@ class VMALoader:
             processed_batches = 0
 
             with tqdm(total=total_batches,
-                     desc=f"📊 VMA_{period} {timeframe.upper()}",
+                     desc=f"{self.symbol} {self.symbol_progress} VMA-{period} {timeframe.upper()}",
                      unit="batch",
                      bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]') as pbar:
 
@@ -664,16 +665,26 @@ def main():
         logger.info(f"📊 Начинаем обработку символа: {symbol} [{idx}/{total_symbols}]")
         logger.info(f"{'='*80}\n")
 
-        # Создаем и запускаем загрузчик для текущего символа
-        loader = VMALoader(symbol=symbol)
+        try:
+            # Создаем и запускаем загрузчик для текущего символа
+            loader = VMALoader(symbol=symbol)
+            loader.symbol_progress = f"[{idx}/{total_symbols}] "
 
-        # Если указан конкретный таймфрейм, обрабатываем только его
-        if timeframes and len(timeframes) == 1:
-            loader.process_timeframe(timeframes[0])
-        else:
-            loader.run(timeframes=timeframes)
+            # Если указан конкретный таймфрейм, обрабатываем только его
+            if timeframes and len(timeframes) == 1:
+                loader.process_timeframe(timeframes[0])
+            else:
+                loader.run(timeframes=timeframes)
 
-        logger.info(f"\n✅ Символ {symbol} обработан\n")
+            logger.info(f"\n✅ Символ {symbol} обработан\n")
+        except KeyboardInterrupt:
+            logger.info("\n⚠️ Прервано пользователем. Можно продолжить позже с этого места.")
+            sys.exit(0)
+        except Exception as e:
+            logger.error(f"❌ Критическая ошибка для символа {symbol}: {e}")
+            import traceback
+            traceback.print_exc()
+            continue
 
     # Вычисляем общее время обработки
     elapsed_time = time.time() - start_time

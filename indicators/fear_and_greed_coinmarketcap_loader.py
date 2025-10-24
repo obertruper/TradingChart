@@ -567,6 +567,9 @@ class CoinMarketCapFearGreedLoader:
             self.logger.info("=" * 60)
             return True
 
+        except KeyboardInterrupt:
+            self.logger.info("\n⚠️ Прервано пользователем. Можно продолжить позже с этого места.")
+            sys.exit(0)
         except Exception as e:
             self.logger.error(f"❌ Критическая ошибка: {e}")
             return False

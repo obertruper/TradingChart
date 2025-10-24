@@ -326,10 +326,10 @@ class OBVLoader:
         with self.db.get_connection() as conn:
             with conn.cursor() as cur:
                 # Progress bar для батч-обновления
-                progress_desc = f"{self.symbol} {self.symbol_progress}{self.timeframe.upper()}"
+                progress_desc = f"{self.symbol} {self.symbol_progress} OBV {self.timeframe.upper()}"
                 pbar = tqdm(
                     total=total_days,
-                    desc=f"📊 {progress_desc} - Обновление БД",
+                    desc=f"{progress_desc} - Обновление БД",
                     unit=" день",
                     leave=False,
                     ncols=120,
@@ -553,6 +553,9 @@ def main():
                 loader.symbol_progress = symbol_progress
                 loader.load_obv_for_timeframe()
 
+            except KeyboardInterrupt:
+                logger.info("\n⚠️ Прервано пользователем. Можно продолжить позже с этого места.")
+                sys.exit(0)
             except Exception as e:
                 logger.error(f"❌ Ошибка при обработке {symbol} на {timeframe}: {e}", exc_info=True)
                 continue

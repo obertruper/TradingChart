@@ -100,6 +100,7 @@ class ADXLoader:
             force_reload: Force reload even if data exists (default: False)
         """
         self.symbol = symbol
+        self.symbol_progress = ""  # Будет установлено из main() для отображения прогресса
         self.batch_days = batch_days
         self.lookback_multiplier = lookback_multiplier
         self.custom_start_date = start_date
@@ -481,7 +482,7 @@ class ADXLoader:
 
         columns = self.get_column_names(period)
 
-        with tqdm(total=total_days, desc=f"ADX_{period} {timeframe}", unit="day") as pbar:
+        with tqdm(total=total_days, desc=f"{self.symbol} {self.symbol_progress} ADX-{period} {timeframe.upper()}", unit="day") as pbar:
             while current_date < end_date:
                 batch_end = min(current_date + timedelta(days=self.batch_days), end_date)
 
@@ -762,18 +763,28 @@ def main():
         print(f"📊 Starting processing for symbol: {symbol} [{idx}/{total_symbols}]")
         print(f"{'='*80}\n")
 
-        # Create loader and run for current symbol
-        loader = ADXLoader(
-            symbol=symbol,
-            batch_days=args.batch_days,
-            start_date=start_date,
-            end_date=end_date,
-            force_reload=args.force_reload
-        )
+        try:
+            # Create loader and run for current symbol
+            loader = ADXLoader(
+                symbol=symbol,
+                batch_days=args.batch_days,
+                start_date=start_date,
+                end_date=end_date,
+                force_reload=args.force_reload
+            )
+            loader.symbol_progress = f"[{idx}/{total_symbols}] "
 
-        loader.load_all(timeframes=timeframes, periods=periods)
+            loader.load_all(timeframes=timeframes, periods=periods)
 
-        print(f"\n✅ Symbol {symbol} processed\n")
+            print(f"\n✅ Symbol {symbol} processed\n")
+        except KeyboardInterrupt:
+            print("\n⚠️ Прервано пользователем. Можно продолжить позже с этого места.")
+            sys.exit(0)
+        except Exception as e:
+            print(f"❌ Критическая ошибка для символа {symbol}: {e}")
+            import traceback
+            traceback.print_exc()
+            continue
 
     print(f"\n🎉 All symbols processed: {symbols}")
 

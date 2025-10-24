@@ -119,6 +119,7 @@ class BollingerBandsLoader:
             squeeze_threshold: Порог для определения squeeze в % (по умолчанию 5.0)
         """
         self.symbol = symbol
+        self.symbol_progress = ""  # Будет установлено из main() для отображения прогресса
         self.batch_days = batch_days
         self.lookback_multiplier = lookback_multiplier
         self.squeeze_threshold = squeeze_threshold
@@ -383,7 +384,7 @@ class BollingerBandsLoader:
             # Прогресс-бар
             total_days = (end_date - start_date).days
             pbar = tqdm(total=total_days,
-                       desc=f"BB {name} ({period}, {std_dev}) {base.upper()} | {timeframe}",
+                       desc=f"{self.symbol} {self.symbol_progress} BB-{name}({period},{std_dev},{base.upper()}) {timeframe.upper()}",
                        unit='day')
 
             while current_date < end_date:
@@ -622,6 +623,7 @@ def main():
 
         # Создаём загрузчик для текущего символа
         loader = BollingerBandsLoader(symbol=symbol, batch_days=args.batch_days)
+        loader.symbol_progress = f"[{idx}/{total_symbols}] "
 
         # Обрабатываем каждый таймфрейм
         for timeframe in timeframes:
@@ -629,7 +631,7 @@ def main():
                 loader.load_timeframe(timeframe, configs)
             except KeyboardInterrupt:
                 logger.warning("\n⚠️  Прервано пользователем. Прогресс сохранён.")
-                break
+                sys.exit(0)
             except Exception as e:
                 logger.error(f"❌ Ошибка при обработке {timeframe}: {e}", exc_info=True)
                 continue

@@ -1179,27 +1179,36 @@ def main():
         logger.info(f"📊 Начинаем обработку символа: {symbol} [{idx}/{total_symbols}]")
         logger.info(f"{'='*80}\n")
 
-        # Загружаем Stochastic
-        if args.indicator in ['stochastic', 'both']:
-            logger.info(f"\n{'#'*80}")
-            logger.info(f"📊 Загрузка Stochastic Oscillator для {symbol}")
-            logger.info(f"{'#'*80}\n")
+        try:
+            # Загружаем Stochastic
+            if args.indicator in ['stochastic', 'both']:
+                logger.info(f"\n{'#'*80}")
+                logger.info(f"📊 Загрузка Stochastic Oscillator для {symbol}")
+                logger.info(f"{'#'*80}\n")
 
-            stoch_loader = StochasticLoader(symbol=symbol)
-            stoch_loader.symbol_progress = f"[{idx}/{total_symbols}]"
-            stoch_loader.run(timeframe=args.timeframe, batch_days=args.batch_days)
+                stoch_loader = StochasticLoader(symbol=symbol)
+                stoch_loader.symbol_progress = f"[{idx}/{total_symbols}]"
+                stoch_loader.run(timeframe=args.timeframe, batch_days=args.batch_days)
 
-        # Загружаем Williams %R
-        if args.indicator in ['williams', 'both']:
-            logger.info(f"\n{'#'*80}")
-            logger.info(f"📊 Загрузка Williams %R для {symbol}")
-            logger.info(f"{'#'*80}\n")
+            # Загружаем Williams %R
+            if args.indicator in ['williams', 'both']:
+                logger.info(f"\n{'#'*80}")
+                logger.info(f"📊 Загрузка Williams %R для {symbol}")
+                logger.info(f"{'#'*80}\n")
 
-            williams_loader = WilliamsRLoader(symbol=symbol)
-            williams_loader.symbol_progress = f"[{idx}/{total_symbols}]"
-            williams_loader.run(timeframe=args.timeframe, batch_days=args.batch_days)
+                williams_loader = WilliamsRLoader(symbol=symbol)
+                williams_loader.symbol_progress = f"[{idx}/{total_symbols}]"
+                williams_loader.run(timeframe=args.timeframe, batch_days=args.batch_days)
 
-        logger.info(f"\n✅ Символ {symbol} обработан\n")
+            logger.info(f"\n✅ Символ {symbol} обработан\n")
+        except KeyboardInterrupt:
+            logger.info("\n⚠️ Прервано пользователем. Можно продолжить позже с этого места.")
+            sys.exit(0)
+        except Exception as e:
+            logger.error(f"❌ Критическая ошибка для символа {symbol}: {e}")
+            import traceback
+            traceback.print_exc()
+            continue
 
     logger.info(f"\n🎉 Все символы обработаны: {symbols}")
 

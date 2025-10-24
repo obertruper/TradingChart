@@ -494,9 +494,10 @@ class EMALoader:
             # Обработка батчами с прогресс-баром
             logger.info(f"\n🚀 Начинаю обработку...")
 
-            progress_desc = f"{self.symbol} {self.symbol_progress} EMA {periods} {timeframe.upper()}" if self.symbol_progress else f"{self.symbol} EMA {periods} {timeframe.upper()}"
+            periods_str = ','.join(map(str, periods))
+            progress_desc = f"{self.symbol} {self.symbol_progress} EMA[{periods_str}] {timeframe.upper()}" if self.symbol_progress else f"{self.symbol} EMA[{periods_str}] {timeframe.upper()}"
             with tqdm(total=total_batches,
-                     desc=f"📊 {progress_desc}",
+                     desc=progress_desc,
                      unit='batch',
                      bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]') as pbar:
 

@@ -513,8 +513,9 @@ class RSILoader:
                     current_states[period] = {}
 
             action = 'Загрузка' if from_beginning else 'Обновление'
-            progress_desc = f"{self.symbol} {self.symbol_progress} RSI {periods} {timeframe.upper()}" if self.symbol_progress else f"{self.symbol} RSI {periods} {timeframe.upper()}"
-            with tqdm(total=total_batches, desc=f"📊 {progress_desc} - {action}") as pbar:
+            periods_str = ','.join(map(str, periods))
+            progress_desc = f"{self.symbol} {self.symbol_progress} RSI[{periods_str}] {timeframe.upper()}" if self.symbol_progress else f"{self.symbol} RSI[{periods_str}] {timeframe.upper()}"
+            with tqdm(total=total_batches, desc=f"{progress_desc} - {action}") as pbar:
                 batch_num = 0
 
                 while current_date < max_date:
