@@ -62,6 +62,9 @@ class CoinMarketCapFearGreedLoader:
         # Кеш для API данных
         self.api_data_cache = None
 
+        # Кеш для checkpoint'ов (чтобы не запрашивать повторно)
+        self.checkpoints_cache = None
+
         self.logger.info("=" * 60)
         self.logger.info("🚀 Запуск CoinMarketCap Fear & Greed Index Loader")
         self.logger.info(f"🎯 Символ: {self.symbol}")
@@ -301,9 +304,69 @@ class CoinMarketCapFearGreedLoader:
             self.logger.error(f"❌ Неожиданная ошибка: {e}")
             return None
 
+    def get_all_checkpoints(self) -> Dict[str, Optional[datetime]]:
+        """
+        Получение checkpoint для ВСЕХ таймфреймов одним запросом (оптимизация)
+
+        Returns:
+            Dict с checkpoint'ами: {'1m': datetime, '15m': datetime, '1h': datetime}
+        """
+        conn = self.connect_db()
+        cursor = conn.cursor()
+
+        try:
+            # ОДИН запрос для всех 3 таймфреймов с UNION ALL
+            query = """
+                SELECT '1m' as timeframe, DATE(MAX(timestamp)) as max_date
+                FROM indicators_bybit_futures_1m
+                WHERE symbol = %s AND fear_and_greed_index_coinmarketcap IS NOT NULL
+
+                UNION ALL
+
+                SELECT '15m' as timeframe, DATE(MAX(timestamp)) as max_date
+                FROM indicators_bybit_futures_15m
+                WHERE symbol = %s AND fear_and_greed_index_coinmarketcap IS NOT NULL
+
+                UNION ALL
+
+                SELECT '1h' as timeframe, DATE(MAX(timestamp)) as max_date
+                FROM indicators_bybit_futures_1h
+                WHERE symbol = %s AND fear_and_greed_index_coinmarketcap IS NOT NULL
+            """
+
+            cursor.execute(query, (self.symbol, self.symbol, self.symbol))
+            results = cursor.fetchall()
+
+            # Преобразуем в словарь
+            checkpoints = {}
+            for timeframe, max_date in results:
+                if max_date:
+                    checkpoints[timeframe] = datetime.combine(
+                        max_date,
+                        datetime.min.time()
+                    ).replace(tzinfo=timezone.utc)
+                else:
+                    checkpoints[timeframe] = None
+
+            # Заполняем отсутствующие таймфреймы
+            for tf in self.timeframes:
+                if tf not in checkpoints:
+                    checkpoints[tf] = None
+
+            return checkpoints
+
+        except Exception as e:
+            self.logger.error(f"❌ Ошибка при получении checkpoints: {e}")
+            return {tf: None for tf in self.timeframes}
+        finally:
+            cursor.close()
+            conn.close()
+
     def get_checkpoint(self, timeframe: str) -> Optional[datetime]:
         """
         Получение checkpoint для таймфрейма
+
+        DEPRECATED: Рекомендуется использовать get_all_checkpoints() для лучшей производительности
 
         Args:
             timeframe: Таймфрейм (1m, 15m, 1h)
@@ -311,15 +374,20 @@ class CoinMarketCapFearGreedLoader:
         Returns:
             Последняя обработанная дата или None
         """
+        # Если есть кеш - берем оттуда
+        if self.checkpoints_cache and timeframe in self.checkpoints_cache:
+            return self.checkpoints_cache[timeframe]
+
         conn = self.connect_db()
         cursor = conn.cursor()
 
         try:
             table_name = f'indicators_bybit_futures_{timeframe}'
 
-            # Получаем максимальную дату с заполненным CoinMarketCap Fear & Greed
+            # ОПТИМИЗИРОВАНО: DATE(MAX()) вместо MAX(DATE()) - намного быстрее!
+            # DATE() вызывается только 1 раз вместо вызова на каждой строке
             cursor.execute(f"""
-                SELECT MAX(DATE(timestamp))
+                SELECT DATE(MAX(timestamp))
                 FROM {table_name}
                 WHERE symbol = %s
                   AND {self.index_column} IS NOT NULL
@@ -338,7 +406,7 @@ class CoinMarketCapFearGreedLoader:
             cursor.close()
             conn.close()
 
-    def update_batch(self, timeframe: str, date: date, value: int, classification: str) -> int:
+    def update_batch(self, timeframe: str, date: date, value: int, classification: str, conn=None) -> int:
         """
         Обновление данных Fear & Greed для одного дня
 
@@ -347,39 +415,56 @@ class CoinMarketCapFearGreedLoader:
             date: Дата для обновления
             value: Значение индекса
             classification: Классификация
+            conn: Опциональное DB соединение (для оптимизации)
 
         Returns:
             Количество обновленных записей
         """
-        conn = self.connect_db()
+        # Если соединение не передано - создаем свое (обратная совместимость)
+        own_connection = False
+        if conn is None:
+            conn = self.connect_db()
+            own_connection = True
+
         cursor = conn.cursor()
 
         try:
             table_name = f'indicators_bybit_futures_{timeframe}'
 
-            # Обновляем все записи за день
+            # Создаем временные метки для начала и конца дня (UTC)
+            start_ts = datetime.combine(date, datetime.min.time()).replace(tzinfo=timezone.utc)
+            end_ts = start_ts + timedelta(days=1)
+
+            # Обновляем все записи за день используя BETWEEN для эффективного использования индекса
             cursor.execute(f"""
                 UPDATE {table_name}
                 SET
                     {self.index_column} = %s,
                     {self.classification_column} = %s
                 WHERE symbol = %s
-                  AND DATE(timestamp) = %s
+                  AND timestamp >= %s
+                  AND timestamp < %s
                   AND {self.index_column} IS NULL
-            """, (value, classification, self.symbol, date))
+            """, (value, classification, self.symbol, start_ts, end_ts))
 
             updated_count = cursor.rowcount
-            conn.commit()
+
+            # Коммитим только если мы создали свое соединение
+            if own_connection:
+                conn.commit()
 
             return updated_count
 
         except Exception as e:
             self.logger.error(f"❌ Ошибка при обновлении данных: {e}")
-            conn.rollback()
+            if own_connection:
+                conn.rollback()
             return 0
         finally:
             cursor.close()
-            conn.close()
+            # Закрываем только если мы создали свое соединение
+            if own_connection:
+                conn.close()
 
     def validate_day_consistency(self, date: date) -> bool:
         """
@@ -445,8 +530,8 @@ class CoinMarketCapFearGreedLoader:
         self.logger.info(f"\n📊 Обработка таймфрейма: {timeframe}")
         self.logger.info(f"📅 Период: {start_date.date()} - {end_date.date()}")
 
-        # Получаем checkpoint
-        checkpoint = self.get_checkpoint(timeframe)
+        # Используем закешированный checkpoint (не делаем новый запрос к БД!)
+        checkpoint = self.checkpoints_cache.get(timeframe) if self.checkpoints_cache else None
         if checkpoint and checkpoint >= start_date:
             self.logger.info(f"⏩ Продолжаю с checkpoint: {checkpoint.date()}")
             current_date = checkpoint + timedelta(days=1)
@@ -467,37 +552,58 @@ class CoinMarketCapFearGreedLoader:
             self.logger.error("❌ Нет данных API для обработки")
             return False
 
-        # Обрабатываем по дням с прогресс-баром
-        processed_days = 0
-        updated_records = 0
+        # Открываем ОДНО соединение для всех дней (оптимизация)
+        conn = self.connect_db()
 
-        with tqdm(total=total_days, desc=f"{timeframe}", unit="день") as pbar:
-            while current_date <= end_date:
-                date_key = current_date.date()
+        try:
+            # Обрабатываем по дням с прогресс-баром
+            processed_days = 0
+            updated_records = 0
+            commit_batch_size = 10  # Коммитим каждые 10 дней
 
-                # Проверяем есть ли данные за этот день
-                if date_key in api_data:
-                    data = api_data[date_key]
-                    value = data['value']
-                    classification = data['classification']
+            with tqdm(total=total_days, desc=f"{timeframe}", unit="день") as pbar:
+                while current_date <= end_date:
+                    date_key = current_date.date()
 
-                    # Обновляем данные
-                    count = self.update_batch(timeframe, date_key, value, classification)
-                    updated_records += count
+                    # Проверяем есть ли данные за этот день
+                    if date_key in api_data:
+                        data = api_data[date_key]
+                        value = data['value']
+                        classification = data['classification']
 
-                    # Обновляем прогресс-бар
-                    pbar.set_description(f"{timeframe}: {date_key} (CMC={value}, обновлено={count})")
-                    processed_days += 1
-                else:
-                    # Нет данных за этот день
-                    pbar.set_description(f"{timeframe}: {date_key} (нет данных API)")
-                    self.logger.debug(f"  ⏩ Нет данных API для {date_key}, пропускаю")
+                        # Обновляем данные (передаем существующее соединение)
+                        count = self.update_batch(timeframe, date_key, value, classification, conn=conn)
+                        updated_records += count
 
-                current_date += timedelta(days=1)
-                pbar.update(1)
+                        # Обновляем прогресс-бар
+                        pbar.set_description(f"{timeframe}: {date_key} (CMC={value}, обновлено={count})")
+                        processed_days += 1
 
-        self.logger.info(f"✅ Обработано {processed_days} дней, обновлено {updated_records} записей")
-        return True
+                        # Batch commit каждые N дней
+                        if processed_days % commit_batch_size == 0:
+                            conn.commit()
+                            self.logger.debug(f"  💾 Commit после {processed_days} дней")
+                    else:
+                        # Нет данных за этот день
+                        pbar.set_description(f"{timeframe}: {date_key} (нет данных API)")
+                        self.logger.debug(f"  ⏩ Нет данных API для {date_key}, пропускаю")
+
+                    current_date += timedelta(days=1)
+                    pbar.update(1)
+
+            # Финальный commit
+            conn.commit()
+            self.logger.debug(f"  💾 Финальный commit")
+
+            self.logger.info(f"✅ Обработано {processed_days} дней, обновлено {updated_records} записей")
+            return True
+
+        except Exception as e:
+            self.logger.error(f"❌ Ошибка при обработке таймфрейма: {e}")
+            conn.rollback()
+            return False
+        finally:
+            conn.close()
 
     def run(self):
         """Основной метод запуска загрузчика"""
@@ -513,15 +619,26 @@ class CoinMarketCapFearGreedLoader:
                 self.logger.error("❌ Не удалось получить данные с API")
                 return False
 
+            # Получаем checkpoint'ы для ВСЕХ таймфреймов ОДНИМ запросом (оптимизация)
+            self.logger.info("📍 Получение checkpoint'ов для всех таймфреймов...")
+            self.checkpoints_cache = self.get_all_checkpoints()
+            for tf in self.timeframes:
+                checkpoint_info = self.checkpoints_cache.get(tf)
+                if checkpoint_info:
+                    self.logger.info(f"   • {tf}: {checkpoint_info.date()}")
+                else:
+                    self.logger.info(f"   • {tf}: нет данных")
+
             # Определяем период обработки
             conn = self.connect_db()
             cursor = conn.cursor()
 
-            # Получаем минимальную и максимальную даты из БД
+            # ОПТИМИЗИРОВАНО: DATE(MIN/MAX()) вместо MIN/MAX(DATE()) - намного быстрее!
+            # DATE() вызывается только 2 раза вместо вызова на каждой строке
             cursor.execute("""
                 SELECT
-                    MIN(DATE(timestamp)) as min_date,
-                    MAX(DATE(timestamp)) as max_date
+                    DATE(MIN(timestamp)) as min_date,
+                    DATE(MAX(timestamp)) as max_date
                 FROM indicators_bybit_futures_1m
                 WHERE symbol = %s
             """, (self.symbol,))
