@@ -1,0 +1,142 @@
+# Data Collector Configuration for Historical Spot Candle Data
+# ==============================================================
+
+# API Settings
+api:
+  bybit:
+    api_key: ""  # Set via environment variable or .env file
+    api_secret: ""  # Set via environment variable or .env file
+    testnet: false
+
+# Database Settings (PostgreSQL only)
+database:
+  type: "postgres"
+  host: "82.25.115.144"
+  port: 5432
+  database: "trading_data"
+  user: "trading_writer"
+  password: ""  # Set via environment variable or .env file
+
+  # Table settings
+  table_name: "candles_bybit_spot_1m"
+
+  # Connection settings
+  connection_pool:
+    min_connections: 2
+    max_connections: 10
+    timeout: 30
+
+# Exchange Settings
+exchange:
+  name: "bybit"
+  category: "spot"  # spot market category
+
+  # API rate limits (Bybit: 120 requests per minute)
+  rate_limit:
+    requests_per_minute: 100  # Conservative limit
+    requests_per_second: 2
+    batch_delay: 0.5  # seconds between batches
+
+  # Request settings
+  max_candles_per_request: 1000  # Bybit limit
+  retry_attempts: 3
+  retry_delay: 1  # seconds
+
+# Collection Settings
+collection:
+  # Time range for historical data collection
+  # Starting from actual Bybit spot market launch date (verified via API)
+  start_date: "2021-07-05 12:00:00"  # First available data on Bybit spot (BTCUSDT started 2021-07-05 12:00 UTC)
+  end_date: "2025-12-31 23:59:00"    # Current/future date for continuous collection
+  timezone: "UTC"                    # Timezone for date interpretation (UTC recommended)
+
+  # Timeframe
+  interval: "1"  # 1 minute candles
+
+  # Trading pairs to collect (16 pairs available on spot)
+  symbols:
+    - "BTCUSDT"   # Already loaded - Available from 2021-07
+    - "ETHUSDT"   # Available from 2021-07
+    - "XRPUSDT"   # Available from 2021-07
+    - "SOLUSDT"   # Available from 2021-07
+    - "ADAUSDT"   # Available from 2021-07
+    - "BNBUSDT"   # Available from 2022-03
+    - "LINKUSDT"  # Available from 2021-07
+    - "XLMUSDT"   # Available from 2021-07
+    - "LTCUSDT"   # Available from 2021-07
+    - "DOTUSDT"   # Available from 2021-07
+    - "ARBUSDT"   # Available on spot ✅
+    - "ATOMUSDT"  # Available on spot ✅
+    - "ETCUSDT"   # Available on spot ✅
+    - "NEARUSDT"  # Available on spot ✅
+    - "POLUSDT"   # Available on spot ✅
+    - "VETUSDT"   # Available on spot ✅
+    # "XMRUSDT"   # NOT available on spot (API Error 10001) ❌
+
+  # Collection strategy
+  batch_size: 1000  # candles per batch
+  max_days_per_request: 1  # days to collect in single request
+
+  # Smart collection settings
+  smart_collection: true        # Check existing data and collect only missing periods
+  force_overwrite: false       # Force overwrite existing data (ignores smart_collection)
+  fill_gaps: true              # Fill missing gaps in existing data
+  mode: "smart_gaps"           # full_range, smart_gaps, force_overwrite
+  validate_continuity: true    # Verify data continuity after collection
+
+  # Large collection management
+  max_candles_per_batch: 1000           # Maximum candles per single API request
+  batch_delay_seconds: 0.5              # Delay between batches for rate limiting
+  progress_checkpoint_frequency: 5000   # Save progress every N candles
+  large_collection_warning_days: 30     # Warn for collections larger than N days
+
+  # Data validation
+  validate_data: true
+  skip_duplicates: true
+
+# Logging Settings
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  file: "logs/data_collector_spot.log"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+  # Progress reporting
+  progress_interval: 100  # log every N batches
+  save_checkpoint: true
+  checkpoint_file: "data_collectors/checkpoints/collection_progress_spot.json"
+
+# Monitoring Settings
+monitoring:
+  # Performance metrics
+  track_collection_speed: true
+  estimate_completion_time: true
+
+  # Error handling
+  max_consecutive_errors: 5
+  stop_on_critical_error: true
+
+  # Storage monitoring
+  check_disk_space: true
+  min_free_space_gb: 1
+
+  # Memory monitoring
+  max_memory_usage_mb: 512
+
+# Advanced Settings
+advanced:
+  # Multi-threading (experimental)
+  use_threads: false
+  max_workers: 2
+
+  # Data optimization
+  compress_data: false
+  use_bulk_insert: true
+  commit_frequency: 1000  # commits per N inserts
+
+  # Recovery settings
+  resume_from_checkpoint: true
+  auto_resume_on_restart: true
+
+  # Testing mode
+  test_mode: false  # if true, collect only small sample
+  test_days: 1      # days to collect in test mode

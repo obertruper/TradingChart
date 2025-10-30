@@ -20,7 +20,7 @@ import requests
 import yaml
 from tqdm import tqdm
 import psycopg2
-from database import DatabaseConnection
+from indicators.database import DatabaseConnection
 
 # Настройка логирования
 def setup_logging():

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Futures Candle Data Collector for Bybit Exchange
-==================================================
+Spot Candle Data Collector for Bybit Exchange
+==============================================
 
-This module implements historical candle data collection for Bybit futures.
+This module implements historical candle data collection for Bybit spot market.
 It collects 1-minute OHLCV data for specified trading pairs and time ranges.
 """
 
@@ -38,9 +38,9 @@ from time_utils import TimeManager
 from config_validator import ConfigValidator
 
 
-class FuturesCollector:
+class SpotCollector:
     """
-    Collects historical 1-minute candle data from Bybit futures.
+    Collects historical 1-minute candle data from Bybit spot market.
 
     Features:
     - Rate limiting and retry logic
@@ -50,9 +50,9 @@ class FuturesCollector:
     - Memory and performance monitoring
     """
 
-    def __init__(self, config_path: str = "../../../data_collectors/data_collector_config.yaml"):
+    def __init__(self, config_path: str = "../../../data_collectors/data_collector_config_spot.yaml"):
         """
-        Initialize the futures collector.
+        Initialize the spot collector.
 
         Args:
             config_path: Path to configuration file
@@ -103,7 +103,7 @@ class FuturesCollector:
         self.requests_this_minute = 0
         self.minute_start_time = time.time()
 
-        self.logger.info("FuturesCollector initialized with database connection")
+        self.logger.info("SpotCollector initialized with database connection")
 
     def _load_config(self) -> Dict[str, Any]:
         """Load configuration from YAML file and merge with environment variables."""
@@ -145,7 +145,7 @@ class FuturesCollector:
         os.makedirs(os.path.dirname(log_file), exist_ok=True)
 
         # Create logger
-        logger = logging.getLogger("FuturesCollector")
+        logger = logging.getLogger("SpotCollector")
         logger.setLevel(log_level)
 
         # Remove existing handlers
@@ -950,7 +950,7 @@ class FuturesCollector:
 def main():
     """Main function for standalone execution."""
     try:
-        collector = FuturesCollector()
+        collector = SpotCollector()
 
         # Check if test mode is enabled
         if collector.config.get("advanced", {}).get("test_mode", False):
