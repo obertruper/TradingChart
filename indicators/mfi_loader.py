@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 class MFILoader:
     """Загрузчик индикатора MFI (Money Flow Index) для торговых данных"""
 
-    def __init__(self, symbol: str, timeframe: str, config: dict):
+    def __init__(self, symbol: str, timeframe: str, config: dict, force_reload: bool = False):
         """
         Инициализация загрузчика MFI
 
@@ -51,10 +51,12 @@ class MFILoader:
             symbol: Торговая пара (например, BTCUSDT)
             timeframe: Таймфрейм (1m, 15m, 1h)
             config: Конфигурация из indicators_config.yaml
+            force_reload: Пересчитать все данные с начала (по умолчанию False)
         """
         self.symbol = symbol
         self.timeframe = timeframe
         self.timeframe_minutes = self._parse_timeframe(timeframe)
+        self.force_reload = force_reload
 
         # Настройки из конфига
         mfi_config = config['indicators']['mfi']
@@ -76,6 +78,8 @@ class MFILoader:
 
         logger.info(f"Инициализирован MFILoader для {symbol} на {timeframe}")
         logger.info(f"Периоды: {self.periods}, Lookback: {self.lookback_periods} периодов")
+        if force_reload:
+            logger.info("⚠️  Режим FORCE RELOAD: пересчет всех данных с начала")
 
     def _parse_timeframe(self, tf: str) -> int:
         """
@@ -145,16 +149,7 @@ class MFILoader:
 
         with self.db.get_connection() as conn:
             with conn.cursor() as cur:
-                # 1. Проверяем последнюю дату MFI в indicators таблице (используем mfi_14 как референс)
-                cur.execute(f"""
-                    SELECT MAX(timestamp)
-                    FROM {self.indicators_table}
-                    WHERE symbol = %s AND mfi_14 IS NOT NULL
-                """, (self.symbol,))
-
-                last_mfi_date = cur.fetchone()[0]
-
-                # 2. Получаем диапазон данных в candles таблице
+                # 1. Получаем диапазон данных в candles таблице
                 cur.execute(f"""
                     SELECT MIN(timestamp), MAX(timestamp)
                     FROM {self.candles_table}
@@ -167,16 +162,31 @@ class MFILoader:
                     logger.warning(f"⚠️  Нет данных для {self.symbol} в {self.candles_table}")
                     return None, None
 
-                # 3. Определяем start_date
-                if last_mfi_date is None:
-                    # Данных нет - начинаем с начала
+                # 2. Определяем start_date в зависимости от режима
+                if self.force_reload:
+                    # Режим force_reload - начинаем с самого начала
                     start_date = min_candle_date
-                    logger.info(f"📅 Данных MFI нет. Начинаем с: {start_date}")
+                    logger.info(f"🔄 Режим FORCE RELOAD: начинаем с начала данных")
+                    logger.info(f"📅 Начальная дата: {start_date}")
                 else:
-                    # Продолжаем с последней даты
-                    start_date = last_mfi_date + timedelta(minutes=self.timeframe_minutes)
-                    logger.info(f"📅 Последняя дата MFI: {last_mfi_date}")
-                    logger.info(f"▶️  Продолжаем с: {start_date}")
+                    # Обычный режим - проверяем последнюю дату MFI
+                    cur.execute(f"""
+                        SELECT MAX(timestamp)
+                        FROM {self.indicators_table}
+                        WHERE symbol = %s AND mfi_14 IS NOT NULL
+                    """, (self.symbol,))
+
+                    last_mfi_date = cur.fetchone()[0]
+
+                    if last_mfi_date is None:
+                        # Данных нет - начинаем с начала
+                        start_date = min_candle_date
+                        logger.info(f"📅 Данных MFI нет. Начинаем с: {start_date}")
+                    else:
+                        # Продолжаем с последней даты
+                        start_date = last_mfi_date + timedelta(minutes=self.timeframe_minutes)
+                        logger.info(f"📅 Последняя дата MFI: {last_mfi_date}")
+                        logger.info(f"▶️  Продолжаем с: {start_date}")
 
                 # 4. Определяем end_date (последняя завершенная свеча)
                 end_date = max_candle_date
@@ -357,31 +367,53 @@ class MFILoader:
         if df_batch.empty:
             return
 
-        # Подготавливаем данные для UPDATE
-        update_data = []
+        # Группируем данные по (timestamp, symbol) для батчевой вставки
+        records_by_time = {}
         for timestamp, row in df_batch.iterrows():
+            key = (timestamp, self.symbol)
+            if key not in records_by_time:
+                records_by_time[key] = {
+                    'timestamp': timestamp,
+                    'symbol': self.symbol
+                }
+
+            # Добавляем все MFI колонки для этого timestamp
             for col in columns:
                 if col in row and pd.notna(row[col]):
-                    update_data.append({
-                        'timestamp': timestamp,
-                        'symbol': self.symbol,
-                        'column': col,
-                        'value': float(row[col])
-                    })
+                    records_by_time[key][col] = float(row[col])
 
-        if not update_data:
+        if not records_by_time:
             return
 
-        # Bulk UPDATE
+        # Формируем INSERT...ON CONFLICT запрос (UPSERT)
         with self.db.get_connection() as conn:
             with conn.cursor() as cur:
-                for data in update_data:
+                # Подготавливаем данные для батчевой вставки
+                records = []
+                for key, record in records_by_time.items():
+                    # Получаем колонки для этой записи
+                    record_columns = list(record.keys())
+                    values = [record[col] for col in record_columns]
+
+                    # Только MFI колонки для UPDATE части
+                    mfi_columns = [col for col in record_columns if col.startswith('mfi_')]
+
+                    if mfi_columns:
+                        records.append((record_columns, values, mfi_columns))
+
+                # Выполняем INSERT...ON CONFLICT для каждой записи
+                for record_columns, values, mfi_columns in records:
+                    placeholders = ','.join(['%s'] * len(record_columns))
+                    update_set = ','.join([f"{col} = EXCLUDED.{col}" for col in mfi_columns])
+
                     sql = f"""
-                        UPDATE {self.indicators_table}
-                        SET {data['column']} = %s
-                        WHERE timestamp = %s AND symbol = %s
+                        INSERT INTO {self.indicators_table} ({','.join(record_columns)})
+                        VALUES ({placeholders})
+                        ON CONFLICT (timestamp, symbol) DO UPDATE SET
+                        {update_set}
                     """
-                    cur.execute(sql, (data['value'], data['timestamp'], data['symbol']))
+
+                    cur.execute(sql, values)
 
                 conn.commit()
 
@@ -517,6 +549,12 @@ def parse_args():
         help='Размер батча в днях. По умолчанию - из конфига (обычно 1)'
     )
 
+    parser.add_argument(
+        '--force-reload',
+        action='store_true',
+        help='Пересчитать все данные с начала (заполнить пробелы внутри истории)'
+    )
+
     return parser.parse_args()
 
 
@@ -579,10 +617,18 @@ def main():
         config['indicators']['mfi']['batch_days'] = args.batch_days
         logger.info(f"📦 Размер батча из аргументов: {args.batch_days} дней")
 
+    # 7. Режим force_reload
+    force_reload = args.force_reload if hasattr(args, 'force_reload') else False
+    if force_reload:
+        logger.info("🔄 РЕЖИМ FORCE RELOAD АКТИВИРОВАН")
+        logger.info("   Будут пересчитаны ВСЕ данные с начала истории")
+        logger.info("   Это заполнит пробелы внутри данных и обновит существующие значения")
+        logger.info("")
+
     logger.info(f"📊 Индикатор: MFI")
     logger.info("")
 
-    # 7. Обработка
+    # 8. Обработка
     total_symbols = len(symbols)
 
     for symbol_idx, symbol in enumerate(symbols, start=1):
@@ -594,8 +640,8 @@ def main():
 
         for timeframe in timeframes:
             try:
-                # Создаем экземпляр загрузчика
-                loader = MFILoader(symbol, timeframe, config)
+                # Создаем экземпляр загрузчика с force_reload
+                loader = MFILoader(symbol, timeframe, config, force_reload=force_reload)
                 loader.symbol_progress = f"[{symbol_idx}/{total_symbols}]"
 
                 # Запускаем загрузку
