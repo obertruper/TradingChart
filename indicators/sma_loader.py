@@ -284,7 +284,7 @@ class SMALoader:
                     ),
                     last_in_period AS (
                         SELECT DISTINCT ON (period_start, symbol)
-                            period_start + INTERVAL '{minutes} minutes' as timestamp,
+                            period_start as timestamp,
                             symbol,
                             close
                         FROM time_groups
