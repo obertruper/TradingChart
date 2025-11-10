@@ -71,6 +71,7 @@ class SMALoader:
         self.symbol = symbol
         self.config = self.load_config()
         self.symbol_progress = ""  # Будет установлено из main() для отображения прогресса
+        self.force_reload = False  # Флаг принудительного пересчета (устанавливается из main())
 
         # Динамический мапинг таймфреймов на минуты (после загрузки конфига)
         self.timeframe_minutes = self._parse_timeframes()
@@ -241,6 +242,50 @@ class SMALoader:
             except Exception as e:
                 logger.error(f"❌ Ошибка при создании колонок: {e}")
                 conn.rollback()
+            finally:
+                cur.close()
+
+    def clear_sma_columns(self, timeframe: str, periods: List[int]) -> bool:
+        """
+        Обнуляет (устанавливает NULL) все SMA столбцы для указанного таймфрейма и символа
+
+        Args:
+            timeframe: Таймфрейм для очистки (1m, 15m, 1h)
+            periods: Список периодов SMA для очистки
+
+        Returns:
+            True если очистка успешна, False в случае ошибки
+        """
+        table_name = f'indicators_bybit_futures_{timeframe}'
+
+        with self.db.get_connection() as conn:
+            cur = conn.cursor()
+
+            try:
+                # Формируем SET clause для всех SMA колонок
+                set_clauses = [f'sma_{period} = NULL' for period in periods]
+                set_clause = ', '.join(set_clauses)
+
+                # Выполняем UPDATE запрос
+                query = f"""
+                    UPDATE {table_name}
+                    SET {set_clause}
+                    WHERE symbol = %s
+                """
+
+                cur.execute(query, (self.symbol,))
+                rows_affected = cur.rowcount
+
+                conn.commit()
+                logger.info(f"🗑️  Обнулено {rows_affected:,} записей для SMA столбцов в {table_name} (символ: {self.symbol})")
+                logger.info(f"   Очищены столбцы: {', '.join([f'sma_{p}' for p in periods])}")
+
+                return True
+
+            except Exception as e:
+                logger.error(f"❌ Ошибка при очистке SMA столбцов: {e}")
+                conn.rollback()
+                return False
             finally:
                 cur.close()
 
@@ -603,6 +648,13 @@ class SMALoader:
         # Создаем колонки для SMA
         self.create_sma_columns(timeframe, periods)
 
+        # Обнуляем существующие данные если включен флаг force-reload
+        if self.force_reload:
+            logger.info(f"\n🔄 Включен режим force-reload - обнуление существующих SMA данных")
+            if not self.clear_sma_columns(timeframe, periods):
+                logger.error(f"❌ Не удалось обнулить SMA столбцы для {timeframe}")
+                return
+
         # Рассчитываем и сохраняем SMA
         self.calculate_and_save_sma(timeframe, periods)
 
@@ -642,6 +694,8 @@ def main():
                       help='Один таймфрейм (для обратной совместимости)')
     parser.add_argument('--batch-days', type=int, default=30,
                       help='Размер батча в днях (по умолчанию 30)')
+    parser.add_argument('--force-reload', action='store_true',
+                      help='Обнулить все SMA столбцы перед загрузкой (принудительный полный пересчет)')
 
     args = parser.parse_args()
 
@@ -687,6 +741,8 @@ def main():
             loader = SMALoader(symbol=symbol)
             # Устанавливаем информацию о прогрессе символов
             loader.symbol_progress = f"[{idx}/{total_symbols}]"
+            # Передаем флаг принудительного пересчета
+            loader.force_reload = args.force_reload
 
             # Если указан конкретный таймфрейм, обрабатываем только его
             if timeframes and len(timeframes) == 1:
