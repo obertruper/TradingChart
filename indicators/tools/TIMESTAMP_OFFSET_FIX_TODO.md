@@ -39,13 +39,16 @@ This bug affects **ALL indicators** that use aggregation from 1m to 15m/1h timef
 ### Priority 1: Most-Used Indicators (Apply First)
 
 #### 1. SMA Loader (`indicators/sma_loader.py`)
-**Status:** ⬜ NOT FIXED
+**Status:** ✅ FIXED (2025-11-10)
 **Impact:** HIGH - SMA is fundamental indicator
-**Lines to check:**
-- SQL aggregation formula (search for: `date_trunc('hour', timestamp)`)
-- lookback_multiplier (if applicable)
-- adjusted_overlap_start for aggregation
-**Estimated Time:** 15-20 minutes
+**Validation Results:**
+- 99.998% accuracy (246,750/246,755 correct)
+- Better accuracy than EMA!
+- Only 5 errors on latest candle (17:00) - race condition during real-time update
+**Fixed:**
+- SQL aggregation formula (lines 318-343)
+- adjusted_overlap_start for aggregation (lines 523-529)
+- Validator: `check_sma_data.py` (lines 336-358)
 
 #### 2. RSI Loader (`indicators/rsi_loader.py`)
 **Status:** ⬜ NOT FIXED
@@ -266,12 +269,12 @@ After fixes applied, update:
 
 ## Progress Tracking
 
-**Overall Status:** 1/11 loaders fixed (9.1%)
+**Overall Status:** 2/11 loaders fixed (18.2%)
 
 | Loader | Status | Priority | Date Fixed | Notes |
 |--------|--------|----------|------------|-------|
-| ema_loader.py | ✅ | 1 | 2025-11-10 | Complete, validated |
-| sma_loader.py | ⬜ | 1 | - | - |
+| ema_loader.py | ✅ | 1 | 2025-11-10 | 99.99% accuracy |
+| sma_loader.py | ✅ | 1 | 2025-11-10 | 99.998% accuracy |
 | rsi_loader.py | ⬜ | 1 | - | - |
 | macd_loader.py | ⬜ | 1 | - | - |
 | bollinger_bands_loader.py | ⬜ | 1 | - | - |

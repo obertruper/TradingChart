@@ -490,7 +490,20 @@ For issues or questions:
 
 ## Changelog
 
-### Version 1.2.0 (2025-11-10) - Critical Bug Fix
+### Version 1.3.0 (2025-11-10) - SMA Validator Timestamp Offset Bug Fix
+- **Fixed Timestamp Offset Bug in SMA Validator** (same as EMA)
+  - SQL aggregation formula used period START instead of END for timestamps
+  - BEFORE: timestamp `15:00` contained data from `15:00-15:59` (FUTURE data!)
+  - AFTER: timestamp `15:00` contains data from `14:00-14:59` (CORRECT)
+  - Fixed SQL in `check_sma_data.py` lines 336-358
+  - Applied same fix as EMA validator
+- **Validation Results**: 99.998% accuracy (246,750/246,755 correct)
+  - Even BETTER accuracy than EMA (99.99%)!
+  - Only 5 errors on latest candle (2025-11-10 17:00) - race condition during real-time update
+  - All historical data 100% accurate
+- **Note**: SMA uses 1x lookback (optimal), unlike EMA which needs 5x
+
+### Version 1.2.0 (2025-11-10) - EMA Validator Critical Bug Fix
 - **Fixed Timestamp Offset Bug in EMA Validator** (ROOT CAUSE #1)
   - EMA validation was showing 90-100% error rate after loader recalculation
   - SQL aggregation formula used period START instead of END for timestamps

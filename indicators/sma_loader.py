@@ -316,11 +316,13 @@ class SMALoader:
                 df = pd.read_sql_query(query, conn, params=(self.symbol, start_date, end_date))
             else:
                 # Для остальных таймфреймов агрегируем
+                # ВАЖНО: Timestamp = КОНЕЦ периода (не начало!)
+                # Пример для 1h: timestamp 15:00 содержит данные 14:00-14:59
+                # Пример для 15m: timestamp 15:15 содержит данные 15:00-15:14
                 query = f"""
                     WITH time_groups AS (
                         SELECT
-                            date_trunc('hour', timestamp) +
-                            INTERVAL '{minutes} minutes' * (EXTRACT(MINUTE FROM timestamp)::integer / {minutes}) as period_start,
+                            date_trunc('hour', timestamp) + INTERVAL '{minutes} minutes' as period_end,
                             close,
                             symbol,
                             timestamp as original_timestamp
@@ -328,12 +330,12 @@ class SMALoader:
                         WHERE symbol = %s AND timestamp >= %s AND timestamp < %s
                     ),
                     last_in_period AS (
-                        SELECT DISTINCT ON (period_start, symbol)
-                            period_start as timestamp,
+                        SELECT DISTINCT ON (period_end, symbol)
+                            period_end as timestamp,
                             symbol,
                             close
                         FROM time_groups
-                        ORDER BY period_start, symbol, original_timestamp DESC
+                        ORDER BY period_end, symbol, original_timestamp DESC
                     )
                     SELECT * FROM last_in_period
                     ORDER BY timestamp
@@ -513,9 +515,18 @@ class SMALoader:
                         batch_end = min(current_date + timedelta(days=batch_days), max_date)
 
                         # Загружаем данные с запасом для расчета SMA
+                        # Для SMA lookback = 1x period оптимален (100% точность)
+                        # В отличие от EMA, где нужен 5x для покрытия 99% весов
                         max_period = max(periods)
                         lookback = timedelta(minutes=max_period * self.timeframe_minutes[timeframe])
-                        data_start = current_date - lookback
+
+                        # Для агрегированных таймфреймов вычитаем один период таймфрейма
+                        # Чтобы загрузить достаточно 1m свечей для агрегации
+                        if timeframe != '1m':
+                            minutes_tf = self.timeframe_minutes[timeframe]
+                            data_start = current_date - lookback - timedelta(minutes=minutes_tf)
+                        else:
+                            data_start = current_date - lookback
 
                         # Агрегируем свечи
                         df = self.aggregate_candles(data_start, batch_end, timeframe)

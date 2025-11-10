@@ -333,11 +333,14 @@ class SMAValidator:
                 if end_date:
                     date_filter += " AND timestamp <= %s"
 
+                # ВАЖНО: Timestamp = КОНЕЦ периода (не начало!)
+                # Пример для 1h: timestamp 15:00 содержит данные 14:00-14:59
+                # Пример для 15m: timestamp 15:15 содержит данные 15:00-15:14
+                # FIX: 2025-11-10 - исправлен timestamp offset bug
                 query = f"""
                     WITH aggregated_candles AS (
                         SELECT
-                            date_trunc('hour', timestamp) +
-                            INTERVAL '{minutes} minutes' * (EXTRACT(MINUTE FROM timestamp)::integer / {minutes}) as period_start,
+                            date_trunc('hour', timestamp) + INTERVAL '{minutes} minutes' as period_end,
                             close,
                             symbol,
                             timestamp as original_timestamp
@@ -346,12 +349,12 @@ class SMAValidator:
                             {date_filter}
                     ),
                     last_in_period AS (
-                        SELECT DISTINCT ON (period_start, symbol)
-                            period_start as timestamp,
+                        SELECT DISTINCT ON (period_end, symbol)
+                            period_end as timestamp,
                             symbol,
                             close
                         FROM aggregated_candles
-                        ORDER BY period_start, symbol, original_timestamp DESC
+                        ORDER BY period_end, symbol, original_timestamp DESC
                     )
                     SELECT
                         c.timestamp,

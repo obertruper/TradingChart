@@ -400,8 +400,16 @@ else:
 ### Влияние на другие индикаторы:
 
 **Timestamp offset bug затрагивает ВСЕ индикаторы с агрегацией 15m/1h:**
-- ❌ SMA, RSI, ATR, ADX, MACD, Bollinger Bands, VWAP, MFI, Stochastic, Williams %R
-- ✅ Требуется применить те же исправления
+
+**Исправлены:**
+- ✅ **EMA** - FIXED (2025-11-10) - 99.99% accuracy
+- ✅ **SMA** - FIXED (2025-11-10) - 99.998% accuracy (даже лучше чем EMA!)
+
+**Требуют исправления:**
+- ❌ RSI, ATR, ADX, MACD, Bollinger Bands, VWAP, MFI, Stochastic, Williams %R
+- ✅ Требуется применить те же исправления SQL aggregation formula
 - ✅ Требуется полный пересчет с --force-reload для таймфреймов 15m и 1h
 
 **Приоритет:** HIGH - критическая точность данных для всей системы технического анализа
+
+**Progress:** 2/11 loaders fixed (18.2%)

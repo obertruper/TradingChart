@@ -1,10 +1,10 @@
 # CHANGELOG
 
-## [2025-11-10] - EMA Loader Critical Bug Fix (Timestamp Offset)
+## [2025-11-10] - Critical Timestamp Offset Bug Fix (EMA & SMA Loaders)
 
 ### 🐛 Critical Bug Fixes
 
-#### Fixed Timestamp Offset Bug in EMA Loader (Affects ALL Aggregated Indicators)
+#### Fixed Timestamp Offset Bug in EMA and SMA Loaders (Affects ALL Aggregated Indicators)
 **Impact:** CRITICAL - affected all indicators using 15m and 1h timeframe aggregation
 
 **Problem:**
@@ -41,20 +41,32 @@
 - Status: **PRODUCTION READY** - within professional trading standards
 
 **Files Changed:**
-- `indicators/ema_loader.py` - Fixed SQL aggregation, increased lookback, added adjusted_overlap_start
-- `tests/check_full_data/check_ema_data.py` - Fixed SQL aggregation, increased lookback
-- `indicators/tools/EMA_ROOT_CAUSE_REPORT.md` - Created comprehensive analysis document
 
-**Impact on Other Indicators:**
-⚠️ **ALL indicators with aggregation are affected by timestamp offset bug:**
-- SMA, RSI, ATR, ADX, MACD, Bollinger Bands, VWAP, MFI, Stochastic, Williams %R
-- **Action Required**: Apply same SQL fix to all loaders with aggregation
-- **Data Recalculation Required**: All 15m and 1h timeframes need `--force-reload`
-- 1m timeframe NOT affected (no aggregation)
+**EMA Loader (first fix - 2025-11-10 morning):**
+- `indicators/ema_loader.py` - Fixed SQL aggregation, increased lookback to 5x, added adjusted_overlap_start
+- `tests/check_full_data/check_ema_data.py` - Applied same fixes to validator
+- Validation: 99.99% accuracy achieved
+
+**SMA Loader (second fix - 2025-11-10 evening):**
+- `indicators/sma_loader.py` - Fixed SQL aggregation, added adjusted_overlap_start (kept lookback 1x - optimal for SMA)
+- `tests/check_full_data/check_sma_data.py` - Applied same SQL fix to validator
+- Validation: 99.998% accuracy achieved (even better than EMA!)
 
 **Documentation:**
-- Full technical analysis: `indicators/tools/EMA_ROOT_CAUSE_REPORT.md`
-- Updated project documentation: `CLAUDE.md` (Recent Improvements section)
+- `indicators/tools/EMA_ROOT_CAUSE_REPORT.md` - Comprehensive technical analysis
+- `indicators/tools/TIMESTAMP_OFFSET_FIX_TODO.md` - Action plan for remaining indicators (2/11 done)
+- `indicators/tests/check_full_data/README.md` - Updated with validation results
+- `CLAUDE.md` - Updated Recent Improvements section
+
+**Impact on Other Indicators:**
+⚠️ **Remaining indicators with aggregation still affected:**
+- ✅ **EMA** - FIXED (99.99% accuracy)
+- ✅ **SMA** - FIXED (99.998% accuracy)
+- ⬜ **RSI, ATR, ADX, MACD, Bollinger Bands, VWAP, MFI, Stochastic, Williams %R** - TODO
+- **Progress:** 2/11 loaders fixed (18.2%)
+- **Action Required**: Apply same SQL fix to remaining loaders
+- **Data Recalculation Required**: All 15m and 1h timeframes need `--force-reload`
+- 1m timeframe NOT affected (no aggregation)
 
 ---
 
