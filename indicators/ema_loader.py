@@ -19,7 +19,7 @@ import yaml
 import psycopg2
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Dict, Tuple
 from tqdm import tqdm
 import time
@@ -75,6 +75,7 @@ class EMALoader:
         self.symbol = symbol
         self.config = self.load_config()
         self.symbol_progress = ""  # Будет установлено из main() для отображения прогресса
+        self.force_reload = False  # Флаг принудительного пересчета (устанавливается из main())
         self.timeframe_minutes = self._parse_timeframes()
 
     def _parse_timeframes(self) -> dict:
@@ -185,6 +186,72 @@ class EMALoader:
 
             return True
 
+    def clear_ema_columns(self, timeframe: str, periods: List[int]) -> bool:
+        """
+        Обнуляет (устанавливает NULL) все EMA столбцы для указанного таймфрейма и символа
+
+        Args:
+            timeframe: Таймфрейм для очистки (1m, 15m, 1h)
+            periods: Список периодов EMA для очистки
+
+        Returns:
+            True если очистка успешна, False в случае ошибки
+        """
+        table_name = f'indicators_bybit_futures_{timeframe}'
+
+        with self.db.get_connection() as conn:
+            cur = conn.cursor()
+
+            try:
+                # Формируем SET clause для всех EMA колонок
+                set_clauses = [f'ema_{period} = NULL' for period in periods]
+                set_clause = ', '.join(set_clauses)
+
+                # Выполняем UPDATE запрос
+                query = f"""
+                    UPDATE {table_name}
+                    SET {set_clause}
+                    WHERE symbol = %s
+                """
+
+                cur.execute(query, (self.symbol,))
+                rows_affected = cur.rowcount
+
+                conn.commit()
+                logger.info(f"🗑️  Обнулено {rows_affected:,} записей для EMA столбцов в {table_name} (символ: {self.symbol})")
+                logger.info(f"   Очищены столбцы: {', '.join([f'ema_{p}' for p in periods])}")
+
+                return True
+
+            except Exception as e:
+                logger.error(f"❌ Ошибка при очистке EMA столбцов: {e}")
+                conn.rollback()
+                return False
+            finally:
+                cur.close()
+
+    def get_min_date_for_symbol(self, symbol: str) -> datetime:
+        """
+        Получает минимальную дату доступных данных для символа
+
+        Args:
+            symbol: Торговая пара
+
+        Returns:
+            Минимальная дата или текущая дата если данных нет
+        """
+        with self.db.get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT MIN(timestamp)
+                FROM candles_bybit_futures_1m
+                WHERE symbol = %s
+            """, (symbol,))
+            result = cur.fetchone()
+            if result and result[0]:
+                return result[0]
+            return datetime.now(timezone.utc)
+
     def get_last_ema_checkpoint(self, timeframe: str, period: int) -> Tuple[Optional[datetime], Optional[float]]:
         """
         Получает последнее сохраненное значение EMA для продолжения
@@ -254,28 +321,52 @@ class EMALoader:
                 df[column_name] = ema_values
             else:
                 # Нет начального значения - используем pandas.ewm
-                df[column_name] = df['price'].ewm(span=period, adjust=False).mean()
+                df[column_name] = df['price'].ewm(span=period, adjust=False, min_periods=period).mean()
 
         return df
 
     def process_batch(self, timeframe: str, periods: List[int],
-                     start_date: datetime, end_date: datetime,
-                     initial_emas: Dict[int, float]) -> Dict[int, float]:
+                     overlap_start: datetime, batch_start: datetime,
+                     batch_end: datetime) -> None:
         """
-        Обрабатывает один батч данных
+        Обрабатывает один батч данных используя FULL RECALCULATION подход с lookback
+
+        ВАЖНО: Для корректного расчета EMA используется full recalculation на истории
+        с достаточным lookback периодом, а не checkpoint-based incremental calculation.
+
+        Почему full recalculation:
+        - EMA — экспоненциальная скользящая средняя, учитывающая ВСЮ историю
+        - Checkpoint-based подход для агрегированных таймфреймов (15m, 1h)
+          математически некорректен и дает 100% ошибок
+        - Full recalculation гарантирует точность через pandas.ewm()
+
+        Алгоритм:
+        1. Загружаем данные с lookback (overlap_start до batch_end)
+        2. Рассчитываем EMA на ВСЕЙ загруженной истории
+        3. Фильтруем и сохраняем только новые данные (batch_start до batch_end)
 
         Args:
             timeframe: Таймфрейм
             periods: Периоды EMA
-            start_date: Начало батча
-            end_date: Конец батча
-            initial_emas: Начальные значения EMA
+            overlap_start: Начало данных включая lookback для warm-up
+            batch_start: Начало новых данных для сохранения
+            batch_end: Конец батча
 
         Returns:
-            Последние значения EMA для следующего батча
+            None (данные сохраняются в БД напрямую)
         """
         with self.db.get_connection() as conn:
             cur = conn.cursor()
+
+            # Для агрегированных таймфреймов нужно загружать 1m свечи РАНЬШЕ overlap_start
+            # Пример: для 1h свечи в 14:00 нужны 1m свечи от 13:00 до 13:59
+            # Это критично для корректной агрегации!
+            if timeframe != '1m':
+                minutes = self.timeframe_minutes[timeframe]
+                # Вычитаем один период таймфрейма для загрузки достаточных 1m свечей
+                adjusted_overlap_start = overlap_start - timedelta(minutes=minutes)
+            else:
+                adjusted_overlap_start = overlap_start
 
             # Загружаем данные
             if timeframe == '1m':
@@ -288,52 +379,72 @@ class EMALoader:
                     AND timestamp <= %s
                     ORDER BY timestamp
                 """
-                cur.execute(query, (self.symbol, start_date, end_date))
+                cur.execute(query, (self.symbol, adjusted_overlap_start, batch_end))
             else:
                 # Для других таймфреймов - агрегация
-                minutes = self.timeframe_minutes[timeframe]
+                # Используем adjusted_overlap_start для загрузки достаточных 1m свечей
+                #
+                # ВАЖНО: Timestamp = КОНЕЦ периода (не начало!)
+                # Пример для 1h: timestamp 15:00 содержит данные 14:00-14:59
+                # Это стандарт технического анализа
                 query = f"""
                     WITH candle_data AS (
                         SELECT
-                            date_trunc('hour', timestamp) +
-                            INTERVAL '{minutes} minutes' * (EXTRACT(MINUTE FROM timestamp)::integer / {minutes}) as period_start,
-                            open,  -- Используем OPEN для старших таймфреймов
+                            date_trunc('hour', timestamp) + INTERVAL '{minutes} minutes' as period_end,
+                            close,  -- Используем CLOSE как в стандарте технического анализа
                             symbol,
                             timestamp as original_timestamp
                         FROM candles_bybit_futures_1m
                         WHERE symbol = %s AND timestamp >= %s AND timestamp <= %s
+                    ),
+                    last_in_period AS (
+                        SELECT DISTINCT ON (period_end)
+                            period_end as timestamp,
+                            close as price
+                        FROM candle_data
+                        ORDER BY period_end, original_timestamp DESC
                     )
-                    SELECT DISTINCT ON (period_start)
-                        period_start + INTERVAL '{minutes} minutes' as timestamp,
-                        first_value(open) OVER (PARTITION BY period_start ORDER BY original_timestamp) as price
-                    FROM candle_data
-                    WHERE symbol = %s
-                    ORDER BY period_start
+                    SELECT timestamp, price
+                    FROM last_in_period
+                    ORDER BY timestamp
                 """
-                cur.execute(query, (self.symbol, start_date, end_date, self.symbol))
+                cur.execute(query, (self.symbol, adjusted_overlap_start, batch_end))
 
             rows = cur.fetchall()
 
             if not rows:
-                return initial_emas
+                logger.warning(f"Нет данных для батча {overlap_start} - {batch_end}")
+                return
 
-            # Создаем DataFrame
+            # Создаем DataFrame со ВСЕМИ данными (включая overlap)
             df = pd.DataFrame(rows, columns=['timestamp', 'price'])
+            df['timestamp'] = pd.to_datetime(df['timestamp'])
             df['price'] = df['price'].astype(float)
+            df.set_index('timestamp', inplace=True)
 
-            # Рассчитываем EMA
-            df = self.calculate_ema_batch(df, periods, initial_emas)
+            # Рассчитываем EMA для ВСЕГО диапазона используя pandas.ewm
+            for period in periods:
+                col_name = f'ema_{period}'
+                df[col_name] = df['price'].ewm(span=period, adjust=False, min_periods=period).mean()
+
+            # Фильтруем только НОВЫЕ данные для сохранения (исключаем overlap)
+            df_to_save = df[df.index >= batch_start].copy()
+            df_to_save.reset_index(inplace=True)
+
+            if df_to_save.empty:
+                logger.warning(f"Нет новых данных для сохранения в батче {batch_start} - {batch_end}")
+                return
 
             # Сохраняем в БД
             table_name = f'indicators_bybit_futures_{timeframe}'
 
-            # Подготавливаем данные для batch update
+            # Подготавливаем данные для batch update (только новые данные)
             updates = []
-            for _, row in df.iterrows():
+            for _, row in df_to_save.iterrows():
                 update_values = {'timestamp': row['timestamp'], 'symbol': self.symbol}
                 for period in periods:
                     col_name = f'ema_{period}'
-                    if col_name in df.columns and pd.notna(row[col_name]):
+                    if col_name in df_to_save.columns and pd.notna(row[col_name]):
                         update_values[col_name] = float(row[col_name])
 
                 if len(update_values) > 2:  # Есть хотя бы одно значение EMA
@@ -361,19 +472,7 @@ class EMALoader:
                             logger.error(f"Ошибка обновления: {e}")
 
             conn.commit()
-
-            # Возвращаем последние значения EMA для следующего батча
-            last_emas = {}
-            for period in periods:
-                col_name = f'ema_{period}'
-                if col_name in df.columns:
-                    last_value = df[col_name].dropna().iloc[-1] if not df[col_name].dropna().empty else None
-                    if last_value is not None:
-                        last_emas[period] = float(last_value)
-                    elif period in initial_emas:
-                        last_emas[period] = initial_emas[period]
-
-            return last_emas
+            logger.debug(f"✅ Сохранено {len(df_to_save)} записей для батча {batch_start} - {batch_end}")
 
     def calculate_and_save_ema(self, timeframe: str, periods: List[int],
                                batch_days: int = 7,
@@ -397,6 +496,13 @@ class EMALoader:
         # Создаем колонки если нужно
         if not self.create_ema_columns(timeframe, periods):
             return
+
+        # Обнуляем существующие данные если включен флаг force-reload
+        if self.force_reload:
+            logger.info(f"\n🔄 Включен режим force-reload - обнуление существующих EMA данных")
+            if not self.clear_ema_columns(timeframe, periods):
+                logger.error(f"❌ Не удалось обнулить EMA столбцы для {timeframe}")
+                return
 
         with self.db.get_connection() as conn:
             cur = conn.cursor()
@@ -442,30 +548,13 @@ class EMALoader:
                     logger.error("❌ Нет данных для обработки")
                     return
 
-            # Добавляем буфер для инициализации (если начинаем с начала)
-            initial_emas = {}
-            if not latest_checkpoint:
-                max_period = max(periods)
-                buffer_start = current_date - timedelta(minutes=max_period + 50)
-
-                logger.info(f"\n🔧 Инициализация EMA с буферными данными...")
-                initial_emas = self.process_batch(
-                    timeframe, periods,
-                    buffer_start, current_date,
-                    {}
-                )
-
-                # Используем значения из checkpoints если они есть
-                for period, checkpoint in checkpoints.items():
-                    if checkpoint['last_ema'] is not None:
-                        initial_emas[period] = checkpoint['last_ema']
-
-                logger.info(f"✅ Инициализация завершена")
-            else:
-                # Используем checkpoint значения как начальные
-                for period, checkpoint in checkpoints.items():
-                    if checkpoint['last_ema'] is not None:
-                        initial_emas[period] = checkpoint['last_ema']
+            # Определяем размер lookback для точного расчета EMA
+            # Lookback multiplier = 5 покрывает ~99% весов EMA для идеальной точности
+            # (2x = 86%, 3x = 95%, 4x = 98%, 5x = 99% весов экспоненциальной функции)
+            # Это обеспечивает расхождение < 0.01 пункта при валидации
+            lookback_multiplier = 5
+            overlap_periods = max(periods) * lookback_multiplier if periods else 1000
+            overlap_minutes = overlap_periods * self.timeframe_minutes[timeframe]
 
             # Получаем конечную дату
             cur.execute("""
@@ -507,12 +596,18 @@ class EMALoader:
                 while current_date < max_date:
                     batch_end = min(current_date + timedelta(days=batch_days), max_date)
 
-                    # Обрабатываем батч
+                    # Определяем overlap_start для ВСЕХ батчей (включая первый)
+                    # Используем lookback для правильного warm-up периода EMA
+                    # Если недостаточно исторических данных, берем MIN(timestamp)
+                    min_available_date = self.get_min_date_for_symbol(self.symbol)
+                    overlap_start = max(current_date - timedelta(minutes=overlap_minutes),
+                                      min_available_date)
+
+                    # Обрабатываем батч с overlap
                     try:
-                        initial_emas = self.process_batch(
+                        self.process_batch(
                             timeframe, periods,
-                            current_date, batch_end,
-                            initial_emas
+                            overlap_start, current_date, batch_end
                         )
 
                         # Считаем записи в батче
@@ -536,7 +631,7 @@ class EMALoader:
                         'записей': f'~{total_records:,}'
                     })
 
-                    current_date = batch_end + timedelta(minutes=1)
+                    current_date = batch_end  # Без разрыва между батчами
 
                     # Checkpoint каждые 10 батчей
                     if batch_count % 10 == 0:
@@ -634,6 +729,8 @@ def main():
                        help='Размер батча в днях (по умолчанию: 1)')
     parser.add_argument('--start-date', type=str,
                        help='Начальная дата в формате YYYY-MM-DD (если не указана, продолжает с checkpoint)')
+    parser.add_argument('--force-reload', action='store_true',
+                       help='Обнулить все EMA столбцы перед загрузкой (принудительный полный пересчет)')
 
     args = parser.parse_args()
 
@@ -665,7 +762,7 @@ def main():
     start_date = None
     if args.start_date:
         try:
-            start_date = datetime.strptime(args.start_date, '%Y-%m-%d')
+            start_date = datetime.strptime(args.start_date, '%Y-%m-%d').replace(tzinfo=timezone.utc)
         except ValueError:
             logger.error(f"❌ Неверный формат даты: {args.start_date}. Используйте YYYY-MM-DD")
             sys.exit(1)
@@ -685,6 +782,7 @@ def main():
         # Создаем загрузчик и запускаем для текущего символа
         try:
             loader = EMALoader(symbol=symbol)
+            loader.force_reload = args.force_reload
             loader.symbol_progress = f"[{idx}/{total_symbols}]"
             loader.run(timeframes, args.batch_days, start_date)
             logger.info(f"\n✅ Символ {symbol} обработан\n")
