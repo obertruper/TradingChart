@@ -188,20 +188,24 @@ class MFILoader:
                         logger.info(f"📅 Последняя дата MFI: {last_mfi_date}")
                         logger.info(f"▶️  Продолжаем с: {start_date}")
 
-                # 4. Определяем end_date (последняя завершенная свеча)
+                # 4. Определяем end_date (последняя ЗАВЕРШЕННАЯ свеча)
                 end_date = max_candle_date
 
-                # Выравниваем до начала периода
+                # Выравниваем до начала периода И вычитаем один период (исключаем незавершенную свечу)
                 if self.timeframe == '1m':
                     end_date = end_date.replace(second=0, microsecond=0)
+                    end_date = end_date - timedelta(minutes=1)  # Exclude last incomplete 1m candle
                 elif self.timeframe == '15m':
                     minutes = (end_date.minute // 15) * 15
                     end_date = end_date.replace(minute=minutes, second=0, microsecond=0)
+                    end_date = end_date - timedelta(minutes=15)  # Exclude last incomplete 15m candle
                 elif self.timeframe == '1h':
                     end_date = end_date.replace(minute=0, second=0, microsecond=0)
+                    end_date = end_date - timedelta(hours=1)  # Exclude last incomplete 1h candle
 
                 logger.info(f"📅 Диапазон данных в БД: {min_candle_date} - {max_candle_date}")
-                logger.info(f"⏸️  Ограничение end_date до последней завершенной свечи: {end_date}")
+                logger.info(f"⏸️  Ограничение end_date до последней ЗАВЕРШЕННОЙ свечи: {end_date}")
+                logger.info(f"   (исключена незавершенная свеча {max_candle_date})")
 
                 return start_date, end_date
 
@@ -235,11 +239,18 @@ class MFILoader:
             pd.Series с MFI значениями
         """
 
+        # Конвертируем колонки в float64 для корректной работы с PostgreSQL Decimal типами
+        # (аналогично RSI loader fix для предотвращения TypeError)
+        high = df['high'].astype(np.float64)
+        low = df['low'].astype(np.float64)
+        close = df['close'].astype(np.float64)
+        volume = df['volume'].astype(np.float64)
+
         # 1. Typical Price
-        tp = (df['high'] + df['low'] + df['close']) / 3
+        tp = (high + low + close) / 3
 
         # 2. Money Flow (не фильтруем volume = 0, просто считаем)
-        money_flow = tp * df['volume']
+        money_flow = tp * volume
 
         # 3. Разделение на Positive/Negative
         tp_diff = tp.diff()  # TP - TP_prev
