@@ -61,17 +61,22 @@ logger = setup_logging()
 class ATRLoader:
     """Загрузчик ATR (Average True Range) для разных таймфреймов"""
 
-    def __init__(self, symbol: str = 'BTCUSDT'):
+    def __init__(self, symbol: str = 'BTCUSDT', force_reload: bool = False):
         """
         Инициализация загрузчика
 
         Args:
             symbol: Торговая пара
+            force_reload: Пересчитать все данные с начала (по умолчанию False)
         """
         self.db = DatabaseConnection()
         self.symbol = symbol
         self.config = self.load_config()
         self.symbol_progress = ""  # Будет установлено из main() для отображения прогресса
+        self.force_reload = force_reload
+
+        if force_reload:
+            logger.info("⚠️  Режим FORCE RELOAD: пересчет всех данных с начала")
 
         # Динамический мапинг таймфреймов на минуты
         self.timeframe_minutes = self._parse_timeframes()
@@ -327,11 +332,11 @@ class ATRLoader:
                           AND timestamp <= %s
                     )
                     SELECT
-                        period_start + INTERVAL '{minutes} minutes' as timestamp,
+                        period_start as timestamp,
                         symbol,
                         MAX(high) as high,
                         MIN(low) as low,
-                        (ARRAY_AGG(close ORDER BY period_start DESC))[1] as close
+                        (ARRAY_AGG(close ORDER BY timestamp DESC))[1] as close
                     FROM time_groups
                     GROUP BY period_start, symbol
                     ORDER BY period_start
@@ -407,6 +412,141 @@ class ATRLoader:
 
         return pd.Series(atr_values, index=df.index)
 
+    def load_all_candles(self, timeframe: str, start_date: datetime = None) -> pd.DataFrame:
+        """
+        Загрузка всех свечей для расчета ATR (OBV pattern)
+
+        Args:
+            timeframe: Таймфрейм (1m, 15m, 1h)
+            start_date: Начальная дата (если None, берется самая ранняя)
+
+        Returns:
+            DataFrame с колонками: timestamp, symbol, high, low, close
+        """
+        if start_date is None:
+            start_date, _ = self.get_data_range(timeframe)
+
+        with self.db.get_connection() as conn:
+            if timeframe == '1m':
+                # Для 1m просто берем все свечи
+                query = """
+                    SELECT timestamp, symbol, high, low, close
+                    FROM candles_bybit_futures_1m
+                    WHERE symbol = %s AND timestamp >= %s
+                    ORDER BY timestamp ASC
+                """
+                df = pd.read_sql_query(
+                    query,
+                    conn,
+                    params=(self.symbol, start_date),
+                    parse_dates=['timestamp']
+                )
+            else:
+                # Для 15m и 1h - агрегируем из 1m данных
+                minutes = self.timeframe_minutes[timeframe]
+                query = f"""
+                    WITH time_groups AS (
+                        SELECT
+                            timestamp,
+                            DATE_TRUNC('hour', timestamp) +
+                            INTERVAL '1 minute' * (FLOOR(EXTRACT(MINUTE FROM timestamp) / {minutes}) * {minutes}) as period_start,
+                            high,
+                            low,
+                            close,
+                            symbol
+                        FROM candles_bybit_futures_1m
+                        WHERE symbol = %s AND timestamp >= %s
+                    )
+                    SELECT
+                        period_start as timestamp,
+                        symbol,
+                        MAX(high) as high,
+                        MIN(low) as low,
+                        (ARRAY_AGG(close ORDER BY timestamp DESC))[1] as close
+                    FROM time_groups
+                    GROUP BY period_start, symbol
+                    ORDER BY period_start ASC
+                """
+                df = pd.read_sql_query(
+                    query,
+                    conn,
+                    params=(self.symbol, start_date),
+                    parse_dates=['timestamp']
+                )
+
+        logger.info(f"Загружено {len(df):,} свечей от {df['timestamp'].min()} до {df['timestamp'].max()}")
+        return df
+
+    def batch_update_atr(self, df: pd.DataFrame, table_name: str, period: int):
+        """
+        Батч-обновление ATR в БД по дням
+
+        Args:
+            df: DataFrame с колонками timestamp, symbol, atr_{period}
+            table_name: Имя таблицы индикаторов
+            period: Период ATR
+        """
+        col_name = f'atr_{period}'
+
+        if df.empty:
+            logger.info(f"Нет данных для обновления {col_name}")
+            return
+
+        # Фильтруем только строки с не-NULL значениями
+        df_to_save = df[df[col_name].notna()].copy()
+
+        if len(df_to_save) == 0:
+            logger.warning(f"Нет данных для сохранения в {col_name}")
+            return
+
+        # Группируем по дням
+        df_to_save['date'] = pd.to_datetime(df_to_save['timestamp']).dt.date
+        grouped = df_to_save.groupby('date')
+
+        total_days = len(grouped)
+        total_records = len(df_to_save)
+
+        logger.info(f"Начало обновления БД: {total_records:,} записей за {total_days} дней")
+
+        with self.db.get_connection() as conn:
+            with conn.cursor() as cur:
+                # Progress bar для батч-обновления
+                progress_desc = f"{self.symbol} {self.symbol_progress} ATR-{period} {table_name.split('_')[-1].upper()}"
+                pbar = tqdm(
+                    total=total_days,
+                    desc=f"{progress_desc} - Обновление БД",
+                    unit=" день",
+                    bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]'
+                )
+
+                try:
+                    for date, day_data in grouped:
+                        # Батч UPDATE для одного дня
+                        update_values = [
+                            (float(row[col_name]), row['timestamp'], row['symbol'])
+                            for _, row in day_data.iterrows()
+                        ]
+
+                        cur.executemany(f"""
+                            UPDATE {table_name}
+                            SET {col_name} = %s
+                            WHERE timestamp = %s AND symbol = %s
+                        """, update_values)
+
+                        pbar.update(1)
+
+                    # Коммитим все изменения
+                    conn.commit()
+                    pbar.close()
+
+                    logger.info(f"✅ {col_name}: {total_records:,} записей обновлено за {total_days} дней")
+
+                except Exception as e:
+                    conn.rollback()
+                    pbar.close()
+                    logger.error(f"❌ Ошибка при обновлении {col_name}: {e}")
+                    raise
+
     def save_single_column_to_db(self, df: pd.DataFrame, table_name: str, period: int):
         """
         Сохраняет одну колонку ATR в базу данных
@@ -458,24 +598,29 @@ class ATRLoader:
 
     def calculate_and_save_atr(self, timeframe: str, periods: List[int], batch_days: int = 1):
         """
-        Последовательно рассчитывает и сохраняет ATR для каждого периода
+        Рассчитывает и сохраняет ATR для каждого периода (OBV pattern)
+
+        Алгоритм:
+        1. Загружает ВСЕ свечи от начала истории
+        2. Рассчитывает ATR для всех данных (поддерживая Wilder smoothing цепочку)
+        3. Фильтрует только новые данные для записи
+        4. Записывает батчами по дням
 
         Args:
             timeframe: Таймфрейм (1m, 15m, 1h)
             periods: Список периодов ATR
-            batch_days: Размер батча в днях
+            batch_days: Не используется (сохранен для обратной совместимости)
         """
         table_name = self.get_table_name(timeframe)
 
         logger.info(f"🚀 Начало расчета ATR для {self.symbol} на таймфрейме {timeframe}")
         logger.info(f"📊 Периоды: {periods}")
-        logger.info(f"📦 Размер батча: {batch_days} дней")
 
         # Получаем диапазон доступных данных
         min_date, max_date = self.get_data_range(timeframe)
         logger.info(f"📅 Диапазон данных в БД: {min_date} - {max_date}")
 
-        # Определяем последний завершенный период (используем max_date из БД как текущее время)
+        # Определяем последний завершенный период
         last_complete_period = self.get_last_complete_period(max_date, timeframe)
 
         # Ограничиваем max_date последним завершенным периодом
@@ -492,109 +637,85 @@ class ATRLoader:
             # Находим последнюю дату с данными для этого периода
             last_date = self.get_last_atr_date(timeframe, period)
 
-            if last_date:
-                # Начинаем с дня после последнего
-                start_date = last_date + timedelta(days=1)
-                start_date = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
+            if self.force_reload:
+                # Режим force_reload - начинаем с самого начала
+                start_date = min_date
+                logger.info(f"🔄 Режим FORCE RELOAD: начинаем с начала данных")
+                logger.info(f"📅 Начальная дата: {start_date}")
+            elif last_date:
+                # Важно: для Wilder smoothing нужна вся история, но записывать будем только новые данные
+                # Начинаем загрузку с начала истории для корректности цепочки
+                start_date = min_date
                 logger.info(f"📅 Последняя дата ATR_{period}: {last_date}")
-                logger.info(f"▶️  Продолжаем с: {start_date}")
+                logger.info(f"🔄 Загрузка с начала истории для корректности Wilder smoothing")
+                logger.info(f"▶️  Записывать будем только новые данные (после {last_date})")
             else:
                 # Начинаем с самого начала
                 start_date = min_date
                 logger.info(f"🆕 ATR_{period} пуст, начинаем с начала: {start_date}")
 
             # Если уже все обработано
-            if start_date > max_date:
+            if last_date and last_date >= max_date:
                 logger.info(f"✅ ATR_{period} уже актуален (до {max_date})")
                 continue
 
-            # Рассчитываем количество дней для обработки
-            total_days = (max_date.date() - start_date.date()).days + 1
-            logger.info(f"📆 Всего дней для обработки: {total_days}")
+            # Вывод сообщения о полном пересчете (как в OBV)
+            print()
+            print(f"🔄 [{self.symbol}] {self.symbol_progress} [{timeframe}] ATR-{period}: Расчёт от начала истории для корректности Wilder smoothing")
+            print("ℹ️  Это нормальная особенность индикатора ATR (требуется для точности)")
+            print()
 
-            # Обрабатываем батчами
-            current_date = start_date
-            processed_days = 0
-            total_records = 0  # Счетчик обработанных записей
+            # Загружаем ВСЕ свечи от начала истории
+            logger.info("Загрузка всех исторических свечей...")
+            start_time = time.time()
 
-            # Lookback для корректного расчета = period × 2 × timeframe_minutes
-            lookback_minutes = period * 2 * self.timeframe_minutes[timeframe]
-            lookback_delta = timedelta(minutes=lookback_minutes)
+            df = self.load_all_candles(timeframe, start_date)
 
-            logger.info(f"🔙 Lookback период: {lookback_minutes} минут ({period} × 2 × {self.timeframe_minutes[timeframe]})")
+            if df.empty:
+                logger.warning(f"Нет данных для расчета ATR_{period} для {self.symbol}")
+                continue
 
-            with tqdm(total=total_days,
-                     desc=f"{self.symbol} {self.symbol_progress} ATR-{period} {timeframe.upper()}",
-                     unit="day",
-                     bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}] {postfix}') as pbar:
-                while current_date <= max_date:
-                    # Определяем конец батча
-                    batch_end = min(
-                        current_date + timedelta(days=batch_days) - timedelta(seconds=1),
-                        max_date
-                    )
+            # Расчет True Range и ATR для всех данных
+            logger.info(f"Расчет True Range и ATR-{period}...")
+            print(f"🔢 Начинаю расчёт ATR-{period} для {len(df):,} свечей...")
 
-                    # Добавляем lookback к началу для корректного расчета
-                    data_start = current_date - lookback_delta
+            df['tr'] = self.calculate_true_range(df)
+            df[f'atr_{period}'] = self.calculate_atr(df, period)
 
-                    try:
-                        # Загружаем данные с lookback
-                        df = self.aggregate_candles(data_start, batch_end, timeframe)
+            calc_time = time.time() - start_time
 
-                        if len(df) == 0:
-                            # Пропускаем пустые батчи без вывода в консоль (не мешаем tqdm)
-                            current_date += timedelta(days=batch_days)
-                            processed_days += batch_days
-                            pbar.update(min(batch_days, total_days - processed_days + batch_days))
-                            continue
+            # Красивый вывод времени расчета
+            if calc_time < 60:
+                time_str = f"{calc_time:.1f} секунд"
+            else:
+                minutes = int(calc_time // 60)
+                seconds = int(calc_time % 60)
+                time_str = f"{minutes} минут {seconds} секунд"
 
-                        # Рассчитываем True Range
-                        df['tr'] = self.calculate_true_range(df)
+            print(f"⏱️  Расчёт ATR-{period} завершён за {time_str}")
+            print()
 
-                        # Рассчитываем ATR
-                        df[f'atr_{period}'] = self.calculate_atr(df, period)
+            logger.info(f"✓ ATR-{period} рассчитан для {len(df):,} записей за {calc_time:.2f}s")
 
-                        # Фильтруем только целевой диапазон (без lookback)
-                        df_to_save = df[df['timestamp'] >= current_date].copy()
+            # Фильтруем данные для записи
+            if self.force_reload:
+                # force_reload - перезаписываем ВСЕ данные
+                df_to_update = df.copy()
+                logger.info(f"Режим FORCE RELOAD: перезапись всех {len(df_to_update):,} записей")
+            elif last_date:
+                # Инкрементальная загрузка - только новые данные
+                df_to_update = df[df['timestamp'] > last_date].copy()
+                logger.info(f"Найдено {len(df_to_update):,} новых записей для обновления (после {last_date})")
+            else:
+                # Первая загрузка - все данные
+                df_to_update = df.copy()
+                logger.info(f"Первичная загрузка: {len(df_to_update):,} записей")
 
-                        # Сохраняем с retry логикой
-                        max_retries = 3
-                        for attempt in range(max_retries):
-                            try:
-                                self.save_single_column_to_db(df_to_save, table_name, period)
-                                break
-                            except Exception as e:
-                                if attempt < max_retries - 1:
-                                    wait_time = 2 ** attempt
-                                    # Не выводим warning в консоль, чтобы не мешать tqdm
-                                    time.sleep(wait_time)
-                                else:
-                                    # Только при полном провале выводим ошибку (это критично)
-                                    logger.error(f"❌ Все {max_retries} попытки не удались для батча {current_date.date()}")
-                                    raise
-
-                        # Обновляем прогресс
-                        days_in_batch = min(batch_days, (max_date.date() - current_date.date()).days + 1)
-                        processed_days += days_in_batch
-                        total_records += len(df_to_save)
-                        pbar.update(days_in_batch)
-
-                        # Обновляем информацию в progress bar
-                        if not df_to_save.empty:
-                            latest_timestamp = df_to_save['timestamp'].max()
-                            pbar.set_postfix({
-                                'всего': f'{total_records:,}',
-                                'последняя': latest_timestamp.strftime('%Y-%m-%d %H:%M')
-                            })
-
-                    except Exception as e:
-                        logger.error(f"❌ Ошибка при обработке батча {current_date.date()}: {e}")
-                        raise
-
-                    # Переходим к следующему батчу
-                    current_date += timedelta(days=batch_days)
-
-            logger.info(f"✅ ATR_{period} завершен: {total_records:,} записей обработано за {processed_days} дней")
+            # Если есть данные для обновления - записываем батчами
+            if not df_to_update.empty:
+                self.batch_update_atr(df_to_update, table_name, period)
+            else:
+                logger.info(f"✅ Нет новых данных для обновления ATR_{period}")
 
         logger.info(f"\n{'='*80}")
         logger.info(f"🎉 Все периоды ATR для {timeframe} завершены!")
@@ -651,6 +772,8 @@ def main():
                        help='Несколько торговых пар через запятую (например, BTCUSDT,ETHUSDT)')
     parser.add_argument('--timeframe', type=str, help='Конкретный таймфрейм (1m, 15m, 1h)')
     parser.add_argument('--batch-days', type=int, help='Размер батча в днях')
+    parser.add_argument('--force-reload', action='store_true',
+                       help='Пересчитать все данные с начала (заполнить пробелы внутри истории)')
 
     args = parser.parse_args()
 
@@ -682,7 +805,7 @@ def main():
         logger.info(f"{'='*80}\n")
 
         try:
-            loader = ATRLoader(symbol=symbol)
+            loader = ATRLoader(symbol=symbol, force_reload=args.force_reload)
             loader.symbol_progress = f"[{idx}/{total_symbols}]"
             loader.run(timeframe=args.timeframe, batch_days=args.batch_days)
             logger.info(f"\n✅ Символ {symbol} обработан\n")
