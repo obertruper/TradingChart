@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-RSI (Relative Strength Index) Loader with Enhanced Batch Processing
-===================================================================
+RSI (Relative Strength Index) Loader with Single-Pass Batch Processing
+========================================================================
 Загрузчик RSI индикаторов с поддержкой:
 - Автоматического определения пустых столбцов
 - Раздельной загрузки для разных уровней заполненности
 - Множественных периодов (7, 9, 14, 21, 25)
-- Батчевой обработки с checkpoint
+- Батчевой записи данных (расчет в одном проходе, запись батчами)
 - Любых таймфреймов (1m, 15m, 1h и т.д.)
 - Инкрементальных обновлений
 """
@@ -78,6 +78,9 @@ class RSILoader:
         self.config = self.load_config()
         self.symbol_progress = ""  # Будет установлено из main() для отображения прогресса
         self.timeframe_minutes = self._parse_timeframes()
+        self.force_reload = False  # Флаг принудительного пересчета (устанавливается из main())
+        # REVERTED: Bybit-style RSI SMA smoothing - не используется
+        # self.smoothing_length = self.config.get('rsi', {}).get('smoothing_length', 14)
 
     def load_config(self):
         """Загружает конфигурацию из файла"""
@@ -171,7 +174,6 @@ class RSILoader:
             'partial': [],
             'complete': []
         }
-        checkpoints = {}
 
         with self.db.get_connection() as conn:
             cur = conn.cursor()
@@ -215,11 +217,9 @@ class RSILoader:
                             logger.info(f"  ❌ RSI_{period}: {fill_percent:.1f}% заполнено (будет загружен с начала)")
                         elif fill_percent < 95:
                             groups['partial'].append(period)
-                            checkpoints[period] = {'date': last_rsi, 'state': {}}
                             logger.info(f"  ⚠️ RSI_{period}: {fill_percent:.1f}% заполнено (продолжение с {last_rsi.strftime('%Y-%m-%d %H:%M') if last_rsi else 'начала'})")
                         else:
                             groups['complete'].append(period)
-                            checkpoints[period] = {'date': last_rsi, 'state': {}}
                             logger.info(f"  ✅ RSI_{period}: {fill_percent:.1f}% заполнено (обновление с {last_rsi.strftime('%Y-%m-%d %H:%M') if last_rsi else 'конца'})")
                     else:
                         groups['empty'].append(period)
@@ -230,57 +230,250 @@ class RSILoader:
                     groups['empty'].append(period)
                     logger.info(f"  📝 RSI_{period}: нет данных (будет загружен с начала)")
 
-        # Сохраняем checkpoints для дальнейшего использования
-        self.checkpoints = checkpoints
-
         return groups
 
-    def calculate_rsi_batch(self, closes: np.ndarray, period: int,
-                           initial_avg_gain: float = None,
-                           initial_avg_loss: float = None):
+
+    def clear_rsi_columns(self, timeframe: str, periods: List[int]) -> bool:
         """
-        Рассчитывает RSI для батча данных
+        Обнуляет (устанавливает NULL) все RSI столбцы для указанного таймфрейма и символа
+
+        Args:
+            timeframe: Таймфрейм для очистки (1m, 15m, 1h)
+            periods: Список периодов RSI для очистки
 
         Returns:
-            Tuple[массив RSI, финальный avg_gain, финальный avg_loss]
+            True если очистка успешна, False в случае ошибки
+        """
+        table_name = f'indicators_bybit_futures_{timeframe}'
+
+        with self.db.get_connection() as conn:
+            cur = conn.cursor()
+
+            try:
+                # Формируем SET clause для всех RSI колонок
+                set_clauses = [f'rsi_{period} = NULL' for period in periods]
+                set_clause = ', '.join(set_clauses)
+
+                # Выполняем UPDATE запрос
+                query = f"""
+                    UPDATE {table_name}
+                    SET {set_clause}
+                    WHERE symbol = %s
+                """
+
+                cur.execute(query, (self.symbol,))
+                rows_affected = cur.rowcount
+
+                conn.commit()
+                logger.info(f"🗑️  Обнулено {rows_affected:,} записей для RSI столбцов в {table_name} (символ: {self.symbol})")
+                logger.info(f"   Очищены столбцы: {', '.join([f'rsi_{p}' for p in periods])}")
+
+                return True
+
+            except Exception as e:
+                logger.error(f"❌ Ошибка при очистке RSI столбцов: {e}")
+                conn.rollback()
+                return False
+
+    def calculate_rsi(self, closes: np.ndarray, period: int) -> np.ndarray:
+        """
+        Calculate RSI using Wilder smoothing method (single-pass, like validator).
+
+        Args:
+            closes: Array of close prices
+            period: RSI period
+
+        Returns:
+            Array of RSI values (same length as closes)
         """
         if len(closes) < period + 1:
-            return np.full(len(closes), np.nan), None, None
+            return np.full(len(closes), np.nan)
 
-        # Рассчитываем изменения цены
+        # Convert to float64 to handle Decimal types from PostgreSQL
+        closes = np.asarray(closes, dtype=np.float64)
+
+        # Calculate price changes
         deltas = np.diff(closes)
         gains = np.where(deltas > 0, deltas, 0)
         losses = np.where(deltas < 0, -deltas, 0)
 
         rsi_values = np.full(len(closes), np.nan)
 
-        # Инициализация или использование checkpoint
-        if initial_avg_gain is None or initial_avg_loss is None:
-            # Первый расчет - используем SMA для начальных значений
-            avg_gain = np.mean(gains[:period])
-            avg_loss = np.mean(losses[:period])
-            start_idx = period
-        else:
-            avg_gain = initial_avg_gain
-            avg_loss = initial_avg_loss
-            start_idx = 0
+        # Initialize with SMA of first 'period' gains/losses
+        avg_gain = np.mean(gains[:period])
+        avg_loss = np.mean(losses[:period])
 
-        # Рассчитываем RSI для каждой точки
-        for i in range(start_idx, len(gains)):
-            # Сглаженное среднее (Wilder's smoothing)
+        # Calculate RSI for each point using Wilder smoothing
+        for i in range(period, len(gains)):
+            # Wilder smoothing: avg = (avg * (period-1) + new_value) / period
             avg_gain = (avg_gain * (period - 1) + gains[i]) / period
             avg_loss = (avg_loss * (period - 1) + losses[i]) / period
 
-            # Рассчитываем RSI
+            # Calculate RSI
             if avg_loss == 0:
                 rsi = 100
             else:
                 rs = avg_gain / avg_loss
                 rsi = 100 - (100 / (1 + rs))
 
-            rsi_values[i + 1] = rsi  # +1 потому что deltas короче на 1
+            rsi_values[i + 1] = rsi  # +1 because deltas is shorter by 1
 
-        return rsi_values, avg_gain, avg_loss
+        return rsi_values
+
+    def apply_sma_smoothing(self, rsi_values: np.ndarray, smoothing_length: int) -> np.ndarray:
+        """
+        Применяет SMA сглаживание к RSI значениям (Bybit-style)
+
+        Args:
+            rsi_values: Массив RSI значений
+            smoothing_length: Длина окна SMA (по умолчанию 14 на Bybit)
+
+        Returns:
+            Массив RSI со сглаживанием
+        """
+        if smoothing_length <= 1:
+            # Если smoothing отключен, возвращаем оригинальные значения
+            return rsi_values
+
+        rsi_smoothed = np.full(len(rsi_values), np.nan)
+
+        for i in range(smoothing_length - 1, len(rsi_values)):
+            # Проверяем что все значения в окне не NaN
+            window = rsi_values[i - smoothing_length + 1:i + 1]
+            if not np.isnan(window).any():
+                rsi_smoothed[i] = np.mean(window)
+
+        return rsi_smoothed
+
+    def load_all_data(
+        self,
+        timeframe: str,
+        max_period: int,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None
+    ) -> pd.DataFrame:
+        """
+        Load ALL candle data for RSI calculation (single-pass like validator).
+
+        Args:
+            timeframe: '1m', '15m', or '1h'
+            max_period: Maximum RSI period (for lookback calculation)
+            start_date: Start date (None = from beginning)
+            end_date: End date (None = until now)
+
+        Returns:
+            DataFrame with columns: timestamp, close
+        """
+        minutes = self.timeframe_minutes[timeframe]
+
+        # For RSI lookback: 10x for Wilder convergence (99.996% accuracy)
+        lookback_periods = max_period * 10
+        lookback_minutes = lookback_periods * minutes
+
+        # Adjust start_date for lookback
+        if start_date:
+            adjusted_start = start_date - timedelta(minutes=lookback_minutes)
+        else:
+            adjusted_start = None
+
+        if end_date is None:
+            end_date = datetime.now(timezone.utc)
+
+        with self.db.get_connection() as conn:
+            cur = conn.cursor()
+
+            if timeframe == '1m':
+                # For 1m timeframe, data comes directly from candles table
+                query = """
+                    SELECT timestamp, close
+                    FROM candles_bybit_futures_1m
+                    WHERE symbol = %s
+                """
+                params = [self.symbol]
+
+                if adjusted_start:
+                    query += " AND timestamp >= %s"
+                    params.append(adjusted_start)
+                if end_date:
+                    query += " AND timestamp <= %s"
+                    params.append(end_date)
+
+                query += " ORDER BY timestamp"
+                cur.execute(query, params)
+
+            else:
+                # For aggregated timeframes (15m, 1h), aggregate from 1m data
+                # IMPORTANT: Timestamp = START of period (Bybit standard)
+
+                # Subtract one period to load enough 1m candles
+                if adjusted_start:
+                    query_adjusted_start = adjusted_start - timedelta(minutes=minutes)
+                else:
+                    query_adjusted_start = None
+
+                if minutes == 60:  # 1h
+                    query = """
+                        SELECT
+                            date_trunc('hour', timestamp) as period_start,
+                            (array_agg(close ORDER BY timestamp DESC))[1] as close_price
+                        FROM candles_bybit_futures_1m
+                        WHERE symbol = %s
+                    """
+                    params = [self.symbol]
+
+                    if query_adjusted_start:
+                        query += " AND timestamp >= %s"
+                        params.append(query_adjusted_start)
+                    if end_date:
+                        query += " AND timestamp <= %s"
+                        params.append(end_date)
+
+                    query += """
+                        GROUP BY date_trunc('hour', timestamp)
+                        ORDER BY period_start
+                    """
+
+                else:  # 15m
+                    query = f"""
+                        SELECT
+                            date_trunc('hour', timestamp) +
+                            INTERVAL '{minutes} minutes' * (EXTRACT(MINUTE FROM timestamp)::INTEGER / {minutes}) as period_start,
+                            (array_agg(close ORDER BY timestamp DESC))[1] as close_price
+                        FROM candles_bybit_futures_1m
+                        WHERE symbol = %s
+                    """
+                    params = [self.symbol]
+
+                    if query_adjusted_start:
+                        query += " AND timestamp >= %s"
+                        params.append(query_adjusted_start)
+                    if end_date:
+                        query += " AND timestamp <= %s"
+                        params.append(end_date)
+
+                    query += f"""
+                        GROUP BY date_trunc('hour', timestamp),
+                                 EXTRACT(MINUTE FROM timestamp)::INTEGER / {minutes}
+                        ORDER BY period_start
+                    """
+
+                cur.execute(query, params)
+
+            rows = cur.fetchall()
+
+            if not rows:
+                return pd.DataFrame()
+
+            df = pd.DataFrame(rows, columns=['timestamp', 'close'])
+
+            logger.info(f"   📊 Загружено {len(df):,} свечей для {timeframe} (включая lookback)")
+            if start_date:
+                lookback_count = len(df[df['timestamp'] < start_date])
+                data_count = len(df[df['timestamp'] >= start_date])
+                logger.info(f"      • Lookback: {lookback_count:,} свечей")
+                logger.info(f"      • Данные: {data_count:,} свечей")
+
+            return df
 
     def process_batch(self, timeframe: str, periods: List[int],
                      start_date: datetime, end_date: datetime,
@@ -312,18 +505,38 @@ class RSILoader:
             else:
                 # Для других таймфреймов агрегируем из 1m данных
                 interval_minutes = self.timeframe_minutes[timeframe]
-                cur.execute(f"""
-                    SELECT
-                        date_trunc('hour', timestamp) +
-                        INTERVAL '{interval_minutes} minutes' * (EXTRACT(MINUTE FROM timestamp)::INTEGER / {interval_minutes}) as period_start,
-                        (array_agg(close ORDER BY timestamp DESC))[1] as close_price
-                    FROM candles_bybit_futures_1m
-                    WHERE symbol = %s
-                    AND timestamp > %s
-                    AND timestamp <= %s
-                    GROUP BY period_start
-                    ORDER BY period_start
-                """, (self.symbol, start_date, end_date))
+
+                # Вычитаем один период для загрузки достаточных 1m свечей
+                adjusted_start = start_date - timedelta(minutes=interval_minutes)
+
+                # ВАЖНО: Timestamp = НАЧАЛО периода (Bybit standard)
+                # Пример для 1h: timestamp 14:00 содержит данные 14:00:00 - 14:59:59
+                # Пример для 15m: timestamp 14:00 содержит данные 14:00:00 - 14:14:59
+                if interval_minutes == 60:  # 1h
+                    cur.execute(f"""
+                        SELECT
+                            date_trunc('hour', timestamp) as period_start,
+                            (array_agg(close ORDER BY timestamp DESC))[1] as close_price
+                        FROM candles_bybit_futures_1m
+                        WHERE symbol = %s
+                        AND timestamp >= %s
+                        AND timestamp <= %s
+                        GROUP BY date_trunc('hour', timestamp)
+                        ORDER BY period_start
+                    """, (self.symbol, adjusted_start, end_date))
+                else:  # 15m
+                    cur.execute(f"""
+                        SELECT
+                            date_trunc('hour', timestamp) +
+                            INTERVAL '{interval_minutes} minutes' * (EXTRACT(MINUTE FROM timestamp)::INTEGER / {interval_minutes}) as period_start,
+                            (array_agg(close ORDER BY timestamp DESC))[1] as close_price
+                        FROM candles_bybit_futures_1m
+                        WHERE symbol = %s
+                        AND timestamp >= %s
+                        AND timestamp <= %s
+                        GROUP BY date_trunc('hour', timestamp), EXTRACT(MINUTE FROM timestamp)::INTEGER / {interval_minutes}
+                        ORDER BY period_start
+                    """, (self.symbol, adjusted_start, end_date))
 
             data = cur.fetchall()
             if not data:
@@ -337,14 +550,17 @@ class RSILoader:
             final_states = {}
 
             for period in periods:
+                # Используем initial_states (передается между батчами в памяти)
                 initial_state = initial_states.get(period, {})
                 initial_avg_gain = initial_state.get('avg_gain')
                 initial_avg_loss = initial_state.get('avg_loss')
 
-                # Если нет начального состояния, нужен буфер данных
+                # Если нет initial_state - загружаем буфер данных для инициализации
                 if initial_avg_gain is None:
                     # Загружаем дополнительные данные для инициализации
-                    buffer_start = start_date - timedelta(minutes=period * self.timeframe_minutes.get(timeframe, 1) * 2)
+                    # Lookback: 10x для Wilder convergence (99.996% точности)
+                    lookback_periods = period * 10
+                    buffer_start = start_date - timedelta(minutes=lookback_periods * self.timeframe_minutes.get(timeframe, 1))
 
                     if timeframe == '1m':
                         cur.execute(f"""
@@ -358,23 +574,46 @@ class RSILoader:
                     else:
                         # Для других таймфреймов агрегируем из 1m данных
                         interval_minutes = self.timeframe_minutes[timeframe]
-                        cur.execute(f"""
-                            SELECT
-                                (array_agg(close ORDER BY timestamp DESC))[1] as close_price
-                            FROM (
+
+                        # Вычитаем один период для загрузки достаточных 1m свечей
+                        adjusted_buffer_start = buffer_start - timedelta(minutes=interval_minutes)
+
+                        # ВАЖНО: Используем period_start (начало периода, Bybit standard)
+                        if interval_minutes == 60:  # 1h
+                            cur.execute(f"""
                                 SELECT
-                                    date_trunc('hour', timestamp) +
-                                    INTERVAL '{interval_minutes} minutes' * (EXTRACT(MINUTE FROM timestamp)::INTEGER / {interval_minutes}) as period_start,
-                                    timestamp,
-                                    close
-                                FROM candles_bybit_futures_1m
-                                WHERE symbol = %s
-                                AND timestamp > %s
-                                AND timestamp <= %s
-                            ) t
-                            GROUP BY period_start
-                            ORDER BY period_start
-                        """, (self.symbol, buffer_start, start_date))
+                                    (array_agg(close ORDER BY timestamp DESC))[1] as close_price
+                                FROM (
+                                    SELECT
+                                        date_trunc('hour', timestamp) as period_start,
+                                        timestamp,
+                                        close
+                                    FROM candles_bybit_futures_1m
+                                    WHERE symbol = %s
+                                    AND timestamp >= %s
+                                    AND timestamp <= %s
+                                ) t
+                                GROUP BY period_start
+                                ORDER BY period_start
+                            """, (self.symbol, adjusted_buffer_start, start_date))
+                        else:  # 15m
+                            cur.execute(f"""
+                                SELECT
+                                    (array_agg(close ORDER BY timestamp DESC))[1] as close_price
+                                FROM (
+                                    SELECT
+                                        date_trunc('hour', timestamp) +
+                                        INTERVAL '{interval_minutes} minutes' * (EXTRACT(MINUTE FROM timestamp)::INTEGER / {interval_minutes}) as period_start,
+                                        timestamp,
+                                        close
+                                    FROM candles_bybit_futures_1m
+                                    WHERE symbol = %s
+                                    AND timestamp >= %s
+                                    AND timestamp <= %s
+                                ) t
+                                GROUP BY period_start
+                                ORDER BY period_start
+                            """, (self.symbol, adjusted_buffer_start, start_date))
 
                     buffer_data = [float(row[0]) for row in cur.fetchall()]
                     if len(buffer_data) >= period:
@@ -391,7 +630,7 @@ class RSILoader:
                             closes, period
                         )
                 else:
-                    # Используем checkpoint
+                    # Продолжаем с переданным состоянием
                     rsi_values, avg_gain, avg_loss = self.calculate_rsi_batch(
                         closes, period, initial_avg_gain, initial_avg_loss
                     )
@@ -424,7 +663,6 @@ class RSILoader:
                     cur.execute(update_query, params)
 
             conn.commit()
-
         return final_states
 
     def process_periods_group(self, timeframe: str, periods: List[int],
@@ -463,27 +701,18 @@ class RSILoader:
                     logger.error("❌ Нет данных для обработки")
                     return
             else:
-                # Используем минимальный checkpoint среди периодов
-                valid_dates = []
-                for period in periods:
-                    if period in self.checkpoints and self.checkpoints[period].get('date'):
-                        valid_dates.append(self.checkpoints[period]['date'])
-
-                if valid_dates:
-                    current_date = min(valid_dates)
+                # Для частичных периодов начинаем с начала (single-pass approach)
+                cur.execute(f"""
+                    SELECT MIN(timestamp)
+                    FROM candles_bybit_futures_1m
+                    WHERE symbol = %s
+                """, (self.symbol,))
+                result = cur.fetchone()
+                if result and result[0]:
+                    current_date = result[0]
                 else:
-                    # Если нет checkpoint'ов, начинаем с начала
-                    cur.execute(f"""
-                        SELECT MIN(timestamp)
-                        FROM candles_bybit_futures_1m
-                        WHERE symbol = %s
-                    """, (self.symbol,))
-                    result = cur.fetchone()
-                    if result and result[0]:
-                        current_date = result[0]
-                    else:
-                        logger.error("❌ Нет данных для обработки")
-                        return
+                    logger.error("❌ Нет данных для обработки")
+                    return
 
             # Получаем конечную дату
             cur.execute(f"""
@@ -504,13 +733,8 @@ class RSILoader:
             logger.info(f"   • Период: {total_days} дней ({current_date.strftime('%Y-%m-%d')} → {max_date.strftime('%Y-%m-%d')})")
             logger.info(f"   • Батчей: {total_batches}")
 
-            # Инициализируем состояния
-            current_states = {}
-            for period in periods:
-                if period in self.checkpoints and not from_beginning:
-                    current_states[period] = self.checkpoints[period].get('state', {})
-                else:
-                    current_states[period] = {}
+            # Инициализируем состояния (always start fresh for single-pass calculation)
+            current_states = {period: {} for period in periods}
 
             action = 'Загрузка' if from_beginning else 'Обновление'
             periods_str = ','.join(map(str, periods))
@@ -549,58 +773,165 @@ class RSILoader:
     def process_timeframe(self, timeframe: str, batch_days: int = 7,
                          start_date: Optional[datetime] = None):
         """
-        Обрабатывает RSI для указанного таймфрейма с автоматическим определением пустых столбцов
+        Process RSI for specified timeframe using single-pass calculation (like validator).
 
         Args:
-            timeframe: Таймфрейм
-            batch_days: Размер батча в днях
-            start_date: Начальная дата (если None, продолжаем с checkpoint)
+            timeframe: Timeframe ('1m', '15m', '1h')
+            batch_days: Batch size in days (for database writes only)
+            start_date: Start date (None = from beginning)
         """
-        # Получаем периоды из конфига
+        # Get periods from config
         periods = self.config.get('indicators', {}).get('rsi', {}).get('periods', [14])
         batch_days = self.config.get('indicators', {}).get('rsi', {}).get('batch_days', batch_days)
 
         logger.info(f"📊 Обработка RSI для таймфрейма {timeframe}")
         logger.info(f"📈 Периоды RSI: {periods}")
         logger.info(f"🎯 Символ: {self.symbol}")
-        logger.info(f"📦 Размер батча: {batch_days} дней")
+        logger.info(f"📦 Размер батча записи: {batch_days} дней")
 
-        # Создаем колонки если нужно
+        # Create columns if needed
         if not self.create_rsi_columns(timeframe, periods):
             return
 
-        # Анализируем заполненность периодов
-        groups = self.analyze_rsi_periods(timeframe, periods)
+        # Clear existing data if force-reload enabled
+        if self.force_reload:
+            logger.info(f"\n🔄 Включен режим force-reload - обнуление существующих RSI данных")
+            if not self.clear_rsi_columns(timeframe, periods):
+                logger.error(f"❌ Не удалось обнулить RSI столбцы для {timeframe}")
+                return
 
-        # Выводим план загрузки
-        if groups['empty'] or groups['partial'] or groups['complete']:
-            logger.info(f"📋 План загрузки:")
-            if groups['empty']:
-                logger.info(f"  🔄 Полная загрузка с начала для периодов: {groups['empty']}")
-            if groups['partial']:
-                logger.info(f"  ⏩ Продолжение загрузки для периодов: {groups['partial']}")
-            if groups['complete']:
-                logger.info(f"  📊 Обновление последних данных для периодов: {groups['complete']}")
+        # Determine date range
+        end_date = datetime.now(timezone.utc)
 
-        # Обрабатываем пустые периоды (с начала)
-        if groups['empty']:
-            logger.info(f"🚀 Начинаю загрузку пустых периодов RSI: {groups['empty']}")
-            self.process_periods_group(timeframe, groups['empty'], batch_days, start_date, from_beginning=True)
+        if start_date is None:
+            # Find earliest candle
+            with self.db.get_connection() as conn:
+                cur = conn.cursor()
+                cur.execute("""
+                    SELECT MIN(timestamp)
+                    FROM candles_bybit_futures_1m
+                    WHERE symbol = %s
+                """, (self.symbol,))
+                result = cur.fetchone()
+                if result and result[0]:
+                    start_date = result[0]
+                else:
+                    logger.error(f"❌ Нет данных для {self.symbol}")
+                    return
 
-        # Обрабатываем частично заполненные периоды (с checkpoint'а)
-        if groups['partial']:
-            logger.info(f"🚀 Продолжаю загрузку частичных периодов RSI: {groups['partial']}")
-            self.process_periods_group(timeframe, groups['partial'], batch_days, start_date, from_beginning=False)
+        logger.info(f"📅 Период данных: {start_date.date()} → {end_date.date()}")
 
-        # Обрабатываем полные периоды (обновление последних данных)
-        if groups['complete']:
-            logger.info(f"🚀 Обновляю полные периоды RSI: {groups['complete']}")
-            self.process_periods_group(timeframe, groups['complete'], batch_days, start_date, from_beginning=False)
+        # STEP 1: Load ALL data at once (with lookback)
+        logger.info(f"\n🔄 ШАГ 1/3: Загрузка всех данных...")
+        max_period = max(periods)
+        df = self.load_all_data(timeframe, max_period, start_date, end_date)
 
-        if not groups['empty'] and not groups['partial'] and not groups['complete']:
-            logger.info(f"✅ Все периоды RSI для {timeframe} уже актуальны!")
+        if df.empty:
+            logger.error(f"❌ Нет данных для загрузки")
+            return
 
-        logger.info(f"✅ Обработка RSI для {timeframe} завершена!")
+        # STEP 2: Calculate RSI for all periods (single-pass)
+        logger.info(f"\n🔄 ШАГ 2/3: Расчет RSI для всех периодов...")
+        rsi_results = {}
+
+        for period in tqdm(periods, desc=f"{self.symbol} {timeframe} - Расчет RSI"):
+            rsi_values = self.calculate_rsi(df['close'].values, period)
+            rsi_results[period] = rsi_values
+
+        # Filter to actual data range (remove lookback)
+        df_write = df[df['timestamp'] >= start_date].copy()
+
+        for period in periods:
+            # Get RSI values for actual data range
+            full_rsi = rsi_results[period]
+            actual_rsi = full_rsi[len(full_rsi) - len(df_write):]
+            df_write[f'rsi_{period}'] = actual_rsi
+
+        logger.info(f"   ✅ Рассчитано RSI для {len(df_write):,} свечей")
+
+        # STEP 3: Write results to database in batches
+        logger.info(f"\n🔄 ШАГ 3/3: Запись результатов в БД батчами...")
+        self.write_results_in_batches(timeframe, periods, df_write, batch_days)
+
+        logger.info(f"\n✅ Обработка RSI для {timeframe} завершена!")
+
+    def write_results_in_batches(
+        self,
+        timeframe: str,
+        periods: List[int],
+        df: pd.DataFrame,
+        batch_days: int
+    ):
+        """
+        Write RSI results to database in batches.
+
+        Args:
+            timeframe: Timeframe
+            periods: RSI periods
+            df: DataFrame with timestamp, close, and rsi_* columns
+            batch_days: Batch size in days
+        """
+        table_name = f'indicators_bybit_futures_{timeframe}'
+        minutes = self.timeframe_minutes[timeframe]
+
+        # Split data into daily batches
+        start_date = df['timestamp'].min()
+        end_date = df['timestamp'].max()
+        current_date = start_date
+
+        total_days = (end_date - start_date).days + 1
+        total_batches = (total_days + batch_days - 1) // batch_days  # Ceiling division
+
+        with tqdm(total=total_batches, desc=f"{self.symbol} {timeframe} - Запись в БД") as pbar:
+            batch_num = 0
+
+            while current_date <= end_date:
+                batch_end = min(current_date + timedelta(days=batch_days), end_date + timedelta(days=1))
+
+                # Filter batch data
+                batch_df = df[(df['timestamp'] >= current_date) & (df['timestamp'] < batch_end)]
+
+                if not batch_df.empty:
+                    # Write to database
+                    with self.db.get_connection() as conn:
+                        cur = conn.cursor()
+
+                        # Build UPDATE query for all periods at once
+                        set_clauses = [f"rsi_{period} = data.rsi_{period}" for period in periods]
+
+                        # Prepare data tuples
+                        values = []
+                        for _, row in batch_df.iterrows():
+                            value_tuple = (self.symbol, row['timestamp']) + tuple(row[f'rsi_{period}'] for period in periods)
+                            values.append(value_tuple)
+
+                        if values:
+                            # Create temporary table for batch update
+                            value_columns = ', '.join([f'rsi_{p}' for p in periods])
+                            placeholders = ', '.join(['%s'] * (2 + len(periods)))
+
+                            update_query = f"""
+                                UPDATE {table_name} t
+                                SET {', '.join(set_clauses)}
+                                FROM (VALUES {', '.join([f'({placeholders})' for _ in values])})
+                                AS data(symbol, timestamp, {value_columns})
+                                WHERE t.symbol = data.symbol::VARCHAR
+                                AND t.timestamp = data.timestamp::TIMESTAMPTZ
+                            """
+
+                            # Flatten values list
+                            flat_values = [item for value_tuple in values for item in value_tuple]
+
+                            cur.execute(update_query, flat_values)
+                            conn.commit()
+
+                batch_num += 1
+                pbar.set_description(f"{self.symbol} {timeframe} - Батч {batch_num}/{total_batches}")
+                pbar.update(1)
+
+                current_date = batch_end
+
+        logger.info(f"   ✅ Записано {len(df):,} записей в {table_name}")
 
     def run(self, timeframes: List[str] = None, batch_days: int = 7,
             start_date: Optional[datetime] = None):
@@ -661,6 +992,8 @@ def main():
                        help='Размер батча в днях (по умолчанию: 7)')
     parser.add_argument('--start-date', type=str,
                        help='Начальная дата в формате YYYY-MM-DD (если не указана, автоматическое определение)')
+    parser.add_argument('--force-reload', action='store_true',
+                       help='Обнулить все RSI столбцы перед загрузкой (принудительный полный пересчет)')
 
     args = parser.parse_args()
 
@@ -717,6 +1050,7 @@ def main():
         try:
             loader = RSILoader(symbol=symbol)
             loader.symbol_progress = f"[{idx}/{total_symbols}]"
+            loader.force_reload = args.force_reload
             loader.run(timeframes, args.batch_days, start_date)
             logger.info(f"✅ Символ {symbol} обработан")
         except KeyboardInterrupt:

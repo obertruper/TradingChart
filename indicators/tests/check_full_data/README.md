@@ -69,6 +69,36 @@ Validates Exponential Moving Average (EMA) indicators across all timeframes and 
 
 ---
 
+### 3. RSI Validator (`check_rsi_data.py`)
+
+Validates Relative Strength Index (RSI) indicators across all timeframes and periods using Wilder smoothing method.
+
+**What it checks:**
+- ✅ Mathematical correctness (recalculates RSI using Wilder smoothing: `avg = (avg * (period-1) + new_value) / period`)
+- ✅ Warm-up period (10x lookback for 99.996% convergence accuracy)
+- ✅ Data completeness (no unexpected NULL values after warm-up)
+- ✅ All 5 RSI periods: 7, 9, 14, 21, 25
+- ✅ All 3 timeframes: 1m, 15m, 1h
+- ✅ All configured symbols (17 futures pairs)
+
+**Formula:**
+- Gains/Losses calculated from price changes
+- First avg_gain/avg_loss = SMA(period) for initialization
+- Subsequent: `avg_gain = (avg_gain * (period-1) + current_gain) / period` (Wilder smoothing)
+- RS = avg_gain / avg_loss
+- RSI = 100 - (100 / (1 + RS))
+
+**Tolerance:**
+- Allows up to ±0.5 difference (RSI oscillates 0-100)
+- Flags anything beyond this tolerance as calculation error
+
+**Special Notes:**
+- Uses 10x lookback multiplier (vs 2x in old version) for full Wilder smoothing convergence
+- Checkpoint system validation: verifies stored avg_gain/avg_loss states
+- Critical for momentum trading strategies
+
+---
+
 ## Usage
 
 ### Basic Usage
@@ -81,11 +111,15 @@ python3 check_sma_data.py
 
 # EMA validation (all symbols, timeframes, periods)
 python3 check_ema_data.py
+
+# RSI validation (all symbols, timeframes, periods)
+python3 check_rsi_data.py
 ```
 
 **Warning:**
 - SMA validation: ~255 combinations (17 symbols × 3 timeframes × 5 periods) - **15-30 minutes**
 - EMA validation: ~357 combinations (17 symbols × 3 timeframes × 7 periods) - **20-40 minutes**
+- RSI validation: ~255 combinations (17 symbols × 3 timeframes × 5 periods) - **15-30 minutes**
 
 ### Filtered Validation
 
@@ -131,30 +165,55 @@ python3 check_ema_data.py --symbol BTCUSDT --timeframe 1h --days 7
 python3 check_ema_data.py --symbol ETHUSDT --verbose
 ```
 
+**RSI Examples:**
+```bash
+# Single symbol
+python3 check_rsi_data.py --symbol ETHUSDT
+
+# Single timeframe
+python3 check_rsi_data.py --timeframe 1h
+
+# Single period
+python3 check_rsi_data.py --period 14
+
+# Last 7 days only (recommended after recalculation)
+python3 check_rsi_data.py --days 7
+
+# Combination filters
+python3 check_rsi_data.py --symbol ETHUSDT --timeframe 1h --days 7
+
+# Verbose output
+python3 check_rsi_data.py --symbol ETHUSDT --verbose
+```
+
 ### Common Workflows
 
 **Quick Health Check (Last Week):**
 ```bash
 python3 check_sma_data.py --days 7
 python3 check_ema_data.py --days 7
+python3 check_rsi_data.py --days 7
 ```
 
 **Single Symbol Deep Dive:**
 ```bash
 python3 check_sma_data.py --symbol BTCUSDT --verbose
 python3 check_ema_data.py --symbol BTCUSDT --verbose
+python3 check_rsi_data.py --symbol ETHUSDT --verbose
 ```
 
 **Production Validation (Hourly Data Only):**
 ```bash
 python3 check_sma_data.py --timeframe 1h
 python3 check_ema_data.py --timeframe 1h
+python3 check_rsi_data.py --timeframe 1h
 ```
 
 **Debug Specific Period:**
 ```bash
 python3 check_sma_data.py --period 200 --days 30 --verbose
 python3 check_ema_data.py --period 200 --days 30 --verbose
+python3 check_rsi_data.py --period 14 --days 30 --verbose
 ```
 
 ---
@@ -431,18 +490,23 @@ class RSIValidator:
 
    # After EMA loader
    python3 ema_loader.py && python3 check_ema_data.py --days 1
+
+   # After RSI loader
+   python3 rsi_loader.py && python3 check_rsi_data.py --days 1
    ```
 
 2. **Validate recent data frequently (daily)**
    ```bash
    python3 check_sma_data.py --days 7
    python3 check_ema_data.py --days 7
+   python3 check_rsi_data.py --days 7
    ```
 
 3. **Full validation periodically (weekly/monthly)**
    ```bash
    python3 check_sma_data.py
    python3 check_ema_data.py
+   python3 check_rsi_data.py
    ```
 
 4. **Test new loaders with validation**
@@ -454,6 +518,10 @@ class RSIValidator:
    # After modifying ema_loader.py
    python3 ema_loader.py --symbol BTCUSDT --timeframe 1h
    python3 check_ema_data.py --symbol BTCUSDT --timeframe 1h --verbose
+
+   # After modifying rsi_loader.py
+   python3 rsi_loader.py --symbol ETHUSDT --timeframe 1h --force-reload
+   python3 check_rsi_data.py --symbol ETHUSDT --timeframe 1h --verbose
    ```
 
 5. **Use filters for faster debugging**
@@ -461,6 +529,7 @@ class RSIValidator:
    # Don't validate everything when debugging
    python3 check_sma_data.py --symbol BTCUSDT --days 1 --verbose
    python3 check_ema_data.py --symbol BTCUSDT --days 1 --verbose
+   python3 check_rsi_data.py --symbol ETHUSDT --days 1 --verbose
    ```
 
 ---
@@ -471,10 +540,12 @@ class RSIValidator:
 |--------|---------|-------|
 | `check_sma_data.py` | **SMA mathematical validation** | Slow (recalculates) |
 | `check_ema_data.py` | **EMA mathematical validation** | Slow (recalculates) |
+| `check_rsi_data.py` | **RSI mathematical validation** | Slow (recalculates) |
 | `../../check_indicators_status.py` | Quick status overview (all indicators) | Fast (counts only) |
 | `../../check_atr_status.py` | ATR-specific status check | Fast (no recalc) |
 | `../../sma_loader.py` | Load SMA data into database | Medium |
 | `../../ema_loader.py` | Load EMA data into database | Medium |
+| `../../rsi_loader.py` | Load RSI data into database | Medium |
 
 ---
 
@@ -489,6 +560,21 @@ For issues or questions:
 ---
 
 ## Changelog
+
+### Version 1.4.0 (2025-11-11) - RSI Validator Created
+- **Created RSI Mathematical Validation** (`check_rsi_data.py`)
+  - Validates all 5 RSI periods (7, 9, 14, 21, 25) across all timeframes
+  - Uses Wilder smoothing method: `avg = (avg * (period-1) + new_value) / period`
+  - 10x lookback multiplier for 99.996% convergence accuracy (vs 2x = 86.6%)
+  - Tolerance: ±0.5 (RSI oscillates 0-100)
+  - Validates checkpoint system: avg_gain/avg_loss states
+- **RSI Loader Bug Fix** (same timestamp offset bug as EMA/SMA)
+  - Fixed SQL aggregation: period START → period END
+  - Increased lookback: 2x → 10x for Wilder smoothing convergence
+  - Added checkpoint file system with 7-day validation
+  - Added --force-reload flag for full recalculation
+  - Expected validation results: 99%+ accuracy after full historical recalculation
+- **Critical**: All RSI data in aggregated timeframes (15m, 1h) requires recalculation with --force-reload
 
 ### Version 1.3.0 (2025-11-10) - SMA Validator Timestamp Offset Bug Fix
 - **Fixed Timestamp Offset Bug in SMA Validator** (same as EMA)
