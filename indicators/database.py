@@ -31,7 +31,7 @@ class DatabaseConnection:
                 'port': 5432,
                 'database': 'trading_data',
                 'user': 'trading_admin',
-                'password': 'K9mX3pQ8vN5bR2tL7wY4zA6cE1dF0gH'
+                'password': 'TrAdm!n2025$Kx9Lm'
             }
 
         self.config = config
