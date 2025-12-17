@@ -337,37 +337,68 @@ class EMAValidator:
                 if end_date:
                     date_filter += " AND timestamp <= %s"
 
-                # ВАЖНО: Timestamp = КОНЕЦ периода (не начало!)
-                # Пример для 1h: timestamp 15:00 содержит данные 14:00-14:59
-                # Это стандарт технического анализа
-                query = f"""
-                    WITH aggregated_candles AS (
+                # ВАЖНО: Timestamp = НАЧАЛО периода (Bybit standard)
+                # Пример для 1h: timestamp 14:00 содержит данные 14:00:00-14:59:59
+                # Пример для 15m: timestamp 14:15 содержит данные 14:15:00-14:29:59
+                if minutes == 60:  # 1h timeframe
+                    query = f"""
+                        WITH aggregated_candles AS (
+                            SELECT
+                                date_trunc('hour', timestamp) as period_start,
+                                close,
+                                symbol,
+                                timestamp as original_timestamp
+                            FROM candles_bybit_futures_1m
+                            WHERE symbol = %s
+                                {date_filter}
+                        ),
+                        last_in_period AS (
+                            SELECT DISTINCT ON (period_start, symbol)
+                                period_start as timestamp,
+                                symbol,
+                                close
+                            FROM aggregated_candles
+                            ORDER BY period_start, symbol, original_timestamp DESC
+                        )
                         SELECT
-                            date_trunc('hour', timestamp) + INTERVAL '{minutes} minutes' as period_end,
-                            close,
-                            symbol,
-                            timestamp as original_timestamp
-                        FROM candles_bybit_futures_1m
-                        WHERE symbol = %s
-                            {date_filter}
-                    ),
-                    last_in_period AS (
-                        SELECT DISTINCT ON (period_end, symbol)
-                            period_end as timestamp,
-                            symbol,
-                            close
-                        FROM aggregated_candles
-                        ORDER BY period_end, symbol, original_timestamp DESC
-                    )
-                    SELECT
-                        c.timestamp,
-                        c.close,
-                        i.{ema_column} as ema_stored
-                    FROM last_in_period c
-                    LEFT JOIN {indicators_table} i
-                        ON c.timestamp = i.timestamp AND c.symbol = i.symbol
-                    ORDER BY c.timestamp ASC
-                """
+                            c.timestamp,
+                            c.close,
+                            i.{ema_column} as ema_stored
+                        FROM last_in_period c
+                        LEFT JOIN {indicators_table} i
+                            ON c.timestamp = i.timestamp AND c.symbol = i.symbol
+                        ORDER BY c.timestamp ASC
+                    """
+                else:  # 15m and other sub-hourly timeframes
+                    query = f"""
+                        WITH aggregated_candles AS (
+                            SELECT
+                                date_trunc('hour', timestamp) +
+                                INTERVAL '{minutes} minutes' * (EXTRACT(MINUTE FROM timestamp)::INTEGER / {minutes}) as period_start,
+                                close,
+                                symbol,
+                                timestamp as original_timestamp
+                            FROM candles_bybit_futures_1m
+                            WHERE symbol = %s
+                                {date_filter}
+                        ),
+                        last_in_period AS (
+                            SELECT DISTINCT ON (period_start, symbol)
+                                period_start as timestamp,
+                                symbol,
+                                close
+                            FROM aggregated_candles
+                            ORDER BY period_start, symbol, original_timestamp DESC
+                        )
+                        SELECT
+                            c.timestamp,
+                            c.close,
+                            i.{ema_column} as ema_stored
+                        FROM last_in_period c
+                        LEFT JOIN {indicators_table} i
+                            ON c.timestamp = i.timestamp AND c.symbol = i.symbol
+                        ORDER BY c.timestamp ASC
+                    """
 
             df = pd.read_sql_query(query, self.conn, params=params)
 

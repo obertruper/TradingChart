@@ -358,6 +358,7 @@ class VMALoader:
                 df = pd.read_sql_query(query, conn, params=(self.symbol, start_date, end_date))
             else:
                 # Для остальных таймфреймов агрегируем СУММУ объемов
+                # ВАЖНО: Timestamp = НАЧАЛО периода (Bybit standard)
                 query = f"""
                     WITH time_groups AS (
                         SELECT
@@ -369,7 +370,7 @@ class VMALoader:
                         WHERE symbol = %s AND timestamp >= %s AND timestamp < %s
                     )
                     SELECT
-                        period_start + INTERVAL '{minutes} minutes' as timestamp,
+                        period_start as timestamp,
                         symbol,
                         SUM(volume) as volume
                     FROM time_groups

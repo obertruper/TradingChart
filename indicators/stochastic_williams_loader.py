@@ -372,6 +372,7 @@ class StochasticLoader:
                 # Для старших таймфреймов агрегируем из минутных
                 minutes = self.timeframe_minutes[timeframe]
 
+                # ВАЖНО: Timestamp = НАЧАЛО периода (Bybit standard)
                 query = f"""
                     WITH time_groups AS (
                         SELECT
@@ -386,7 +387,7 @@ class StochasticLoader:
                           AND timestamp <= %s
                     )
                     SELECT
-                        period_start + INTERVAL '{minutes} minutes' as timestamp,
+                        period_start as timestamp,
                         symbol,
                         MAX(high) as high,
                         MIN(low) as low,
@@ -887,6 +888,7 @@ class WilliamsRLoader:
             else:
                 minutes = self.timeframe_minutes[timeframe]
 
+                # ВАЖНО: Timestamp = НАЧАЛО периода (Bybit standard)
                 query = f"""
                     WITH time_groups AS (
                         SELECT
@@ -901,7 +903,7 @@ class WilliamsRLoader:
                           AND timestamp <= %s
                     )
                     SELECT
-                        period_start + INTERVAL '{minutes} minutes' as timestamp,
+                        period_start as timestamp,
                         symbol,
                         MAX(high) as high,
                         MIN(low) as low,
