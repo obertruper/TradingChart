@@ -381,33 +381,57 @@ class EMALoader:
                 """
                 cur.execute(query, (self.symbol, adjusted_overlap_start, batch_end))
             else:
-                # Для других таймфреймов - агрегация
+                # Для других таймфреймов - агрегация из 1m свечей
                 # Используем adjusted_overlap_start для загрузки достаточных 1m свечей
                 #
-                # ВАЖНО: Timestamp = КОНЕЦ периода (не начало!)
-                # Пример для 1h: timestamp 15:00 содержит данные 14:00-14:59
-                # Это стандарт технического анализа
-                query = f"""
-                    WITH candle_data AS (
-                        SELECT
-                            date_trunc('hour', timestamp) + INTERVAL '{minutes} minutes' as period_end,
-                            close,  -- Используем CLOSE как в стандарте технического анализа
-                            symbol,
-                            timestamp as original_timestamp
-                        FROM candles_bybit_futures_1m
-                        WHERE symbol = %s AND timestamp >= %s AND timestamp <= %s
-                    ),
-                    last_in_period AS (
-                        SELECT DISTINCT ON (period_end)
-                            period_end as timestamp,
-                            close as price
-                        FROM candle_data
-                        ORDER BY period_end, original_timestamp DESC
-                    )
-                    SELECT timestamp, price
-                    FROM last_in_period
-                    ORDER BY timestamp
-                """
+                # ВАЖНО: Timestamp = НАЧАЛО периода (Bybit standard)
+                # Пример для 1h: timestamp 14:00 содержит данные 14:00:00-14:59:59
+                # Пример для 15m: timestamp 14:15 содержит данные 14:15:00-14:29:59
+                if minutes == 60:  # 1h timeframe
+                    query = f"""
+                        WITH candle_data AS (
+                            SELECT
+                                date_trunc('hour', timestamp) as period_start,
+                                close,
+                                symbol,
+                                timestamp as original_timestamp
+                            FROM candles_bybit_futures_1m
+                            WHERE symbol = %s AND timestamp >= %s AND timestamp <= %s
+                        ),
+                        last_in_period AS (
+                            SELECT DISTINCT ON (period_start)
+                                period_start as timestamp,
+                                close as price
+                            FROM candle_data
+                            ORDER BY period_start, original_timestamp DESC
+                        )
+                        SELECT timestamp, price
+                        FROM last_in_period
+                        ORDER BY timestamp
+                    """
+                else:  # 15m and other sub-hourly timeframes
+                    query = f"""
+                        WITH candle_data AS (
+                            SELECT
+                                date_trunc('hour', timestamp) +
+                                INTERVAL '{minutes} minutes' * (EXTRACT(MINUTE FROM timestamp)::INTEGER / {minutes}) as period_start,
+                                close,
+                                symbol,
+                                timestamp as original_timestamp
+                            FROM candles_bybit_futures_1m
+                            WHERE symbol = %s AND timestamp >= %s AND timestamp <= %s
+                        ),
+                        last_in_period AS (
+                            SELECT DISTINCT ON (period_start)
+                                period_start as timestamp,
+                                close as price
+                            FROM candle_data
+                            ORDER BY period_start, original_timestamp DESC
+                        )
+                        SELECT timestamp, price
+                        FROM last_in_period
+                        ORDER BY timestamp
+                    """
                 cur.execute(query, (self.symbol, adjusted_overlap_start, batch_end))
 
             rows = cur.fetchall()
