@@ -60,15 +60,17 @@ logger = setup_logging()
 class VMALoader:
     """Загрузчик VMA (Volume Moving Average) для разных таймфреймов"""
 
-    def __init__(self, symbol: str = 'BTCUSDT'):
+    def __init__(self, symbol: str = 'BTCUSDT', force_reload: bool = False):
         """
         Инициализация загрузчика
 
         Args:
             symbol: Торговая пара
+            force_reload: Принудительный пересчет всех данных с начала истории
         """
         self.db = DatabaseConnection()
         self.symbol = symbol
+        self.force_reload = force_reload
         self.symbol_progress = ""  # Будет установлено из main() для отображения прогресса
         self.config = self.load_config()
 
@@ -455,19 +457,24 @@ class VMALoader:
             logger.info(f"📈 Обработка VMA_{period} ({idx + 1}/{len(periods)}):")
             logger.info(f"{'─'*50}")
 
-            # Находим последнюю дату для ЭТОГО периода
-            last_date = self.get_last_vma_date(timeframe, period)
-
-            if last_date is None:
-                # Колонка пустая, начинаем с начала данных
+            # Если force_reload - всегда начинаем с начала
+            if self.force_reload:
                 start_date = min_date
-                logger.info(f"  📝 VMA_{period}: нет данных (загрузка с начала)")
+                logger.info(f"  🔄 VMA_{period}: FORCE RELOAD - пересчет с начала истории")
             else:
-                # Перезаписываем последний день (на случай обрыва)
-                start_date = last_date.replace(hour=0, minute=0, second=0, microsecond=0)
-                days_behind = (end_date - last_date).days
-                logger.info(f"  ✅ VMA_{period}: последняя дата {last_date.strftime('%Y-%m-%d %H:%M')} "
-                           f"(отстает на {days_behind} дней)")
+                # Находим последнюю дату для ЭТОГО периода
+                last_date = self.get_last_vma_date(timeframe, period)
+
+                if last_date is None:
+                    # Колонка пустая, начинаем с начала данных
+                    start_date = min_date
+                    logger.info(f"  📝 VMA_{period}: нет данных (загрузка с начала)")
+                else:
+                    # Перезаписываем последний день (на случай обрыва)
+                    start_date = last_date.replace(hour=0, minute=0, second=0, microsecond=0)
+                    days_behind = (end_date - last_date).days
+                    logger.info(f"  ✅ VMA_{period}: последняя дата {last_date.strftime('%Y-%m-%d %H:%M')} "
+                               f"(отстает на {days_behind} дней)")
 
             # Подсчитываем количество батчей
             total_time_diff = end_date - start_date
@@ -629,6 +636,8 @@ def main():
                       help='Размер батча в днях (по умолчанию из config.yaml)')
     parser.add_argument('--periods', type=str, default=None,
                       help='Периоды VMA через запятую (10,20,50)')
+    parser.add_argument('--force-reload', action='store_true',
+                      help='Принудительный пересчет ВСЕХ данных с начала истории')
 
     args = parser.parse_args()
 
@@ -655,6 +664,8 @@ def main():
         timeframes = None  # Будут использованы из config.yaml
 
     logger.info(f"🎯 Обработка символов: {symbols}")
+    if args.force_reload:
+        logger.info(f"🔄 Режим FORCE RELOAD: все данные будут пересчитаны с начала истории")
 
     # Засекаем время начала обработки
     start_time = time.time()
@@ -668,7 +679,7 @@ def main():
 
         try:
             # Создаем и запускаем загрузчик для текущего символа
-            loader = VMALoader(symbol=symbol)
+            loader = VMALoader(symbol=symbol, force_reload=args.force_reload)
             loader.symbol_progress = f"[{idx}/{total_symbols}] "
 
             # Если указан конкретный таймфрейм, обрабатываем только его
