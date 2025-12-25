@@ -61,15 +61,17 @@ logger = setup_logging()
 class MACDLoader:
     """Загрузчик MACD (Moving Average Convergence Divergence) для разных таймфреймов"""
 
-    def __init__(self, symbol: str = 'BTCUSDT'):
+    def __init__(self, symbol: str = 'BTCUSDT', force_reload: bool = False):
         """
         Инициализация загрузчика
 
         Args:
             symbol: Торговая пара
+            force_reload: Принудительный пересчет всех данных с начала истории
         """
         self.db = DatabaseConnection()
         self.symbol = symbol
+        self.force_reload = force_reload
         self.config = self.load_config()
         self.symbol_progress = ""  # Будет установлено из main() для отображения прогресса
 
@@ -503,19 +505,24 @@ class MACDLoader:
             logger.info(f"📊 Обработка конфигурации: {config['name']} ({config['fast']}, {config['slow']}, {config['signal']})")
             logger.info(f"{'='*80}")
 
-            # Находим последнюю дату с данными для этой конфигурации
-            last_date = self.get_last_macd_date(timeframe, config)
-
-            if last_date:
-                # Начинаем с дня после последнего
-                start_date = last_date + timedelta(days=1)
-                start_date = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
-                logger.info(f"📅 Последняя дата MACD {config['name']}: {last_date}")
-                logger.info(f"▶️  Продолжаем с: {start_date}")
-            else:
-                # Начинаем с самого начала
+            # Если force_reload - всегда начинаем с начала
+            if self.force_reload:
                 start_date = min_date
-                logger.info(f"🆕 MACD {config['name']} пуст, начинаем с начала: {start_date}")
+                logger.info(f"🔄 MACD {config['name']}: FORCE RELOAD - пересчет с начала истории")
+            else:
+                # Находим последнюю дату с данными для этой конфигурации
+                last_date = self.get_last_macd_date(timeframe, config)
+
+                if last_date:
+                    # Начинаем с дня после последнего
+                    start_date = last_date + timedelta(days=1)
+                    start_date = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
+                    logger.info(f"📅 Последняя дата MACD {config['name']}: {last_date}")
+                    logger.info(f"▶️  Продолжаем с: {start_date}")
+                else:
+                    # Начинаем с самого начала
+                    start_date = min_date
+                    logger.info(f"🆕 MACD {config['name']} пуст, начинаем с начала: {start_date}")
 
             # Если уже все обработано
             if start_date > max_date:
@@ -674,6 +681,8 @@ def main():
                        help='Несколько торговых пар через запятую (например, BTCUSDT,ETHUSDT)')
     parser.add_argument('--timeframe', type=str, help='Конкретный таймфрейм (1m, 15m, 1h)')
     parser.add_argument('--batch-days', type=int, help='Размер батча в днях')
+    parser.add_argument('--force-reload', action='store_true',
+                       help='Принудительный пересчет ВСЕХ данных с начала истории')
 
     args = parser.parse_args()
 
@@ -693,6 +702,8 @@ def main():
             symbols = ['BTCUSDT']
 
     logger.info(f"🎯 Обработка символов: {symbols}")
+    if args.force_reload:
+        logger.info(f"🔄 Режим FORCE RELOAD: все данные будут пересчитаны с начала истории")
 
     # Засекаем время начала обработки
     start_time = time.time()
@@ -705,7 +716,7 @@ def main():
         logger.info(f"{'='*80}\n")
 
         try:
-            loader = MACDLoader(symbol=symbol)
+            loader = MACDLoader(symbol=symbol, force_reload=args.force_reload)
             loader.symbol_progress = f"[{idx}/{total_symbols}] "
             loader.run(timeframe=args.timeframe, batch_days=args.batch_days)
             logger.info(f"\n✅ Символ {symbol} обработан\n")

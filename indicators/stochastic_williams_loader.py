@@ -70,15 +70,17 @@ logger = setup_logging()
 class StochasticLoader:
     """Загрузчик Stochastic Oscillator для разных таймфреймов"""
 
-    def __init__(self, symbol: str = 'BTCUSDT'):
+    def __init__(self, symbol: str = 'BTCUSDT', force_reload: bool = False):
         """
         Инициализация загрузчика
 
         Args:
             symbol: Торговая пара
+            force_reload: Принудительный пересчет всех данных с начала истории
         """
         self.db = DatabaseConnection()
         self.symbol = symbol
+        self.force_reload = force_reload
         self.symbol_progress = ""  # Для отображения прогресса при multi-symbol
         self.config = self.load_config()
 
@@ -493,17 +495,22 @@ class StochasticLoader:
             logger.info(f"📊 Обработка конфигурации: {config['name']} ({config['k_period']}, {config['k_smooth']}, {config['d_period']})")
             logger.info(f"{'='*80}")
 
-            # Находим последнюю дату с данными для этой конфигурации
-            last_date = self.get_last_stochastic_date(timeframe, config)
-
-            if last_date:
-                start_date = last_date + timedelta(days=1)
-                start_date = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
-                logger.info(f"📅 Последняя дата Stochastic {config['name']}: {last_date}")
-                logger.info(f"▶️  Продолжаем с: {start_date}")
-            else:
+            # Если force_reload - всегда начинаем с начала
+            if self.force_reload:
                 start_date = min_date
-                logger.info(f"🆕 Stochastic {config['name']} пуст, начинаем с начала: {start_date}")
+                logger.info(f"🔄 Stochastic {config['name']}: FORCE RELOAD - пересчет с начала истории")
+            else:
+                # Находим последнюю дату с данными для этой конфигурации
+                last_date = self.get_last_stochastic_date(timeframe, config)
+
+                if last_date:
+                    start_date = last_date + timedelta(days=1)
+                    start_date = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
+                    logger.info(f"📅 Последняя дата Stochastic {config['name']}: {last_date}")
+                    logger.info(f"▶️  Продолжаем с: {start_date}")
+                else:
+                    start_date = min_date
+                    logger.info(f"🆕 Stochastic {config['name']} пуст, начинаем с начала: {start_date}")
 
             # Если уже все обработано
             if start_date > max_date:
@@ -657,15 +664,17 @@ class StochasticLoader:
 class WilliamsRLoader:
     """Загрузчик Williams %R для разных таймфреймов"""
 
-    def __init__(self, symbol: str = 'BTCUSDT'):
+    def __init__(self, symbol: str = 'BTCUSDT', force_reload: bool = False):
         """
         Инициализация загрузчика
 
         Args:
             symbol: Торговая пара
+            force_reload: Принудительный пересчет всех данных с начала истории
         """
         self.db = DatabaseConnection()
         self.symbol = symbol
+        self.force_reload = force_reload
         self.symbol_progress = ""  # Для отображения прогресса при multi-symbol
         self.config = self.load_config()
 
@@ -993,17 +1002,22 @@ class WilliamsRLoader:
             logger.info(f"📊 Обработка Williams %R period={period}")
             logger.info(f"{'='*80}")
 
-            # Находим последнюю дату с данными для этого периода
-            last_date = self.get_last_williams_r_date(timeframe, period)
-
-            if last_date:
-                start_date = last_date + timedelta(days=1)
-                start_date = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
-                logger.info(f"📅 Последняя дата Williams %R period={period}: {last_date}")
-                logger.info(f"▶️  Продолжаем с: {start_date}")
-            else:
+            # Если force_reload - всегда начинаем с начала
+            if self.force_reload:
                 start_date = min_date
-                logger.info(f"🆕 Williams %R period={period} пуст, начинаем с начала: {start_date}")
+                logger.info(f"🔄 Williams %R period={period}: FORCE RELOAD - пересчет с начала истории")
+            else:
+                # Находим последнюю дату с данными для этого периода
+                last_date = self.get_last_williams_r_date(timeframe, period)
+
+                if last_date:
+                    start_date = last_date + timedelta(days=1)
+                    start_date = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
+                    logger.info(f"📅 Последняя дата Williams %R period={period}: {last_date}")
+                    logger.info(f"▶️  Продолжаем с: {start_date}")
+                else:
+                    start_date = min_date
+                    logger.info(f"🆕 Williams %R period={period} пуст, начинаем с начала: {start_date}")
 
             # Если уже все обработано
             if start_date > max_date:
@@ -1153,6 +1167,8 @@ def main():
     parser.add_argument('--batch-days', type=int, help='Размер батча в днях')
     parser.add_argument('--indicator', type=str, choices=['stochastic', 'williams', 'both'], default='both',
                        help='Какой индикатор загружать: stochastic, williams, или both (по умолчанию both)')
+    parser.add_argument('--force-reload', action='store_true',
+                       help='Принудительный пересчет ВСЕХ данных с начала истории')
 
     args = parser.parse_args()
 
@@ -1173,6 +1189,8 @@ def main():
 
     logger.info(f"🎯 Обработка символов: {symbols}")
     logger.info(f"📊 Индикаторы: {args.indicator}")
+    if args.force_reload:
+        logger.info(f"🔄 Режим FORCE RELOAD: все данные будут пересчитаны с начала истории")
 
     # Цикл по всем символам
     total_symbols = len(symbols)
@@ -1188,7 +1206,7 @@ def main():
                 logger.info(f"📊 Загрузка Stochastic Oscillator для {symbol}")
                 logger.info(f"{'#'*80}\n")
 
-                stoch_loader = StochasticLoader(symbol=symbol)
+                stoch_loader = StochasticLoader(symbol=symbol, force_reload=args.force_reload)
                 stoch_loader.symbol_progress = f"[{idx}/{total_symbols}]"
                 stoch_loader.run(timeframe=args.timeframe, batch_days=args.batch_days)
 
@@ -1198,7 +1216,7 @@ def main():
                 logger.info(f"📊 Загрузка Williams %R для {symbol}")
                 logger.info(f"{'#'*80}\n")
 
-                williams_loader = WilliamsRLoader(symbol=symbol)
+                williams_loader = WilliamsRLoader(symbol=symbol, force_reload=args.force_reload)
                 williams_loader.symbol_progress = f"[{idx}/{total_symbols}]"
                 williams_loader.run(timeframe=args.timeframe, batch_days=args.batch_days)
 
