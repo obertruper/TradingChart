@@ -85,6 +85,9 @@ class FearAndGreedLoader:
         # Данные с API (загружаются один раз)
         self.api_data = None
 
+        # Флаг принудительного пересчета (устанавливается из main())
+        self.force_reload = False
+
     def load_config(self) -> dict:
         """Загружает конфигурацию из файла"""
         config_path = os.path.join(os.path.dirname(__file__), 'indicators_config.yaml')
@@ -199,9 +202,37 @@ class FearAndGreedLoader:
 
         return None
 
+    def get_null_dates(self, timeframe: str) -> Dict[datetime.date, int]:
+        """
+        Получает даты где есть NULL записи для Fear & Greed
+
+        Args:
+            timeframe: Таймфрейм (1m, 15m, 1h)
+
+        Returns:
+            Словарь {дата: количество NULL записей}
+        """
+        table_name = f'indicators_bybit_futures_{timeframe}'
+
+        with self.db.get_connection() as conn:
+            cur = conn.cursor()
+
+            cur.execute(f"""
+                SELECT DATE(timestamp) as day, COUNT(*) as null_count
+                FROM {table_name}
+                WHERE symbol = %s
+                  AND fear_and_greed_index_alternative IS NULL
+                GROUP BY DATE(timestamp)
+                ORDER BY day
+            """, (self.symbol,))
+
+            results = cur.fetchall()
+            return {row[0]: row[1] for row in results}
+
     def get_checkpoint(self, timeframe: str) -> Optional[datetime]:
         """
         Получает последнюю обработанную дату для таймфрейма
+        DEPRECATED: Используется только для обратной совместимости
 
         Args:
             timeframe: Таймфрейм (1m, 15m, 1h)
@@ -251,7 +282,7 @@ class FearAndGreedLoader:
             return None
 
     def update_batch(self, timeframe: str, date: datetime.date,
-                    value: int, classification: str) -> int:
+                    value: int, classification: str, only_null: bool = True) -> int:
         """
         Обновляет записи за один день для указанного таймфрейма
 
@@ -260,6 +291,7 @@ class FearAndGreedLoader:
             date: Дата (день)
             value: Значение индекса (0-100)
             classification: Классификация
+            only_null: Если True - обновлять только NULL записи (оптимизация)
 
         Returns:
             Количество обновленных записей
@@ -274,15 +306,21 @@ class FearAndGreedLoader:
             cur = conn.cursor()
 
             try:
-                # Обновляем все записи за день для BTCUSDT
-                cur.execute(f"""
+                # Базовый запрос
+                query = f"""
                     UPDATE {table_name}
                     SET fear_and_greed_index_alternative = %s,
                         fear_and_greed_index_classification_alternative = %s
                     WHERE symbol = %s
                       AND timestamp >= %s
                       AND timestamp < %s
-                """, (value, classification, self.symbol, start_time, end_time))
+                """
+
+                # Добавляем условие IS NULL если нужна оптимизация
+                if only_null:
+                    query += "      AND fear_and_greed_index_alternative IS NULL"
+
+                cur.execute(query, (value, classification, self.symbol, start_time, end_time))
 
                 updated_count = cur.rowcount
                 conn.commit()
@@ -345,7 +383,7 @@ class FearAndGreedLoader:
 
     def process_timeframe(self, timeframe: str, start_date: datetime, end_date: datetime) -> bool:
         """
-        Обрабатывает один таймфрейм
+        Обрабатывает один таймфрейм с оптимизацией - только NULL записи
 
         Args:
             timeframe: Таймфрейм
@@ -356,70 +394,73 @@ class FearAndGreedLoader:
             True при успехе
         """
         logger.info(f"\n📊 Обработка таймфрейма: {timeframe}")
-        logger.info(f"📅 Период: {start_date.date()} - {end_date.date()}")
 
-        # Определяем checkpoint
-        checkpoint = self.get_checkpoint(timeframe)
+        # Получаем даты где есть NULL записи
+        null_dates = self.get_null_dates(timeframe)
 
-        if checkpoint:
-            # Продолжаем с последней обработанной даты
-            process_start = checkpoint.date() + timedelta(days=1)
-            logger.info(f"⏩ Продолжаю с checkpoint: {process_start}")
-        else:
-            # Начинаем с начала
-            process_start = start_date.date()
-            logger.info(f"🔄 Начинаю с начала: {process_start}")
+        # Фильтруем только те даты, для которых есть API данные
+        dates_to_process = []
+        for date in null_dates.keys():
+            if date in self.api_data:
+                dates_to_process.append(date)
 
-        process_end = end_date.date()
+        # Сортируем даты
+        dates_to_process.sort()
 
-        # Подсчитываем дни для обработки
-        total_days = (process_end - process_start).days + 1
+        # Статистика
+        total_null_dates = len(null_dates)
+        total_with_api = len(dates_to_process)
+        total_null_records = sum(null_dates.values())
 
-        if total_days <= 0:
-            logger.info(f"✅ Таймфрейм {timeframe} уже актуален")
+        logger.info(f"📊 Статистика NULL записей:")
+        logger.info(f"   • Дней с NULL: {total_null_dates}")
+        logger.info(f"   • Дней с API данными: {total_with_api}")
+        logger.info(f"   • Всего NULL записей: {total_null_records:,}")
+
+        if not dates_to_process:
+            logger.info(f"✅ Таймфрейм {timeframe} полностью заполнен")
             return True
 
-        logger.info(f"📦 Дней для обработки: {total_days}")
+        if dates_to_process:
+            logger.info(f"📅 Период обработки: {dates_to_process[0]} - {dates_to_process[-1]}")
 
-        # Обрабатываем по дням
-        current_date = process_start
+        # Обрабатываем только даты с NULL записями
         updated_total = 0
+        skipped_no_api = 0
 
-        with tqdm(total=total_days, desc=f"Загрузка {timeframe}") as pbar:
-            while current_date <= process_end:
-                # Получаем данные для дня из API данных
-                if current_date in self.api_data:
-                    fng_data = self.api_data[current_date]
+        with tqdm(total=len(dates_to_process), desc=f"Загрузка {timeframe}") as pbar:
+            for current_date in dates_to_process:
+                fng_data = self.api_data[current_date]
 
-                    try:
-                        # Обновляем записи за день
-                        updated = self.update_batch(
-                            timeframe,
-                            current_date,
-                            fng_data['value'],
-                            fng_data['classification']
-                        )
+                try:
+                    # Обновляем записи за день (только NULL)
+                    updated = self.update_batch(
+                        timeframe,
+                        current_date,
+                        fng_data['value'],
+                        fng_data['classification'],
+                        only_null=not self.force_reload  # При force_reload обновляем все
+                    )
 
-                        updated_total += updated
+                    updated_total += updated
 
-                        if updated > 0:
-                            pbar.set_description(
-                                f"{timeframe}: {current_date} "
-                                f"(FNG={fng_data['value']}, обновлено={updated})"
-                            )
+                    pbar.set_description(
+                        f"{timeframe}: {current_date} "
+                        f"(FNG={fng_data['value']}, записано={updated})"
+                    )
 
-                    except Exception as e:
-                        logger.error(f"❌ Ошибка при обработке {current_date}: {e}")
-                        logger.info(f"🔄 Откат изменений за день {current_date}")
-                        return False
-                else:
-                    # Нет данных в API для этого дня
-                    logger.warning(f"⚠️ Нет данных API для {current_date}, пропускаю")
+                except Exception as e:
+                    logger.error(f"❌ Ошибка при обработке {current_date}: {e}")
+                    return False
 
-                current_date += timedelta(days=1)
                 pbar.update(1)
 
-        logger.info(f"✅ Таймфрейм {timeframe} обработан. Обновлено записей: {updated_total:,}")
+        # Считаем пропущенные (нет в API)
+        skipped_no_api = total_null_dates - total_with_api
+
+        logger.info(f"✅ Таймфрейм {timeframe} обработан:")
+        logger.info(f"   • Записано: {updated_total:,} записей")
+        logger.info(f"   • Пропущено (нет API): {skipped_no_api} дней")
         return True
 
     def run(self):
@@ -486,7 +527,36 @@ class FearAndGreedLoader:
 
 def main():
     """Точка входа"""
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description='Fear & Greed Index Loader (Alternative.me API)',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Примеры использования:
+  python fear_and_greed_loader_alternative.py                    # Заполнить NULL записи
+  python fear_and_greed_loader_alternative.py --force-reload     # Перезаписать все данные
+  python fear_and_greed_loader_alternative.py --timeframe 1h     # Только 1h таймфрейм
+        """
+    )
+
+    parser.add_argument('--force-reload', action='store_true',
+                       help='Перезаписать все данные (игнорировать оптимизацию)')
+    parser.add_argument('--timeframe', type=str,
+                       help='Обработать только указанный таймфрейм (1m, 15m, 1h)')
+
+    args = parser.parse_args()
+
     loader = FearAndGreedLoader(symbol='BTCUSDT')
+    loader.force_reload = args.force_reload
+
+    # Если указан конкретный таймфрейм
+    if args.timeframe:
+        loader.timeframes = [args.timeframe]
+
+    if args.force_reload:
+        logger.info("🔄 Режим force-reload: будут перезаписаны ВСЕ данные")
+
     loader.run()
 
 
