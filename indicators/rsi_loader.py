@@ -275,6 +275,35 @@ class RSILoader:
                 conn.rollback()
                 return False
 
+    def get_null_timestamps(self, timeframe: str, periods: List[int]) -> set:
+        """
+        Получает timestamps где хотя бы один RSI период IS NULL.
+        Используется для оптимизации - записываем только новые данные.
+
+        Args:
+            timeframe: Таймфрейм (1m, 15m, 1h)
+            periods: Список периодов RSI для проверки
+
+        Returns:
+            Set of timestamps где RSI IS NULL
+        """
+        table_name = f'indicators_bybit_futures_{timeframe}'
+
+        # Строим условие: rsi_7 IS NULL OR rsi_9 IS NULL OR ...
+        null_conditions = ' OR '.join([f'rsi_{p} IS NULL' for p in periods])
+
+        query = f"""
+            SELECT timestamp
+            FROM {table_name}
+            WHERE symbol = %s
+            AND ({null_conditions})
+        """
+
+        with self.db.get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(query, (self.symbol,))
+            return {row[0] for row in cur.fetchall()}
+
     def calculate_rsi(self, closes: np.ndarray, period: int) -> np.ndarray:
         """
         Calculate RSI using Wilder smoothing method (single-pass, like validator).
@@ -849,9 +878,37 @@ class RSILoader:
 
         logger.info(f"   ✅ Рассчитано RSI для {len(df_write):,} свечей")
 
-        # STEP 3: Write results to database in batches
-        logger.info(f"\n🔄 ШАГ 3/3: Запись результатов в БД батчами...")
-        self.write_results_in_batches(timeframe, periods, df_write, batch_days)
+        # STEP 3: Filter and write results to database
+        logger.info(f"\n🔄 ШАГ 3/3: Запись результатов в БД...")
+
+        # Оптимизация: если не force_reload, записываем только записи где RSI IS NULL
+        total_records = len(df_write)
+        if self.force_reload:
+            # force_reload - записываем все данные
+            logger.info(f"   🔄 Режим force-reload: записываем все {total_records:,} записей")
+            records_to_write = df_write
+        else:
+            # Оптимизация: получаем timestamps где хотя бы один RSI период IS NULL
+            null_timestamps = self.get_null_timestamps(timeframe, periods)
+
+            if not null_timestamps:
+                logger.info(f"   ✅ Все RSI данные актуальны для {timeframe} - пропускаем запись")
+                logger.info(f"\n✅ Обработка RSI для {timeframe} завершена!")
+                return
+
+            # Фильтруем df_write - оставляем только записи с NULL timestamps
+            records_to_write = df_write[df_write['timestamp'].isin(null_timestamps)]
+            skipped_records = total_records - len(records_to_write)
+
+            logger.info(f"   📊 Статистика оптимизации:")
+            logger.info(f"      • Всего рассчитано: {total_records:,} записей")
+            logger.info(f"      • Нужно записать: {len(records_to_write):,} записей (RSI IS NULL)")
+            logger.info(f"      • Пропущено: {skipped_records:,} записей (уже заполнены)")
+
+        if len(records_to_write) > 0:
+            self.write_results_in_batches(timeframe, periods, records_to_write, batch_days)
+        else:
+            logger.info(f"   ✅ Нет записей для обновления")
 
         logger.info(f"\n✅ Обработка RSI для {timeframe} завершена!")
 
