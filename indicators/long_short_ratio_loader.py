@@ -64,7 +64,9 @@ class LongShortRatioLoader:
 
         # Настройки из конфига
         ratio_config = config['indicators']['long_short_ratio']
-        self.batch_size = ratio_config.get('batch_size', 1000)
+        # ВАЖНО: Bybit API ограничивает лимит до 500 записей за запрос
+        # batch_size НЕ должен превышать 500, иначе часть данных будет пропущена
+        self.batch_size = min(ratio_config.get('batch_size', 500), 500)
         self.api_retry_attempts = ratio_config.get('api_retry_attempts', 3)
         self.api_retry_delay = ratio_config.get('api_retry_delay', 2)
 
