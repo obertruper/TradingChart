@@ -14,6 +14,7 @@ Usage:
     python3 long_short_ratio_loader.py                                    # Все символы, все таймфреймы
     python3 long_short_ratio_loader.py --symbol BTCUSDT                   # Конкретный символ
     python3 long_short_ratio_loader.py --symbol BTCUSDT --timeframe 15m   # Символ + таймфрейм
+    python3 long_short_ratio_loader.py --force-reload                     # Перезагрузка всех данных с 2020-07-20
 """
 
 import sys
@@ -69,6 +70,9 @@ class LongShortRatioLoader:
 
         # Для прогресс-бара (устанавливается извне)
         self.symbol_progress = ""
+
+        # Флаг принудительной перезагрузки (устанавливается извне)
+        self.force_reload = False
 
         # База данных
         self.db = DatabaseConnection()
@@ -178,7 +182,11 @@ class LongShortRatioLoader:
                     return None, None
 
                 # 3. Определяем start_date
-                if last_ratio_date is None:
+                if self.force_reload:
+                    # Принудительная перезагрузка - начинаем с самой ранней даты API
+                    start_date = EARLIEST_DATA_DATE
+                    logger.info(f"🔄 Режим force-reload: начинаем с {start_date}")
+                elif last_ratio_date is None:
                     # Данных нет - начинаем с самой ранней доступной даты или начала данных
                     start_date = max(EARLIEST_DATA_DATE, max_indicator_date - timedelta(days=365*5))
                     logger.info(f"📅 Данных Long/Short Ratio нет. Начинаем с: {start_date}")
@@ -534,6 +542,8 @@ def parse_args():
   python3 long_short_ratio_loader.py --symbol BTCUSDT                   # Конкретный символ
   python3 long_short_ratio_loader.py --symbol BTCUSDT --timeframe 15m   # Символ + таймфрейм
   python3 long_short_ratio_loader.py --symbol BTCUSDT ETHUSDT           # Несколько символов
+  python3 long_short_ratio_loader.py --force-reload                     # Перезагрузка с 2020-07-20
+  python3 long_short_ratio_loader.py --symbol BTCUSDT --force-reload    # Перезагрузка для BTCUSDT
 
 ВНИМАНИЕ: API Bybit не поддерживает период 1m. Для таймфрейма 1m будут установлены NULL значения.
         """
@@ -548,6 +558,12 @@ def parse_args():
     parser.add_argument(
         '--timeframe',
         help='Таймфрейм для обработки (1m, 15m, 1h). По умолчанию - все из конфига'
+    )
+
+    parser.add_argument(
+        '--force-reload',
+        action='store_true',
+        help='Принудительная перезагрузка всех данных с 2020-07-20 (заполнит пропуски)'
     )
 
     return parser.parse_args()
@@ -608,6 +624,8 @@ def main():
         logger.info(f"⏰ Обработка таймфреймов из конфига: {timeframes}")
 
     logger.info(f"📊 Индикатор: Long/Short Ratio")
+    if args.force_reload:
+        logger.info(f"🔄 Режим: FORCE-RELOAD (перезагрузка с {EARLIEST_DATA_DATE.date()})")
     logger.info("")
 
     # Засекаем время начала обработки
@@ -628,6 +646,7 @@ def main():
                 # Создаем экземпляр загрузчика
                 loader = LongShortRatioLoader(symbol, timeframe, config)
                 loader.symbol_progress = f"[{symbol_idx}/{total_symbols}]"
+                loader.force_reload = args.force_reload
 
                 # Запускаем загрузку
                 if timeframe == '1m':
