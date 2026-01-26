@@ -60,6 +60,7 @@ LOADER_MAPPING = {
     'mfi': 'mfi_loader.py',
     'obv': 'obv_loader.py',
     'long_short_ratio': 'long_short_ratio_loader.py',
+    'open_interest': 'open_interest_loader.py',
 
     # Специальные случаи (не стандартное название файла)
     'fear_and_greed': 'fear_and_greed_loader_alternative.py',
