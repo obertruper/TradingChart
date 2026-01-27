@@ -32,6 +32,7 @@ import sys
 import logging
 import argparse
 import warnings
+import signal
 from pathlib import Path
 from datetime import datetime, timedelta
 import yaml
@@ -42,6 +43,25 @@ import pytz
 
 # Подавляем предупреждение pandas о DBAPI2 connection
 warnings.filterwarnings('ignore', message='pandas only supports SQLAlchemy connectable')
+
+# Глобальный флаг для graceful shutdown
+shutdown_requested = False
+
+
+def signal_handler(signum, frame):
+    """Обработчик сигнала прерывания (Ctrl+C)"""
+    global shutdown_requested
+    if shutdown_requested:
+        # Повторное нажатие - принудительный выход
+        print("\n⚠️  Принудительное завершение...")
+        sys.exit(1)
+    shutdown_requested = True
+    print("\n⚠️  Получен сигнал прерывания. Завершаем после текущей операции...")
+    print("   (Нажмите Ctrl+C ещё раз для принудительного выхода)")
+
+
+# Регистрируем обработчик сигнала
+signal.signal(signal.SIGINT, signal_handler)
 
 # Добавляем путь к корню проекта
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -229,7 +249,7 @@ class FundingRateLoader:
             leave=True
         ) as pbar:
             pages = 0
-            while pages < max_pages:
+            while pages < max_pages and not shutdown_requested:
                 # Попытки с retry
                 success = False
                 for attempt in range(self.api_retry_attempts):
@@ -396,6 +416,11 @@ class FundingRateLoader:
                     leave=True
                 ) as pbar:
                     for i in range(0, len(updates), batch_size):
+                        if shutdown_requested:
+                            conn.commit()  # Сохраняем то, что успели
+                            logger.info("⚠️  Прервано пользователем. Данные сохранены.")
+                            return
+
                         batch = updates[i:i + batch_size]
 
                         for funding_rate, next_funding_time, ts, symbol in batch:
@@ -415,6 +440,10 @@ class FundingRateLoader:
 
     def load_funding_for_symbol(self):
         """Основной метод загрузки Funding Rate для символа"""
+
+        if shutdown_requested:
+            logger.info("⚠️  Пропуск - получен сигнал прерывания")
+            return
 
         logger.info("")
         logger.info("=" * 80)
@@ -588,6 +617,10 @@ def main():
     total_symbols = len(symbols)
 
     for symbol_idx, symbol in enumerate(symbols, start=1):
+        if shutdown_requested:
+            logger.info("⚠️  Прерывание по запросу пользователя")
+            break
+
         logger.info("")
         logger.info("=" * 80)
         logger.info(f"📊 Начинаем обработку символа: {symbol} [{symbol_idx}/{total_symbols}]")
@@ -595,6 +628,9 @@ def main():
         logger.info("")
 
         for timeframe in timeframes:
+            if shutdown_requested:
+                break
+
             try:
                 loader = FundingRateLoader(symbol, timeframe, config)
                 loader.symbol_progress = f"[{symbol_idx}/{total_symbols}]"
@@ -602,9 +638,6 @@ def main():
 
                 loader.load_funding_for_symbol()
 
-            except KeyboardInterrupt:
-                logger.info("\n⚠️ Прервано пользователем.")
-                sys.exit(0)
             except Exception as e:
                 logger.error(f"❌ Ошибка обработки {symbol} на {timeframe}: {e}", exc_info=True)
                 continue
@@ -616,7 +649,10 @@ def main():
 
     logger.info("")
     logger.info("=" * 80)
-    logger.info("✅ Funding Rate Loader - Завершено")
+    if shutdown_requested:
+        logger.info("⚠️  Funding Rate Loader - Прервано пользователем")
+    else:
+        logger.info("✅ Funding Rate Loader - Завершено")
     logger.info(f"⏱️  Total time: {minutes}m {seconds}s")
     logger.info(f"📝 Лог-файл: {log_file}")
     logger.info("=" * 80)
