@@ -212,8 +212,6 @@ class FundingRateLoader:
                   отсортированный по времени (от старых к новым)
         """
 
-        logger.info(f"📡 Загрузка истории Funding Rate для {self.symbol}...")
-
         all_records = []
         params = {
             'category': 'linear',
@@ -221,52 +219,71 @@ class FundingRateLoader:
             'limit': self.batch_size,
         }
 
-        pages = 0
         max_pages = 500  # Ограничение для безопасности
 
-        while pages < max_pages:
-            # Попытки с retry
-            success = False
-            for attempt in range(self.api_retry_attempts):
-                try:
-                    response = requests.get(
-                        f"{BYBIT_API_BASE}{BYBIT_API_ENDPOINT}",
-                        params=params,
-                        timeout=30
-                    )
-                    response.raise_for_status()
-                    data = response.json()
+        # Прогресс-бар для API загрузки
+        with tqdm(
+            desc=f"📡 {self.symbol} API",
+            unit=" записей",
+            dynamic_ncols=True,
+            leave=True
+        ) as pbar:
+            pages = 0
+            while pages < max_pages:
+                # Попытки с retry
+                success = False
+                for attempt in range(self.api_retry_attempts):
+                    try:
+                        response = requests.get(
+                            f"{BYBIT_API_BASE}{BYBIT_API_ENDPOINT}",
+                            params=params,
+                            timeout=30
+                        )
+                        response.raise_for_status()
+                        data = response.json()
 
-                    if data.get('retCode') != 0:
-                        logger.error(f"API Error: {data.get('retMsg')}")
-                        return sorted(all_records, key=lambda x: int(x['fundingRateTimestamp']))
+                        if data.get('retCode') != 0:
+                            logger.error(f"API Error: {data.get('retMsg')}")
+                            pbar.close()
+                            return sorted(all_records, key=lambda x: int(x['fundingRateTimestamp']))
 
-                    records = data['result']['list']
-                    if not records:
-                        # Достигли конца истории
+                        records = data['result']['list']
+                        if not records:
+                            # Достигли конца истории
+                            success = True
+                            break
+
+                        all_records.extend(records)
+                        pbar.update(len(records))
+
+                        # Показываем диапазон дат в описании
+                        if len(all_records) > 0:
+                            newest_ts = datetime.fromtimestamp(
+                                int(all_records[0]['fundingRateTimestamp']) / 1000, tz=pytz.UTC
+                            )
+                            oldest_ts = datetime.fromtimestamp(
+                                int(records[-1]['fundingRateTimestamp']) / 1000, tz=pytz.UTC
+                            )
+                            pbar.set_postfix_str(f"{oldest_ts.strftime('%Y-%m-%d')} → {newest_ts.strftime('%Y-%m-%d')}")
+
+                        # Получаем самый старый timestamp для следующего запроса
+                        oldest_ts_val = int(records[-1]['fundingRateTimestamp'])
+                        params['endTime'] = oldest_ts_val - 1
+
+                        pages += 1
                         success = True
                         break
 
-                    all_records.extend(records)
+                    except requests.exceptions.RequestException as e:
+                        logger.warning(f"Попытка {attempt + 1}/{self.api_retry_attempts} не удалась: {e}")
+                        if attempt < self.api_retry_attempts - 1:
+                            time.sleep(self.api_retry_delay)
 
-                    # Получаем самый старый timestamp для следующего запроса
-                    oldest_ts = int(records[-1]['fundingRateTimestamp'])
-                    params['endTime'] = oldest_ts - 1
-
-                    pages += 1
-                    success = True
+                if not success or not records:
                     break
 
-                except requests.exceptions.RequestException as e:
-                    logger.warning(f"Попытка {attempt + 1}/{self.api_retry_attempts} не удалась: {e}")
-                    if attempt < self.api_retry_attempts - 1:
-                        time.sleep(self.api_retry_delay)
-
-            if not success or not records:
-                break
-
-            # Пауза между запросами
-            time.sleep(0.05)
+                # Пауза между запросами
+                time.sleep(0.05)
 
         logger.info(f"✅ Загружено {len(all_records)} записей Funding Rate")
 
@@ -364,26 +381,35 @@ class FundingRateLoader:
             logger.warning("Нет данных для обновления (funding rates не найдены)")
             return
 
-        # Batch update
+        # Batch update с прогресс-баром
         updated_count = 0
         batch_size = 1000
+        total_batches = (len(updates) + batch_size - 1) // batch_size
 
         with self.db.get_connection() as conn:
             with conn.cursor() as cur:
-                for i in range(0, len(updates), batch_size):
-                    batch = updates[i:i + batch_size]
+                with tqdm(
+                    total=len(updates),
+                    desc=f"💾 {self.symbol} {self.timeframe} DB",
+                    unit=" rows",
+                    dynamic_ncols=True,
+                    leave=True
+                ) as pbar:
+                    for i in range(0, len(updates), batch_size):
+                        batch = updates[i:i + batch_size]
 
-                    for funding_rate, next_funding_time, ts, symbol in batch:
-                        cur.execute(f"""
-                            UPDATE {self.indicators_table}
-                            SET funding_rate_next = %s,
-                                funding_time_next = %s
-                            WHERE timestamp = %s AND symbol = %s
-                              AND funding_rate_next IS NULL
-                        """, (funding_rate, next_funding_time, ts, symbol))
-                        updated_count += cur.rowcount
+                        for funding_rate, next_funding_time, ts, symbol in batch:
+                            cur.execute(f"""
+                                UPDATE {self.indicators_table}
+                                SET funding_rate_next = %s,
+                                    funding_time_next = %s
+                                WHERE timestamp = %s AND symbol = %s
+                                  AND funding_rate_next IS NULL
+                            """, (funding_rate, next_funding_time, ts, symbol))
+                            updated_count += cur.rowcount
 
-                    conn.commit()
+                        conn.commit()
+                        pbar.update(len(batch))
 
         logger.info(f"✅ Обновлено {updated_count} записей")
 
