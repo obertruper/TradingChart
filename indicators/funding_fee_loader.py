@@ -103,6 +103,16 @@ class FundingRateLoader:
         self.api_retry_attempts = funding_config.get('api_retry_attempts', 3)
         self.api_retry_delay = funding_config.get('api_retry_delay', 2)
 
+        # Earliest API date для этого символа (для проверки пробелов)
+        earliest_dates = funding_config.get('earliest_api_dates', {})
+        earliest_str = earliest_dates.get(symbol)
+        if earliest_str:
+            self.earliest_api_date = datetime.strptime(earliest_str, '%Y-%m-%d').replace(tzinfo=pytz.UTC)
+        else:
+            # Если не указано, используем дефолтную дату (2020-03-25 для безопасности)
+            self.earliest_api_date = datetime(2020, 3, 25, tzinfo=pytz.UTC)
+            logger.warning(f"⚠️  earliest_api_date не указана для {symbol}, используем {self.earliest_api_date.date()}")
+
         # Для прогресс-бара (устанавливается извне)
         self.symbol_progress = ""
 
@@ -438,6 +448,132 @@ class FundingRateLoader:
 
         logger.info(f"✅ Обновлено {updated_count} записей")
 
+    def find_gaps(self) -> list:
+        """
+        Поиск пробелов (NULL) в данных Funding Rate в диапазоне API данных
+
+        Returns:
+            list: Список timestamps с NULL значениями funding_rate_next
+        """
+        with self.db.get_connection() as conn:
+            with conn.cursor() as cur:
+                # Находим все timestamps где funding_rate_next IS NULL
+                # но только в диапазоне где API имеет данные (>= earliest_api_date)
+                cur.execute(f"""
+                    SELECT timestamp
+                    FROM {self.indicators_table}
+                    WHERE symbol = %s
+                      AND timestamp >= %s
+                      AND funding_rate_next IS NULL
+                    ORDER BY timestamp
+                """, (self.symbol, self.earliest_api_date))
+
+                gaps = [row[0] for row in cur.fetchall()]
+
+        return gaps
+
+    def fill_gaps(self, gap_timestamps: list, funding_data: list):
+        """
+        Заполнение пробелов в данных Funding Rate
+
+        Args:
+            gap_timestamps: Список timestamps с NULL значениями
+            funding_data: Данные funding из API (отсортированные по времени)
+        """
+        if not gap_timestamps or not funding_data:
+            return
+
+        logger.info(f"🔧 Заполнение {len(gap_timestamps)} пробелов...")
+
+        # Создаём словарь funding_time -> funding_rate
+        funding_dict = {}
+        for record in funding_data:
+            ts_ms = int(record['fundingRateTimestamp'])
+            ts = datetime.fromtimestamp(ts_ms / 1000, tz=pytz.UTC)
+            rate = float(record['fundingRate'])
+            funding_dict[ts] = rate
+
+        # Подготавливаем данные для обновления
+        updates = []
+        for ts in gap_timestamps:
+            next_funding_time = self.get_next_funding_time(ts)
+            funding_rate = funding_dict.get(next_funding_time)
+
+            if funding_rate is not None:
+                updates.append((funding_rate, next_funding_time, ts, self.symbol))
+
+        if not updates:
+            logger.warning("⚠️  Не удалось найти данные для заполнения пробелов")
+            return
+
+        # Batch update с прогресс-баром
+        updated_count = 0
+        batch_size = 1000
+
+        with self.db.get_connection() as conn:
+            with conn.cursor() as cur:
+                with tqdm(
+                    total=len(updates),
+                    desc=f"🔧 {self.symbol} {self.timeframe} gaps",
+                    unit=" rows",
+                    dynamic_ncols=True,
+                    leave=True
+                ) as pbar:
+                    for i in range(0, len(updates), batch_size):
+                        if shutdown_requested:
+                            conn.commit()
+                            logger.info("⚠️  Прервано пользователем. Данные сохранены.")
+                            return
+
+                        batch = updates[i:i + batch_size]
+
+                        for funding_rate, next_funding_time, ts, symbol in batch:
+                            cur.execute(f"""
+                                UPDATE {self.indicators_table}
+                                SET funding_rate_next = %s,
+                                    funding_time_next = %s
+                                WHERE timestamp = %s AND symbol = %s
+                                  AND funding_rate_next IS NULL
+                            """, (funding_rate, next_funding_time, ts, symbol))
+                            updated_count += cur.rowcount
+
+                        conn.commit()
+                        pbar.update(len(batch))
+
+        logger.info(f"✅ Заполнено {updated_count} пробелов")
+
+    def check_and_fill_gaps(self):
+        """
+        Проверка и заполнение пробелов в данных Funding Rate
+
+        Returns:
+            int: Количество найденных и заполненных пробелов
+        """
+        if shutdown_requested:
+            return 0
+
+        # 1. Ищем пробелы
+        gaps = self.find_gaps()
+
+        if not gaps:
+            logger.info(f"✅ Пробелов не найдено для {self.symbol} {self.timeframe}")
+            return 0
+
+        logger.info(f"🔍 Найдено {len(gaps)} пробелов для {self.symbol} {self.timeframe}")
+        logger.info(f"   Диапазон: {gaps[0]} → {gaps[-1]}")
+
+        # 2. Загружаем данные с API (если ещё не загружены)
+        funding_data = self.fetch_all_funding_history()
+
+        if not funding_data:
+            logger.warning(f"⚠️  Нет данных funding от API для заполнения пробелов")
+            return 0
+
+        # 3. Заполняем пробелы
+        self.fill_gaps(gaps, funding_data)
+
+        return len(gaps)
+
     def load_funding_for_symbol(self):
         """Основной метод загрузки Funding Rate для символа"""
 
@@ -461,28 +597,32 @@ class FundingRateLoader:
             logger.warning(f"⚠️  Нет данных для обработки: {self.symbol}")
             return
 
+        # Этап 1: Загрузка новых данных (если есть)
         if start_date >= end_date:
-            logger.info(f"✅ {self.symbol} - данные Funding Rate актуальны")
-            return
+            logger.info(f"✅ {self.symbol} - новых данных нет")
+        else:
+            logger.info(f"📅 Диапазон обработки: {start_date} → {end_date}")
 
-        logger.info(f"📅 Диапазон обработки: {start_date} → {end_date}")
+            # 3. Загружаем всю историю funding с API
+            funding_data = self.fetch_all_funding_history()
 
-        # 3. Загружаем всю историю funding с API
-        funding_data = self.fetch_all_funding_history()
+            if not funding_data:
+                logger.warning(f"⚠️  Нет данных funding от API для {self.symbol}")
+            else:
+                # Показываем диапазон загруженных данных
+                oldest_ts = datetime.fromtimestamp(int(funding_data[0]['fundingRateTimestamp']) / 1000, tz=pytz.UTC)
+                newest_ts = datetime.fromtimestamp(int(funding_data[-1]['fundingRateTimestamp']) / 1000, tz=pytz.UTC)
+                logger.info(f"📡 Данные API: {oldest_ts} → {newest_ts} ({len(funding_data)} записей)")
 
-        if not funding_data:
-            logger.warning(f"⚠️  Нет данных funding от API для {self.symbol}")
-            return
+                # 4. Сохраняем в БД с backward-fill
+                self.save_to_db(start_date, end_date, funding_data)
 
-        # Показываем диапазон загруженных данных
-        oldest_ts = datetime.fromtimestamp(int(funding_data[0]['fundingRateTimestamp']) / 1000, tz=pytz.UTC)
-        newest_ts = datetime.fromtimestamp(int(funding_data[-1]['fundingRateTimestamp']) / 1000, tz=pytz.UTC)
-        logger.info(f"📡 Данные API: {oldest_ts} → {newest_ts} ({len(funding_data)} записей)")
+        # Этап 2: Проверка и заполнение пробелов
+        if not shutdown_requested:
+            logger.info(f"🔍 Проверка пробелов для {self.symbol} {self.timeframe}...")
+            self.check_and_fill_gaps()
 
-        # 4. Сохраняем в БД с backward-fill
-        self.save_to_db(start_date, end_date, funding_data)
-
-        logger.info(f"✅ {self.symbol} завершен")
+        logger.info(f"✅ {self.symbol} {self.timeframe} завершен")
         logger.info("")
 
 
