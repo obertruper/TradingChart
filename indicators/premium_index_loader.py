@@ -255,8 +255,13 @@ class PremiumIndexLoader:
 
         max_pages = 1000  # Ограничение для безопасности
 
+        # Расчёт примерного количества записей для прогресс-бара
+        total_minutes = (end_ts - start_ts) / (60 * 1000)
+        estimated_total = int(total_minutes / self.timeframe_minutes)
+
         # Прогресс-бар для API загрузки
         with tqdm(
+            total=estimated_total,
             desc=f"📡 {self.symbol} {self.timeframe} API",
             unit=" записей",
             dynamic_ncols=True,
