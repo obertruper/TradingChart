@@ -62,6 +62,7 @@ LOADER_MAPPING = {
     'long_short_ratio': 'long_short_ratio_loader.py',
     'open_interest': 'open_interest_loader.py',
     'funding_rate': 'funding_fee_loader.py',
+    'premium_index': 'premium_index_loader.py',
 
     # Специальные случаи (не стандартное название файла)
     'fear_and_greed': 'fear_and_greed_loader_alternative.py',
