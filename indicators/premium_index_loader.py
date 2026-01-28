@@ -162,6 +162,7 @@ class PremiumIndexLoader:
 
                 if column_name not in existing_columns:
                     logger.info(f"  - {column_name} (будет создана)")
+                    logger.info(f"  ⏳ ALTER TABLE {self.indicators_table}... (это может занять 1-2 минуты для большой таблицы)")
                     sql = f"ALTER TABLE {self.indicators_table} ADD COLUMN IF NOT EXISTS {column_name} {column_type}"
                     cur.execute(sql)
                     conn.commit()
@@ -177,9 +178,12 @@ class PremiumIndexLoader:
             tuple: (start_date, end_date) в UTC
         """
 
+        logger.info(f"🔍 Определение диапазона дат для {self.symbol} {self.timeframe}...")
+
         with self.db.get_connection() as conn:
             with conn.cursor() as cur:
                 # 1. Проверяем последнюю дату Premium Index в indicators таблице
+                logger.info(f"   Запрос MAX(timestamp) WHERE premium_index IS NOT NULL...")
                 cur.execute(f"""
                     SELECT MAX(timestamp)
                     FROM {self.indicators_table}
@@ -189,6 +193,7 @@ class PremiumIndexLoader:
                 last_premium_date = cur.fetchone()[0]
 
                 # 2. Получаем минимальную и максимальную дату в indicators таблице
+                logger.info(f"   Запрос MIN/MAX(timestamp)...")
                 cur.execute(f"""
                     SELECT MIN(timestamp), MAX(timestamp)
                     FROM {self.indicators_table}
