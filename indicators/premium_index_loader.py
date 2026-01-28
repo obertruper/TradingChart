@@ -359,7 +359,7 @@ class PremiumIndexLoader:
 
         logger.info(f"📝 Сохранение {len(premium_data)} записей...")
 
-        # Подготавливаем данные для batch update
+        # Подготавливаем данные для batch upsert
         # API возвращает: [timestamp_ms, open, high, low, close]
         # Мы сохраняем только close как premium_index
         updates = []
@@ -367,14 +367,14 @@ class PremiumIndexLoader:
             ts_ms = int(record[0])
             ts = datetime.fromtimestamp(ts_ms / 1000, tz=pytz.UTC)
             close_value = float(record[4])  # close - последний элемент
-            updates.append((close_value, ts, self.symbol))
+            updates.append((ts, self.symbol, close_value))
 
         if not updates:
             logger.warning("Нет данных для обновления")
             return
 
-        # Batch update с прогресс-баром
-        updated_count = 0
+        # Batch upsert с прогресс-баром (INSERT...ON CONFLICT)
+        saved_count = 0
         batch_size = 1000
 
         with self.db.get_connection() as conn:
@@ -394,18 +394,22 @@ class PremiumIndexLoader:
 
                         batch = updates[i:i + batch_size]
 
-                        for premium_index, ts, symbol in batch:
+                        # Используем INSERT...ON CONFLICT для upsert
+                        # Это гарантирует, что данные будут сохранены
+                        # независимо от того, есть ли уже строка в таблице
+                        for ts, symbol, premium_index in batch:
                             cur.execute(f"""
-                                UPDATE {self.indicators_table}
-                                SET premium_index = %s
-                                WHERE timestamp = %s AND symbol = %s
-                            """, (premium_index, ts, symbol))
-                            updated_count += cur.rowcount
+                                INSERT INTO {self.indicators_table} (timestamp, symbol, premium_index)
+                                VALUES (%s, %s, %s)
+                                ON CONFLICT (timestamp, symbol) DO UPDATE
+                                SET premium_index = EXCLUDED.premium_index
+                            """, (ts, symbol, premium_index))
+                            saved_count += 1
 
                         conn.commit()
                         pbar.update(len(batch))
 
-        logger.info(f"✅ Обновлено {updated_count} записей")
+        logger.info(f"✅ Сохранено {saved_count} записей")
 
     def find_gaps(self) -> list:
         """
@@ -464,7 +468,7 @@ class PremiumIndexLoader:
 
     def _save_gaps_batch(self, premium_data: list):
         """
-        Сохранение данных для заполнения пробелов (только NULL записи)
+        Сохранение данных для заполнения пробелов
 
         Args:
             premium_data: Список записей [[timestamp, open, high, low, close], ...]
@@ -477,17 +481,21 @@ class PremiumIndexLoader:
             ts_ms = int(record[0])
             ts = datetime.fromtimestamp(ts_ms / 1000, tz=pytz.UTC)
             close_value = float(record[4])
-            updates.append((close_value, ts, self.symbol))
+            updates.append((ts, self.symbol, close_value))
 
         with self.db.get_connection() as conn:
             with conn.cursor() as cur:
-                for premium_index, ts, symbol in updates:
+                for ts, symbol, premium_index in updates:
+                    # Используем INSERT...ON CONFLICT для upsert
+                    # WHERE premium_index IS NULL в ON CONFLICT гарантирует
+                    # что мы не перезапишем существующие данные
                     cur.execute(f"""
-                        UPDATE {self.indicators_table}
-                        SET premium_index = %s
-                        WHERE timestamp = %s AND symbol = %s
-                          AND premium_index IS NULL
-                    """, (premium_index, ts, symbol))
+                        INSERT INTO {self.indicators_table} (timestamp, symbol, premium_index)
+                        VALUES (%s, %s, %s)
+                        ON CONFLICT (timestamp, symbol) DO UPDATE
+                        SET premium_index = EXCLUDED.premium_index
+                        WHERE {self.indicators_table}.premium_index IS NULL
+                    """, (ts, symbol, premium_index))
 
                 conn.commit()
 
