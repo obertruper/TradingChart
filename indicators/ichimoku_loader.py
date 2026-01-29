@@ -350,6 +350,49 @@ class IchimokuLoader:
         # Если ни одна конфигурация не обработана
         return None
 
+    def get_null_timestamps(self, timeframe: str, configs: List[Dict],
+                            start_date: datetime, end_date: datetime) -> set:
+        """
+        Получает timestamps где хотя бы один Ichimoku столбец IS NULL.
+        Используется для оптимизации - записываем только новые данные.
+
+        Args:
+            timeframe: Таймфрейм (1m, 15m, 1h)
+            configs: Список конфигураций Ichimoku
+            start_date: Начало диапазона
+            end_date: Конец диапазона
+
+        Returns:
+            Set of timestamps где Ichimoku IS NULL
+        """
+        table_name = f'indicators_bybit_futures_{timeframe}'
+
+        # Строим условие: col1 IS NULL OR col2 IS NULL OR ...
+        null_conditions = []
+        for config in configs:
+            columns = self.get_column_names(config['name'])
+            # Проверяем только основные колонки (tenkan достаточно)
+            null_conditions.append(f"{columns['tenkan']} IS NULL")
+
+        null_condition = ' OR '.join(null_conditions)
+
+        with self.db.get_connection() as conn:
+            cur = conn.cursor()
+
+            cur.execute(f"""
+                SELECT timestamp
+                FROM {table_name}
+                WHERE symbol = %s
+                  AND timestamp >= %s
+                  AND timestamp < %s
+                  AND ({null_condition})
+            """, (self.symbol, start_date, end_date))
+
+            result = cur.fetchall()
+            cur.close()
+
+            return {row[0] for row in result}
+
     def get_max_lookback_period(self, configs: List[Dict]) -> int:
         """
         Вычисляет максимальный lookback период среди всех конфигураций
@@ -515,40 +558,37 @@ class IchimokuLoader:
         for config in configs:
             self.ensure_columns_exist(timeframe, config)
 
-        # Определяем начальную дату
-        if force_reload:
-            start_date = min_date
-            self.logger.info(f"🔄 Force reload: начинаем с {start_date}")
-        else:
-            # Получаем MIN(last_date) среди всех конфигураций (для синхронизации)
-            last_date = self.get_all_last_processed_dates(timeframe, configs)
-
-            if last_date:
-                self.logger.info(f"📌 Последняя обработанная дата (MIN среди конфигураций): {last_date}")
-                # Начинаем со следующего периода
-                if timeframe == '1m':
-                    start_date = last_date + timedelta(minutes=1)
-                elif timeframe == '15m':
-                    start_date = last_date + timedelta(minutes=15)
-                elif timeframe == '1h':
-                    start_date = last_date + timedelta(hours=1)
-            else:
-                start_date = min_date
-                self.logger.info(f"📌 Начинаем с начала: {start_date}")
-
-        if start_date >= max_date:
-            self.logger.info(f"✅ Все конфигурации уже актуальны")
-            return
-
         # Вычисляем максимальный lookback период
         max_lookback = self.get_max_lookback_period(configs)
         self.logger.info(f"📏 Максимальный lookback: {max_lookback} периодов")
+
+        # Определяем начальную дату и NULL timestamps
+        if force_reload:
+            # Force reload: обрабатываем ВСЁ с начала
+            start_date = min_date
+            null_timestamps = None  # Пишем всё
+            self.logger.info(f"🔄 Force reload: начинаем с {start_date}, записываем ВСЕ данные")
+        else:
+            # Инкрементальный режим: ищем NULL во ВСЁМ диапазоне
+            null_timestamps = self.get_null_timestamps(timeframe, configs, min_date, max_date)
+
+            if not null_timestamps:
+                self.logger.info(f"✅ Все Ichimoku данные актуальны - нет NULL значений")
+                return
+
+            # Начинаем с самой ранней NULL даты
+            start_date = min(null_timestamps)
+            self.logger.info(f"📊 Найдено {len(null_timestamps):,} записей с NULL значениями")
+            self.logger.info(f"📌 Самая ранняя NULL дата: {start_date}")
 
         # Обрабатываем данные батчами (по дням)
         current_date = start_date
         total_days = (max_date - start_date).days
 
         indicators_table = f"indicators_bybit_futures_{timeframe}"
+
+        total_written = 0
+        total_skipped = 0
 
         with self.db.get_connection() as conn:
             cur = conn.cursor()
@@ -584,7 +624,13 @@ class IchimokuLoader:
 
                     # Подготавливаем данные для UPDATE
                     update_data = []
+                    batch_skipped = 0
                     for ts in df_batch.index[mask]:
+                        # Оптимизация: пропускаем записи которые уже заполнены
+                        if null_timestamps is not None and ts not in null_timestamps:
+                            batch_skipped += 1
+                            continue
+
                         # Проверяем что основные значения валидны
                         tenkan_val = ichimoku_data['tenkan'].loc[ts]
                         if pd.notna(tenkan_val) and np.isfinite(tenkan_val):
@@ -612,6 +658,8 @@ class IchimokuLoader:
                                 ts
                             ))
 
+                    total_skipped += batch_skipped
+
                     # Batch UPDATE
                     if update_data:
                         update_query = f"""
@@ -629,6 +677,7 @@ class IchimokuLoader:
 
                         cur.executemany(update_query, update_data)
                         conn.commit()  # Commit после каждой конфигурации
+                        total_written += len(update_data)
 
                 # Обновляем прогресс
                 pbar.update(self.batch_days)
@@ -637,6 +686,10 @@ class IchimokuLoader:
             pbar.close()
             cur.close()
 
+        # Статистика оптимизации
+        self.logger.info(f"\n📊 Статистика записи:")
+        self.logger.info(f"   • Записано: {total_written:,} записей")
+        self.logger.info(f"   • Пропущено: {total_skipped:,} записей (уже заполнены)")
         self.logger.info(f"\n✅ Таймфрейм {timeframe} обработан полностью")
 
 
