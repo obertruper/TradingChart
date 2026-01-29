@@ -186,13 +186,20 @@
 ### Альтернативные данные (Низкий приоритет)
 
 #### 19. On-Chain Metrics (требует платный API)
-- **Источники:** Glassnode, CryptoQuant, Santiment
+- **Источники:** Glassnode, CryptoQuant, Santiment, **CoinGlass ($29/мес)**
 - **Данные:**
   - Exchange Inflow/Outflow
   - Active Addresses
   - NVT Ratio
   - MVRV Ratio
   - Miner Revenue
+  - NUPL (Net Unrealized P/L)
+  - SOPR (Spent Output Profit Ratio)
+  - Pi Cycle Top Indicator
+  - Puell Multiple
+  - Stock-to-Flow
+
+> **См. также:** [CoinGlass API Analysis](./coinglass_api_analysis.md) - полный анализ API и доступных данных
 
 #### 20. Social Sentiment
 - **Источники:** LunarCrush, Santiment
@@ -233,4 +240,43 @@
 
 ---
 
-*Последнее обновление: 2026-01-26*
+---
+
+## Внешние API источники
+
+### CoinGlass API ($29+/месяц)
+
+**Полный анализ:** [coinglass_api_analysis.md](./coinglass_api_analysis.md)
+
+**Ключевые данные (недоступны бесплатно):**
+- Агрегированный Open Interest со всех бирж
+- OI-weighted Funding Rate
+- Тепловые карты ликвидаций
+- CVD (Cumulative Volume Delta)
+- On-chain индикаторы (Pi Cycle, NUPL, SOPR, Puell Multiple)
+- ETF Flows (BTC, ETH, SOL)
+- Whale tracking (Hyperliquid)
+
+**Минимальная цена:** $29/месяц (Hobbyist план)
+
+### CoinMarketCap API (бесплатно)
+
+**Полный анализ:** [coinmarketcap_api_analysis.md](./coinmarketcap_api_analysis.md)
+
+**Доступно бесплатно:**
+- Fear & Greed Index (2.7 лет истории) ✅ Реализовано
+- Global Market Metrics (только текущие, без истории)
+- Текущие цены и market cap криптовалют
+
+**Требует платный план:**
+- Исторические данные по market cap (Standard $299/мес)
+- Исторические OHLCV данные (Hobbyist $29/мес)
+
+**Недоступно через API (только на сайте):**
+- CMC20, CMC100 индексы
+- Pi Cycle, Puell Multiple, Rainbow Chart
+- Altcoin Season Index
+
+---
+
+*Последнее обновление: 2026-01-29*

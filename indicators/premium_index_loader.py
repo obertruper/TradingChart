@@ -394,17 +394,18 @@ class PremiumIndexLoader:
 
                         batch = updates[i:i + batch_size]
 
-                        # Используем INSERT...ON CONFLICT для upsert
-                        # Это гарантирует, что данные будут сохранены
-                        # независимо от того, есть ли уже строка в таблице
+                        # Используем UPDATE для обновления только существующих строк
+                        # НЕ создаём новые строки - они должны уже существовать в indicators
+                        # (созданы другими загрузчиками на основе candles)
                         for ts, symbol, premium_index in batch:
                             cur.execute(f"""
-                                INSERT INTO {self.indicators_table} (timestamp, symbol, premium_index)
-                                VALUES (%s, %s, %s)
-                                ON CONFLICT (timestamp, symbol) DO UPDATE
-                                SET premium_index = EXCLUDED.premium_index
-                            """, (ts, symbol, premium_index))
-                            saved_count += 1
+                                UPDATE {self.indicators_table}
+                                SET premium_index = %s
+                                WHERE timestamp = %s AND symbol = %s
+                            """, (premium_index, ts, symbol))
+                            # Считаем только реально обновлённые строки
+                            if cur.rowcount > 0:
+                                saved_count += 1
 
                         conn.commit()
                         pbar.update(len(batch))
@@ -486,16 +487,14 @@ class PremiumIndexLoader:
         with self.db.get_connection() as conn:
             with conn.cursor() as cur:
                 for ts, symbol, premium_index in updates:
-                    # Используем INSERT...ON CONFLICT для upsert
-                    # WHERE premium_index IS NULL в ON CONFLICT гарантирует
-                    # что мы не перезапишем существующие данные
+                    # Используем UPDATE для обновления только существующих строк
+                    # WHERE premium_index IS NULL гарантирует что не перезапишем данные
                     cur.execute(f"""
-                        INSERT INTO {self.indicators_table} (timestamp, symbol, premium_index)
-                        VALUES (%s, %s, %s)
-                        ON CONFLICT (timestamp, symbol) DO UPDATE
-                        SET premium_index = EXCLUDED.premium_index
-                        WHERE {self.indicators_table}.premium_index IS NULL
-                    """, (ts, symbol, premium_index))
+                        UPDATE {self.indicators_table}
+                        SET premium_index = %s
+                        WHERE timestamp = %s AND symbol = %s
+                          AND premium_index IS NULL
+                    """, (premium_index, ts, symbol))
 
                 conn.commit()
 
