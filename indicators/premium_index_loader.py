@@ -230,20 +230,21 @@ class PremiumIndexLoader:
 
                 return start_date, end_date
 
-    def fetch_premium_index_data(self, start_ts: int, end_ts: int) -> list:
+    def fetch_day_data(self, day_start: datetime, day_end: datetime) -> list:
         """
-        Получение данных Premium Index от Bybit API для заданного диапазона
+        Получение данных Premium Index за один день
 
         Args:
-            start_ts: Начальный timestamp в миллисекундах
-            end_ts: Конечный timestamp в миллисекундах
+            day_start: Начало дня (UTC)
+            day_end: Конец дня (UTC)
 
         Returns:
             list: Список записей [[timestamp, open, high, low, close], ...]
-                  отсортированный по времени (от старых к новым)
         """
-
         all_records = []
+        start_ts = int(day_start.timestamp() * 1000)
+        end_ts = int(day_end.timestamp() * 1000)
+
         params = {
             'category': 'linear',
             'symbol': self.symbol,
@@ -253,164 +254,95 @@ class PremiumIndexLoader:
             'end': end_ts,
         }
 
-        max_pages = 1000  # Ограничение для безопасности
+        max_pages = 10  # Для одного дня достаточно (1440 минут / 1000 = 2 страницы max)
+        current_end = end_ts
 
-        # Расчёт примерного количества записей для прогресс-бара
-        total_minutes = (end_ts - start_ts) / (60 * 1000)
-        estimated_total = int(total_minutes / self.timeframe_minutes)
+        for page in range(max_pages):
+            if shutdown_requested:
+                break
 
-        # Прогресс-бар для API загрузки
-        with tqdm(
-            total=estimated_total,
-            desc=f"📡 {self.symbol} {self.timeframe} API",
-            unit=" записей",
-            dynamic_ncols=True,
-            leave=True
-        ) as pbar:
-            pages = 0
-            current_end = end_ts
+            params['end'] = current_end
 
-            while pages < max_pages and not shutdown_requested:
-                params['end'] = current_end
+            for attempt in range(self.api_retry_attempts):
+                try:
+                    response = requests.get(
+                        f"{BYBIT_API_BASE}{BYBIT_API_ENDPOINT}",
+                        params=params,
+                        timeout=30
+                    )
+                    response.raise_for_status()
+                    data = response.json()
 
-                # Попытки с retry
-                success = False
-                for attempt in range(self.api_retry_attempts):
-                    try:
-                        response = requests.get(
-                            f"{BYBIT_API_BASE}{BYBIT_API_ENDPOINT}",
-                            params=params,
-                            timeout=30
-                        )
-                        response.raise_for_status()
-                        data = response.json()
+                    if data.get('retCode') != 0:
+                        logger.error(f"API Error: {data.get('retMsg')}")
+                        return all_records
 
-                        if data.get('retCode') != 0:
-                            logger.error(f"API Error: {data.get('retMsg')}")
-                            return sorted(all_records, key=lambda x: int(x[0]))
+                    records = data['result']['list']
+                    if not records:
+                        return all_records
 
-                        records = data['result']['list']
-                        if not records:
-                            # Достигли конца истории
-                            success = True
-                            break
+                    all_records.extend(records)
 
-                        all_records.extend(records)
-                        pbar.update(len(records))
-
-                        # Показываем диапазон дат в описании
-                        if len(all_records) > 0:
-                            # API возвращает от новых к старым, поэтому last = oldest
-                            oldest_ts = datetime.fromtimestamp(
-                                int(records[-1][0]) / 1000, tz=pytz.UTC
-                            )
-                            newest_ts = datetime.fromtimestamp(
-                                int(all_records[0][0]) / 1000, tz=pytz.UTC
-                            )
-                            pbar.set_postfix_str(f"{oldest_ts.strftime('%Y-%m-%d')} → {newest_ts.strftime('%Y-%m-%d')}")
-
-                        # Проверяем, достигли ли мы начала диапазона
-                        oldest_ts_val = int(records[-1][0])
-                        if oldest_ts_val <= start_ts:
-                            success = True
-                            break
-
-                        # Устанавливаем end для следующего запроса
-                        current_end = oldest_ts_val - 1
-
-                        pages += 1
-                        success = True
+                    # Проверяем, достигли ли начала диапазона
+                    oldest_ts_val = int(records[-1][0])
+                    if oldest_ts_val <= start_ts:
                         break
 
-                    except requests.exceptions.RequestException as e:
-                        logger.warning(f"Попытка {attempt + 1}/{self.api_retry_attempts} не удалась: {e}")
-                        if attempt < self.api_retry_attempts - 1:
-                            time.sleep(self.api_retry_delay)
-
-                if not success or not records:
+                    current_end = oldest_ts_val - 1
                     break
 
-                # Проверяем, достигли ли мы начала диапазона
-                if oldest_ts_val <= start_ts:
-                    break
+                except requests.exceptions.RequestException as e:
+                    logger.warning(f"API attempt {attempt + 1}/{self.api_retry_attempts} failed: {e}")
+                    if attempt < self.api_retry_attempts - 1:
+                        time.sleep(self.api_retry_delay)
+            else:
+                # Все попытки неудачны
+                break
 
-                # Пауза между запросами
-                time.sleep(0.05)
+            # Достигли начала
+            if oldest_ts_val <= start_ts:
+                break
 
-        logger.info(f"✅ Загружено {len(all_records)} записей Premium Index")
+            time.sleep(0.02)
 
-        # Сортируем по времени (от старых к новым) и фильтруем по диапазону
-        sorted_records = sorted(all_records, key=lambda x: int(x[0]))
-        filtered_records = [r for r in sorted_records if start_ts <= int(r[0]) <= end_ts]
+        # Фильтруем по диапазону дня
+        filtered = [r for r in all_records if start_ts <= int(r[0]) <= end_ts]
+        return sorted(filtered, key=lambda x: int(x[0]))
 
-        return filtered_records
-
-    def save_to_db(self, premium_data: list):
+    def save_day_to_db(self, premium_data: list) -> int:
         """
-        Сохранение данных в indicators таблицу
+        Сохранение данных одного дня в БД
 
         Args:
-            premium_data: Список записей [[timestamp, open, high, low, close], ...]
+            premium_data: Список записей за день
+
+        Returns:
+            int: Количество обновлённых записей
         """
-
         if not premium_data:
-            logger.warning("Нет данных Premium Index для сохранения")
-            return
+            return 0
 
-        logger.info(f"📝 Сохранение {len(premium_data)} записей...")
-
-        # Подготавливаем данные для batch upsert
-        # API возвращает: [timestamp_ms, open, high, low, close]
-        # Мы сохраняем только close как premium_index
-        updates = []
-        for record in premium_data:
-            ts_ms = int(record[0])
-            ts = datetime.fromtimestamp(ts_ms / 1000, tz=pytz.UTC)
-            close_value = float(record[4])  # close - последний элемент
-            updates.append((ts, self.symbol, close_value))
-
-        if not updates:
-            logger.warning("Нет данных для обновления")
-            return
-
-        # Batch upsert с прогресс-баром (INSERT...ON CONFLICT)
         saved_count = 0
-        batch_size = 1000
 
         with self.db.get_connection() as conn:
             with conn.cursor() as cur:
-                with tqdm(
-                    total=len(updates),
-                    desc=f"💾 {self.symbol} {self.timeframe} DB",
-                    unit=" rows",
-                    dynamic_ncols=True,
-                    leave=True
-                ) as pbar:
-                    for i in range(0, len(updates), batch_size):
-                        if shutdown_requested:
-                            conn.commit()  # Сохраняем то, что успели
-                            logger.info("⚠️  Прервано пользователем. Данные сохранены.")
-                            return
+                for record in premium_data:
+                    ts_ms = int(record[0])
+                    ts = datetime.fromtimestamp(ts_ms / 1000, tz=pytz.UTC)
+                    close_value = float(record[4])
 
-                        batch = updates[i:i + batch_size]
+                    cur.execute(f"""
+                        UPDATE {self.indicators_table}
+                        SET premium_index = %s
+                        WHERE timestamp = %s AND symbol = %s
+                    """, (close_value, ts, self.symbol))
 
-                        # Используем UPDATE для обновления только существующих строк
-                        # НЕ создаём новые строки - они должны уже существовать в indicators
-                        # (созданы другими загрузчиками на основе candles)
-                        for ts, symbol, premium_index in batch:
-                            cur.execute(f"""
-                                UPDATE {self.indicators_table}
-                                SET premium_index = %s
-                                WHERE timestamp = %s AND symbol = %s
-                            """, (premium_index, ts, symbol))
-                            # Считаем только реально обновлённые строки
-                            if cur.rowcount > 0:
-                                saved_count += 1
+                    if cur.rowcount > 0:
+                        saved_count += 1
 
-                        conn.commit()
-                        pbar.update(len(batch))
+                conn.commit()
 
-        logger.info(f"✅ Сохранено {saved_count} записей")
+        return saved_count
 
     def find_gaps(self) -> list:
         """
@@ -524,7 +456,13 @@ class PremiumIndexLoader:
         return len(gaps)
 
     def load_premium_index_for_symbol(self):
-        """Основной метод загрузки Premium Index для символа"""
+        """
+        Основной метод загрузки Premium Index для символа.
+
+        Использует ежедневную загрузку от старых данных к новым:
+        - Если прервётся, следующий запуск продолжит с последней даты
+        - Надёжное восстановление после сбоев
+        """
 
         if shutdown_requested:
             logger.info("⚠️  Пропуск - получен сигнал прерывания")
@@ -546,31 +484,58 @@ class PremiumIndexLoader:
             logger.warning(f"⚠️  Нет данных для обработки: {self.symbol}")
             return
 
-        # Этап 1: Загрузка новых данных (если есть)
+        # Этап 1: Загрузка данных по дням (от старых к новым)
         if start_date >= end_date:
             logger.info(f"✅ {self.symbol} - новых данных нет")
         else:
-            logger.info(f"📅 Диапазон обработки: {start_date} → {end_date}")
+            logger.info(f"📅 Диапазон обработки: {start_date.date()} → {end_date.date()}")
 
-            # Конвертируем в timestamps
-            start_ts = int(start_date.timestamp() * 1000)
-            end_ts = int(end_date.timestamp() * 1000)
+            # Вычисляем количество дней
+            total_days = (end_date.date() - start_date.date()).days + 1
+            logger.info(f"📆 Всего дней для обработки: {total_days}")
 
-            # 3. Загружаем данные с API
-            premium_data = self.fetch_premium_index_data(start_ts, end_ts)
+            # Прогресс-бар по дням
+            total_saved = 0
+            current_date = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
 
-            if not premium_data:
-                logger.warning(f"⚠️  Нет данных Premium Index от API для {self.symbol}")
-            else:
-                # Показываем диапазон загруженных данных
-                oldest_ts = datetime.fromtimestamp(int(premium_data[0][0]) / 1000, tz=pytz.UTC)
-                newest_ts = datetime.fromtimestamp(int(premium_data[-1][0]) / 1000, tz=pytz.UTC)
-                logger.info(f"📡 Данные API: {oldest_ts} → {newest_ts} ({len(premium_data)} записей)")
+            with tqdm(
+                total=total_days,
+                desc=f"📅 {self.symbol} {self.timeframe}",
+                unit=" дней",
+                dynamic_ncols=True,
+                leave=True
+            ) as pbar:
+                while current_date.date() <= end_date.date():
+                    if shutdown_requested:
+                        logger.info(f"⚠️  Прервано на дате {current_date.date()}. Следующий запуск продолжит отсюда.")
+                        break
 
-                # 4. Сохраняем в БД
-                self.save_to_db(premium_data)
+                    # Границы дня
+                    day_start = current_date
+                    day_end = current_date + timedelta(days=1) - timedelta(milliseconds=1)
 
-        # Этап 2: Проверка и заполнение пробелов
+                    # Ограничиваем end_date если последний день
+                    if day_end > end_date:
+                        day_end = end_date
+
+                    # Загружаем данные за день
+                    day_data = self.fetch_day_data(day_start, day_end)
+
+                    # Сохраняем в БД
+                    if day_data:
+                        saved = self.save_day_to_db(day_data)
+                        total_saved += saved
+
+                    # Обновляем прогресс-бар
+                    pbar.update(1)
+                    pbar.set_postfix_str(f"{current_date.strftime('%Y-%m-%d')} | saved: {total_saved:,}")
+
+                    # Следующий день
+                    current_date += timedelta(days=1)
+
+            logger.info(f"✅ Загружено и сохранено: {total_saved:,} записей")
+
+        # Этап 2: Проверка и заполнение пробелов (для исторических gaps в API)
         if not shutdown_requested:
             logger.info(f"🔍 Проверка пробелов для {self.symbol} {self.timeframe}...")
             self.check_and_fill_gaps()
