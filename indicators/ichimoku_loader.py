@@ -405,13 +405,26 @@ class IchimokuLoader:
         Returns:
             MAX((span_period + base_period) × lookback_multiplier) среди всех конфигураций
         """
+        return self.get_raw_lookback_period(configs) * self.lookback_multiplier
+
+    def get_raw_lookback_period(self, configs: List[Dict]) -> int:
+        """
+        Вычисляет сырой lookback период БЕЗ множителя.
+        Используется для определения минимальной даты где Ichimoku МОЖЕТ быть рассчитан.
+
+        Args:
+            configs: Список конфигураций Ichimoku
+
+        Returns:
+            MAX(span_period + base_period) среди всех конфигураций
+        """
         max_periods = []
         for config in configs:
             # Для Senkou Span B нужен span_period для расчёта + base_period для сдвига
             total_period = config['span_period'] + config['base_period']
             max_periods.append(total_period)
 
-        return max(max_periods) * self.lookback_multiplier
+        return max(max_periods)
 
     def get_data_range(self, timeframe: str) -> Tuple[datetime, datetime]:
         """
@@ -562,6 +575,14 @@ class IchimokuLoader:
         max_lookback = self.get_max_lookback_period(configs)
         self.logger.info(f"📏 Максимальный lookback: {max_lookback} периодов")
 
+        # Вычисляем effective_min_date - минимальную дату где Ichimoku МОЖЕТ быть рассчитан
+        # Используем RAW lookback (без множителя), т.к. нам нужен минимум для расчёта
+        # До этой даты NULL - это "естественные" пустоты (недостаточно истории)
+        raw_lookback = self.get_raw_lookback_period(configs)
+        timeframe_minutes = {'1m': 1, '15m': 15, '1h': 60}.get(timeframe, 1)
+        effective_min_date = min_date + timedelta(minutes=raw_lookback * timeframe_minutes)
+        self.logger.info(f"📏 Raw lookback: {raw_lookback} периодов → effective min date: {effective_min_date}")
+
         # Определяем начальную дату и NULL timestamps
         if force_reload:
             # Force reload: обрабатываем ВСЁ с начала
@@ -569,8 +590,9 @@ class IchimokuLoader:
             null_timestamps = None  # Пишем всё
             self.logger.info(f"🔄 Force reload: начинаем с {start_date}, записываем ВСЕ данные")
         else:
-            # Инкрементальный режим: ищем NULL во ВСЁМ диапазоне
-            null_timestamps = self.get_null_timestamps(timeframe, configs, min_date, max_date)
+            # Инкрементальный режим: ищем NULL только от effective_min_date
+            # (игнорируем "естественные" NULL в начале где расчёт невозможен)
+            null_timestamps = self.get_null_timestamps(timeframe, configs, effective_min_date, max_date)
 
             if not null_timestamps:
                 self.logger.info(f"✅ Все Ichimoku данные актуальны - нет NULL значений")
