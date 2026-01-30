@@ -64,6 +64,7 @@ LOADER_MAPPING = {
     'funding_rate': 'funding_fee_loader.py',
     'premium_index': 'premium_index_loader.py',
     'ichimoku': 'ichimoku_loader.py',
+    'hv': 'hv_loader.py',
 
     # Специальные случаи (не стандартное название файла)
     'fear_and_greed': 'fear_and_greed_loader_alternative.py',
