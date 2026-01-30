@@ -439,7 +439,7 @@ class HVLoader:
 
             return df
 
-    def process_timeframe(self, timeframe: str, batch_days: int = 7,
+    def process_timeframe(self, timeframe: str, batch_days: int = 1,
                          start_date: Optional[datetime] = None):
         """
         Обрабатывает HV для указанного таймфрейма.
@@ -659,7 +659,7 @@ class HVLoader:
 
         logger.info(f"   ✅ Записано {len(df):,} записей в {table_name}")
 
-    def run(self, timeframes: List[str] = None, batch_days: int = 7,
+    def run(self, timeframes: List[str] = None, batch_days: int = 1,
             start_date: Optional[datetime] = None):
         """
         Запускает обработку HV для указанных таймфреймов.
@@ -711,8 +711,8 @@ def main():
                        help='Один таймфрейм для обработки')
     parser.add_argument('--timeframes', type=str,
                        help='Несколько таймфреймов через запятую')
-    parser.add_argument('--batch-days', type=int, default=7,
-                       help='Размер батча в днях (по умолчанию: 7)')
+    parser.add_argument('--batch-days', type=int, default=1,
+                       help='Размер батча в днях (по умолчанию: 1)')
     parser.add_argument('--start-date', type=str,
                        help='Начальная дата в формате YYYY-MM-DD')
     parser.add_argument('--force-reload', action='store_true',
