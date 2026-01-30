@@ -520,17 +520,32 @@ class HVLoader:
         # Рассчитываем производные метрики
         logger.info(f"   📈 Расчёт производных метрик...")
 
-        # HV Ratio (7/30)
-        hv_ratio_7_30 = self.calculate_hv_ratio(hv_results[7], hv_results[30])
+        derived_metrics = ['hv_ratio_7_30', 'hv_percentile_7d', 'hv_percentile_90d']
+        derived_results = {}
 
-        # HV Percentile (7 дней и 90 дней)
-        # Используем HV_30 как базовый для percentile
-        hv_percentile_7d = self.calculate_hv_percentile(
-            hv_results[30], percentile_periods['7d']
-        )
-        hv_percentile_90d = self.calculate_hv_percentile(
-            hv_results[30], percentile_periods['90d']
-        )
+        with tqdm(total=3, desc=f"{self.symbol} {timeframe} - Производные метрики") as pbar:
+            # HV Ratio (7/30)
+            pbar.set_description(f"{self.symbol} {timeframe} - hv_ratio_7_30")
+            derived_results['hv_ratio_7_30'] = self.calculate_hv_ratio(hv_results[7], hv_results[30])
+            pbar.update(1)
+
+            # HV Percentile 7 дней
+            pbar.set_description(f"{self.symbol} {timeframe} - hv_percentile_7d")
+            derived_results['hv_percentile_7d'] = self.calculate_hv_percentile(
+                hv_results[30], percentile_periods['7d']
+            )
+            pbar.update(1)
+
+            # HV Percentile 90 дней
+            pbar.set_description(f"{self.symbol} {timeframe} - hv_percentile_90d")
+            derived_results['hv_percentile_90d'] = self.calculate_hv_percentile(
+                hv_results[30], percentile_periods['90d']
+            )
+            pbar.update(1)
+
+        hv_ratio_7_30 = derived_results['hv_ratio_7_30']
+        hv_percentile_7d = derived_results['hv_percentile_7d']
+        hv_percentile_90d = derived_results['hv_percentile_90d']
 
         # Фильтруем до актуального диапазона данных
         df_write = df[df['timestamp'] >= start_date].copy()
@@ -620,7 +635,7 @@ class HVLoader:
                             'hv_ratio_7_30', 'hv_percentile_7d', 'hv_percentile_90d'
                         ]
 
-                        set_clauses = [f"{col} = data.{col}" for col in all_columns]
+                        set_clauses = [f"{col} = data.{col}::NUMERIC" for col in all_columns]
 
                         values = []
                         for _, row in batch_df.iterrows():
