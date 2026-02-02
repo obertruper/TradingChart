@@ -85,22 +85,26 @@ class SuperTrendLoader:
         (20, 3.0),   # Long-term
     ]
 
-    def __init__(self, symbol: str = 'BTCUSDT', force_reload: bool = False):
+    def __init__(self, symbol: str = 'BTCUSDT', force_reload: bool = False, check_nulls: bool = False):
         """
         Инициализация загрузчика
 
         Args:
             symbol: Торговая пара
             force_reload: Пересчитать все данные с начала
+            check_nulls: Проверять NULL значения и заполнять пропуски
         """
         self.db = DatabaseConnection()
         self.symbol = symbol
         self.config = self.load_config()
         self.symbol_progress = ""
         self.force_reload = force_reload
+        self.check_nulls = check_nulls
 
         if force_reload:
             logger.info("Режим FORCE RELOAD: пересчет всех данных с начала")
+        elif check_nulls:
+            logger.info("Режим CHECK NULLS: проверка и заполнение NULL значений")
 
         # Генерируем имена колонок
         self.COLUMNS = self._generate_column_names()
@@ -491,6 +495,27 @@ class SuperTrendLoader:
             cur.execute(query, (self.symbol,))
             return {row[0] for row in cur.fetchall()}
 
+    def get_last_supertrend_timestamp(self, timeframe: str) -> Optional[datetime]:
+        """
+        Получает последний timestamp где есть данные SuperTrend (не NULL).
+        Используется для инкрементальной загрузки без проверки всех NULL.
+        """
+        table_name = self.get_table_name(timeframe)
+
+        # Проверяем по основной колонке (standard config)
+        query = f"""
+            SELECT MAX(timestamp)
+            FROM {table_name}
+            WHERE symbol = %s
+            AND supertrend_p10_m20 IS NOT NULL
+        """
+
+        with self.db.get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(query, (self.symbol,))
+            result = cur.fetchone()
+            return result[0] if result and result[0] else None
+
     def write_results_in_batches(
         self,
         timeframe: str,
@@ -648,9 +673,13 @@ class SuperTrendLoader:
         total_records = len(df)
 
         if self.force_reload:
+            # Режим force-reload: записываем ВСЕ данные
             logger.info(f"   Режим force-reload: записываем все {total_records:,} записей")
             records_to_write = df
-        else:
+
+        elif self.check_nulls:
+            # Режим check-nulls: проверяем NULL и заполняем пропуски
+            logger.info("   Проверка NULL значений...")
             null_timestamps = self.get_null_timestamps(timeframe)
 
             if not null_timestamps:
@@ -665,6 +694,19 @@ class SuperTrendLoader:
             logger.info(f"      Всего рассчитано: {total_records:,} записей")
             logger.info(f"      Нужно записать: {len(records_to_write):,} записей (NULL)")
             logger.info(f"      Пропущено: {skipped_records:,} записей (уже заполнены)")
+
+        else:
+            # Режим по умолчанию: записываем только новые данные (после последней даты)
+            last_ts = self.get_last_supertrend_timestamp(timeframe)
+
+            if last_ts:
+                records_to_write = df[df['timestamp'] > last_ts]
+                logger.info(f"   Последняя дата с данными: {last_ts}")
+                logger.info(f"   Новых записей для добавления: {len(records_to_write):,}")
+            else:
+                # Нет данных - записываем все
+                records_to_write = df
+                logger.info(f"   Данных нет - записываем все {total_records:,} записей")
 
         if len(records_to_write) > 0:
             self.write_results_in_batches(timeframe, records_to_write, batch_days)
@@ -702,6 +744,7 @@ def main():
     parser.add_argument('--timeframe', type=str, help='Конкретный таймфрейм (1m, 15m, 1h)')
     parser.add_argument('--batch-days', type=int, default=1, help='Размер батча в днях (по умолчанию 1)')
     parser.add_argument('--force-reload', action='store_true', help='Полный пересчёт всех данных')
+    parser.add_argument('--check-nulls', action='store_true', help='Проверить и заполнить NULL значения')
 
     args = parser.parse_args()
 
@@ -731,6 +774,7 @@ def main():
     logger.info(f"Таймфреймы: {timeframes or 'все из конфига'}")
     logger.info(f"Batch days: {args.batch_days}")
     logger.info(f"Force reload: {args.force_reload}")
+    logger.info(f"Check nulls: {args.check_nulls}")
 
     start_time = time.time()
 
@@ -741,7 +785,7 @@ def main():
         logger.info(f"{'='*80}\n")
 
         try:
-            loader = SuperTrendLoader(symbol=symbol, force_reload=args.force_reload)
+            loader = SuperTrendLoader(symbol=symbol, force_reload=args.force_reload, check_nulls=args.check_nulls)
             loader.symbol_progress = f"[{idx}/{total_symbols}]"
             loader.run(timeframes, args.batch_days)
             logger.info(f"\nСимвол {symbol} обработан")
