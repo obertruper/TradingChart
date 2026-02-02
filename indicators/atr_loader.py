@@ -1,14 +1,22 @@
 #!/usr/bin/env python3
 """
-ATR (Average True Range) Loader with Multi-Timeframe Support
-==============================================================
-Загрузчик ATR индикаторов с поддержкой:
+ATR (Average True Range) and NATR (Normalized ATR) Loader
+==========================================================
+Загрузчик ATR и NATR индикаторов с поддержкой:
 - Множественных периодов (7, 14, 21, 30, 50, 100)
-- Батчевой обработки с checkpoint
 - Любых таймфреймов (1m, 15m, 1h)
 - Инкрементальных обновлений
 - Последовательной обработки периодов (можно прервать)
-- Сглаживания Уайлдера для плавности
+- Сглаживания Уайлдера для ATR
+
+Формулы:
+- ATR: Wilder smoothing - ATR = (ATR_prev × (period - 1) + TR) / period
+- NATR: NATR = ATR / Close × 100 (нормализованный ATR в процентах)
+
+Режимы работы:
+- Обычный режим: расчёт ATR и NATR для новых данных
+- --force-reload: полный пересчёт ATR и NATR с начала истории
+- --backfill-natr: быстрое заполнение NATR на основе существующих ATR данных
 """
 
 import pandas as pd
@@ -141,11 +149,11 @@ class ATRLoader:
 
     def ensure_atr_columns(self, timeframe: str, periods: List[int]):
         """
-        Создает колонки для ATR если их нет
+        Создает колонки для ATR и NATR если их нет
 
         Args:
             timeframe: Таймфрейм (1m, 15m, 1h)
-            periods: Список периодов ATR
+            periods: Список периодов ATR/NATR
         """
         table_name = self.get_table_name(timeframe)
 
@@ -154,23 +162,39 @@ class ATRLoader:
 
             try:
                 for period in periods:
-                    col_name = f'atr_{period}'
-
-                    # Проверяем существование колонки
+                    # ATR колонка
+                    atr_col = f'atr_{period}'
                     cur.execute(f"""
                         SELECT column_name
                         FROM information_schema.columns
                         WHERE table_name = %s AND column_name = %s
-                    """, (table_name, col_name))
+                    """, (table_name, atr_col))
 
                     if cur.fetchone() is None:
-                        logger.info(f"➕ Создание колонки {col_name} в таблице {table_name}")
+                        logger.info(f"➕ Создание колонки {atr_col} в таблице {table_name}")
                         cur.execute(f"""
                             ALTER TABLE {table_name}
-                            ADD COLUMN {col_name} DECIMAL(20,8)
+                            ADD COLUMN {atr_col} DECIMAL(20,8)
                         """)
                         conn.commit()
-                        logger.info(f"✅ Колонка {col_name} создана")
+                        logger.info(f"✅ Колонка {atr_col} создана")
+
+                    # NATR колонка
+                    natr_col = f'natr_{period}'
+                    cur.execute(f"""
+                        SELECT column_name
+                        FROM information_schema.columns
+                        WHERE table_name = %s AND column_name = %s
+                    """, (table_name, natr_col))
+
+                    if cur.fetchone() is None:
+                        logger.info(f"➕ Создание колонки {natr_col} в таблице {table_name}")
+                        cur.execute(f"""
+                            ALTER TABLE {table_name}
+                            ADD COLUMN {natr_col} DECIMAL(20,8)
+                        """)
+                        conn.commit()
+                        logger.info(f"✅ Колонка {natr_col} создана")
 
             except Exception as e:
                 logger.error(f"Ошибка при создании колонок: {e}")
@@ -479,24 +503,25 @@ class ATRLoader:
 
     def batch_update_atr(self, df: pd.DataFrame, table_name: str, period: int):
         """
-        Батч-обновление ATR в БД по дням
+        Батч-обновление ATR и NATR в БД по дням
 
         Args:
-            df: DataFrame с колонками timestamp, symbol, atr_{period}
+            df: DataFrame с колонками timestamp, symbol, atr_{period}, natr_{period}
             table_name: Имя таблицы индикаторов
-            period: Период ATR
+            period: Период ATR/NATR
         """
-        col_name = f'atr_{period}'
+        atr_col = f'atr_{period}'
+        natr_col = f'natr_{period}'
 
         if df.empty:
-            logger.info(f"Нет данных для обновления {col_name}")
+            logger.info(f"Нет данных для обновления {atr_col}/{natr_col}")
             return
 
-        # Фильтруем только строки с не-NULL значениями
-        df_to_save = df[df[col_name].notna()].copy()
+        # Фильтруем только строки с не-NULL значениями ATR
+        df_to_save = df[df[atr_col].notna()].copy()
 
         if len(df_to_save) == 0:
-            logger.warning(f"Нет данных для сохранения в {col_name}")
+            logger.warning(f"Нет данных для сохранения в {atr_col}/{natr_col}")
             return
 
         # Группируем по дням
@@ -511,7 +536,7 @@ class ATRLoader:
         with self.db.get_connection() as conn:
             with conn.cursor() as cur:
                 # Progress bar для батч-обновления
-                progress_desc = f"{self.symbol} {self.symbol_progress} ATR-{period} {table_name.split('_')[-1].upper()}"
+                progress_desc = f"{self.symbol} {self.symbol_progress} ATR/NATR-{period} {table_name.split('_')[-1].upper()}"
                 pbar = tqdm(
                     total=total_days,
                     desc=f"{progress_desc} - Обновление БД",
@@ -521,15 +546,16 @@ class ATRLoader:
 
                 try:
                     for date, day_data in grouped:
-                        # Батч UPDATE для одного дня
-                        update_values = [
-                            (float(row[col_name]), row['timestamp'], row['symbol'])
-                            for _, row in day_data.iterrows()
-                        ]
+                        # Батч UPDATE для одного дня - ATR и NATR вместе
+                        update_values = []
+                        for _, row in day_data.iterrows():
+                            atr_val = float(row[atr_col]) if pd.notna(row[atr_col]) else None
+                            natr_val = float(row[natr_col]) if pd.notna(row[natr_col]) else None
+                            update_values.append((atr_val, natr_val, row['timestamp'], row['symbol']))
 
                         cur.executemany(f"""
                             UPDATE {table_name}
-                            SET {col_name} = %s
+                            SET {atr_col} = %s, {natr_col} = %s
                             WHERE timestamp = %s AND symbol = %s
                         """, update_values)
 
@@ -539,12 +565,12 @@ class ATRLoader:
                     conn.commit()
                     pbar.close()
 
-                    logger.info(f"✅ {col_name}: {total_records:,} записей обновлено за {total_days} дней")
+                    logger.info(f"✅ {atr_col}/{natr_col}: {total_records:,} записей обновлено за {total_days} дней")
 
                 except Exception as e:
                     conn.rollback()
                     pbar.close()
-                    logger.error(f"❌ Ошибка при обновлении {col_name}: {e}")
+                    logger.error(f"❌ Ошибка при обновлении {atr_col}/{natr_col}: {e}")
                     raise
 
     def save_single_column_to_db(self, df: pd.DataFrame, table_name: str, period: int):
@@ -682,6 +708,16 @@ class ATRLoader:
             df['tr'] = self.calculate_true_range(df)
             df[f'atr_{period}'] = self.calculate_atr(df, period)
 
+            # Расчёт NATR = ATR / Close * 100 (нормализованный ATR в процентах)
+            # Конвертируем close в float64 для корректных операций с numpy
+            closes = np.asarray(df['close'], dtype=np.float64)
+            atr_values = df[f'atr_{period}'].values
+            df[f'natr_{period}'] = np.where(
+                closes > 0,
+                atr_values / closes * 100,
+                np.nan
+            )
+
             calc_time = time.time() - start_time
 
             # Красивый вывод времени расчета
@@ -720,6 +756,140 @@ class ATRLoader:
         logger.info(f"\n{'='*80}")
         logger.info(f"🎉 Все периоды ATR для {timeframe} завершены!")
         logger.info(f"{'='*80}")
+
+    def backfill_natr(self, timeframe: str, periods: List[int]):
+        """
+        Быстрое заполнение NATR на основе существующих ATR данных
+
+        Алгоритм:
+        1. Загружает существующие ATR значения из БД
+        2. Загружает Close цены из свечей
+        3. Рассчитывает NATR = ATR / Close * 100
+        4. Записывает только NATR в БД
+
+        Args:
+            timeframe: Таймфрейм (1m, 15m, 1h)
+            periods: Список периодов ATR/NATR
+        """
+        table_name = self.get_table_name(timeframe)
+
+        logger.info(f"🔄 Backfill NATR для {self.symbol} на таймфрейме {timeframe}")
+        logger.info(f"📊 Периоды: {periods}")
+
+        for period in periods:
+            logger.info(f"\n{'='*60}")
+            logger.info(f"📊 Backfill NATR_{period}")
+            logger.info(f"{'='*60}")
+
+            atr_col = f'atr_{period}'
+            natr_col = f'natr_{period}'
+
+            # Загружаем ATR и Close данные
+            with self.db.get_connection() as conn:
+                if timeframe == '1m':
+                    # Для 1m - JOIN с candles_bybit_futures_1m
+                    query = f"""
+                        SELECT
+                            i.timestamp,
+                            i.symbol,
+                            i.{atr_col} as atr,
+                            c.close
+                        FROM {table_name} i
+                        JOIN candles_bybit_futures_1m c
+                            ON i.timestamp = c.timestamp AND i.symbol = c.symbol
+                        WHERE i.symbol = %s
+                          AND i.{atr_col} IS NOT NULL
+                          AND i.{natr_col} IS NULL
+                        ORDER BY i.timestamp
+                    """
+                else:
+                    # Для 15m/1h - агрегируем Close из 1m свечей
+                    minutes = self.timeframe_minutes[timeframe]
+                    query = f"""
+                        WITH aggregated_close AS (
+                            SELECT
+                                DATE_TRUNC('hour', timestamp) +
+                                INTERVAL '1 minute' * (FLOOR(EXTRACT(MINUTE FROM timestamp) / {minutes}) * {minutes}) as period_ts,
+                                symbol,
+                                (ARRAY_AGG(close ORDER BY timestamp DESC))[1] as close
+                            FROM candles_bybit_futures_1m
+                            WHERE symbol = %s
+                            GROUP BY period_ts, symbol
+                        )
+                        SELECT
+                            i.timestamp,
+                            i.symbol,
+                            i.{atr_col} as atr,
+                            ac.close
+                        FROM {table_name} i
+                        JOIN aggregated_close ac
+                            ON i.timestamp = ac.period_ts AND i.symbol = ac.symbol
+                        WHERE i.symbol = %s
+                          AND i.{atr_col} IS NOT NULL
+                          AND i.{natr_col} IS NULL
+                        ORDER BY i.timestamp
+                    """
+
+                if timeframe == '1m':
+                    df = pd.read_sql_query(query, conn, params=(self.symbol,))
+                else:
+                    df = pd.read_sql_query(query, conn, params=(self.symbol, self.symbol))
+
+            if df.empty:
+                logger.info(f"✅ NATR_{period} уже заполнен или нет данных ATR")
+                continue
+
+            logger.info(f"Найдено {len(df):,} записей для backfill NATR_{period}")
+
+            # Расчёт NATR
+            closes = np.asarray(df['close'], dtype=np.float64)
+            atr_values = np.asarray(df['atr'], dtype=np.float64)
+            df[natr_col] = np.where(closes > 0, atr_values / closes * 100, np.nan)
+
+            # Группируем по дням и записываем
+            df['date'] = pd.to_datetime(df['timestamp']).dt.date
+            grouped = df.groupby('date')
+
+            total_days = len(grouped)
+            total_records = len(df)
+
+            with self.db.get_connection() as conn:
+                with conn.cursor() as cur:
+                    progress_desc = f"{self.symbol} {self.symbol_progress} NATR-{period} {timeframe.upper()}"
+                    pbar = tqdm(
+                        total=total_days,
+                        desc=f"{progress_desc} - Backfill",
+                        unit=" день",
+                        bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]'
+                    )
+
+                    try:
+                        for date, day_data in grouped:
+                            update_values = [
+                                (float(row[natr_col]) if pd.notna(row[natr_col]) else None,
+                                 row['timestamp'], row['symbol'])
+                                for _, row in day_data.iterrows()
+                            ]
+
+                            cur.executemany(f"""
+                                UPDATE {table_name}
+                                SET {natr_col} = %s
+                                WHERE timestamp = %s AND symbol = %s
+                            """, update_values)
+
+                            pbar.update(1)
+
+                        conn.commit()
+                        pbar.close()
+                        logger.info(f"✅ NATR_{period}: {total_records:,} записей обновлено")
+
+                    except Exception as e:
+                        conn.rollback()
+                        pbar.close()
+                        logger.error(f"❌ Ошибка при backfill NATR_{period}: {e}")
+                        raise
+
+        logger.info(f"\n🎉 Backfill NATR завершён для {timeframe}!")
 
     def run(self, timeframe: str = None, batch_days: int = None):
         """
@@ -773,7 +943,9 @@ def main():
     parser.add_argument('--timeframe', type=str, help='Конкретный таймфрейм (1m, 15m, 1h)')
     parser.add_argument('--batch-days', type=int, help='Размер батча в днях')
     parser.add_argument('--force-reload', action='store_true',
-                       help='Пересчитать все данные с начала (заполнить пробелы внутри истории)')
+                       help='Пересчитать все данные с начала (ATR + NATR)')
+    parser.add_argument('--backfill-natr', action='store_true',
+                       help='Быстрое заполнение NATR на основе существующих ATR данных')
 
     args = parser.parse_args()
 
@@ -807,7 +979,26 @@ def main():
         try:
             loader = ATRLoader(symbol=symbol, force_reload=args.force_reload)
             loader.symbol_progress = f"[{idx}/{total_symbols}]"
-            loader.run(timeframe=args.timeframe, batch_days=args.batch_days)
+
+            if args.backfill_natr:
+                # Режим backfill NATR - быстрое заполнение на основе существующих ATR
+                config_path = os.path.join(os.path.dirname(__file__), 'indicators_config.yaml')
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    config = yaml.safe_load(f)
+                periods = config['indicators']['atr']['periods']
+
+                if args.timeframe:
+                    timeframes = [args.timeframe]
+                else:
+                    timeframes = config.get('timeframes', ['1m', '15m', '1h'])
+
+                for tf in timeframes:
+                    loader.ensure_atr_columns(tf, periods)
+                    loader.backfill_natr(tf, periods)
+            else:
+                # Обычный режим - расчёт ATR и NATR
+                loader.run(timeframe=args.timeframe, batch_days=args.batch_days)
+
             logger.info(f"\n✅ Символ {symbol} обработан\n")
         except KeyboardInterrupt:
             logger.info("\n⚠️ Прервано пользователем. Можно продолжить позже с этого места.")

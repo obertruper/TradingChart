@@ -23,6 +23,7 @@
 | **Моментум** | Williams %R | 5 | 6, 10, 14, 20, 30 |
 | **Моментум** | MFI | 5 | 7, 10, 14, 20, 25 |
 | **Волатильность** | ATR | 6 | 7, 14, 21, 30, 50, 100 |
+| **Волатильность** | NATR | 6 | 7, 14, 21, 30, 50, 100 (ATR/Close×100%) |
 | **Волатильность** | Bollinger Bands | 78 | 13 конфигураций × 6 компонентов |
 | **Волатильность** | HV | 8 | 5 периодов + ratio + 2 percentile |
 | **Объём** | VMA | 5 | 10, 20, 50, 100, 200 |
@@ -34,7 +35,7 @@
 | **Деривативы** | Funding Rate | 1 | — |
 | **Деривативы** | Premium Index | 1 | — |
 
-**Итого:** ~244 колонок индикаторов
+**Итого:** ~250 колонок индикаторов
 
 ---
 
@@ -108,7 +109,7 @@
 | Индикатор | Описание | Сложность | Ценность для ML |
 |-----------|----------|-----------|-----------------|
 | **Historical Volatility (HV)** ✅ | StdDev доходности, аннуализированная | Простая | ⭐⭐⭐⭐⭐ |
-| **NATR** | Normalized ATR (ATR/Close×100%) | Простая | ⭐⭐⭐⭐⭐ |
+| **NATR** ✅ | Normalized ATR (ATR/Close×100%) | Простая | ⭐⭐⭐⭐⭐ |
 | **Garman-Klass Volatility** | Волатильность из OHLC | Средняя | ⭐⭐⭐⭐ |
 | **Parkinson Volatility** | Волатильность из H-L | Простая | ⭐⭐⭐⭐ |
 | **Parabolic SAR** | Stop and Reverse | Средняя | ⭐⭐⭐⭐ |
@@ -148,7 +149,7 @@
 
 1. **Волатильность** (критично для ML):
    - ✅ HV (7, 14, 30, 60, 90) — **РЕАЛИЗОВАНО**
-   - NATR (использует ATR)
+   - ✅ NATR (7, 14, 21, 30, 50, 100) — **РЕАЛИЗОВАНО** (интегрирован в atr_loader.py)
    - Garman-Klass
    - ✅ Volatility Ratio (hv_ratio_7_30) — **РЕАЛИЗОВАНО**
    - ✅ Volatility Percentile (hv_percentile_7d, hv_percentile_90d) — **РЕАЛИЗОВАНО**
@@ -230,7 +231,7 @@
 |-----------|-----------|--------------|
 | **Тренд** | SMA, EMA, MACD ✅ | Supertrend, Parabolic SAR |
 | **Моментум** | RSI, Stochastic ✅ | CCI, ROC, Aroon |
-| **Волатильность** | ATR, Bollinger ✅ | HV, NATR, Garman-Klass |
+| **Волатильность** | ATR, Bollinger, HV, NATR ✅ | Garman-Klass |
 | **Объём** | OBV, VWAP ✅ | CMF, CVD, Force Index |
 | **Сентимент** | Fear & Greed ✅ | Coinbase Premium, L/S Ratio ✅ |
 | **Деривативы** | OI, FR ✅ | Basis, Liquidations |
@@ -242,7 +243,7 @@
 | **Price-based** | OHLC, returns, log returns | ✅ Можем |
 | **Trend** | SMA, EMA, MACD, ADX, Ichimoku | ✅ Есть |
 | **Momentum** | RSI, Stochastic, MFI, Williams %R | ✅ Есть |
-| **Volatility** | ATR, Bollinger, HV, NATR, GK | ⚠️ Частично |
+| **Volatility** | ATR, Bollinger, HV, NATR ✅, GK | ⚠️ Частично (GK нет) |
 | **Volume** | OBV, VWAP, VMA, CMF, CVD | ⚠️ Частично |
 | **Market structure** | Support/Resistance, Pivots | ❌ Нужно |
 | **Sentiment** | Fear & Greed, L/S Ratio | ✅ Есть |
@@ -253,7 +254,7 @@
 ### Критичные признаки для ML (по важности)
 
 1. **Returns** (доходность за разные периоды) — ✅ можем рассчитать
-2. **Volatility** (HV, NATR, ATR) — ⚠️ ATR есть, HV нужно
+2. **Volatility** (HV, NATR, ATR) — ✅ Все реализованы
 3. **Trend strength** (ADX, Aroon) — ⚠️ ADX есть, Aroon нужно
 4. **Momentum** (RSI, MFI, Stochastic) — ✅ есть
 5. **Volume profile** (OBV, CVD, VWAP) — ⚠️ частично
@@ -269,17 +270,17 @@
 
 Создать `volatility_loader.py` с индикаторами:
 
-| Индикатор | Периоды | Колонок |
-|-----------|---------|---------|
-| Historical Volatility | 7, 14, 30, 60, 90 | 5 |
-| NATR | 7, 14, 21, 30 | 4 |
-| Garman-Klass | 7, 14, 30 | 3 |
-| Parkinson | 7, 14, 30 | 3 |
-| Chaikin Volatility | 10, 14, 20 | 3 |
-| Volatility Ratio | (7/30), (14/60) | 2 |
-| Volatility Percentile | 30, 90, 180 | 3 |
+| Индикатор | Периоды | Колонок | Статус |
+|-----------|---------|---------|--------|
+| Historical Volatility | 7, 14, 30, 60, 90 | 5 | ✅ Готово |
+| NATR | 7, 14, 21, 30, 50, 100 | 6 | ✅ Готово |
+| Volatility Ratio | (7/30) | 1 | ✅ Готово |
+| Volatility Percentile | 7d, 90d | 2 | ✅ Готово |
+| Garman-Klass | 7, 14, 30 | 3 | ⏳ Ожидает |
+| Parkinson | 7, 14, 30 | 3 | ⏳ Ожидает |
+| Chaikin Volatility | 10, 14, 20 | 3 | ⏳ Ожидает |
 
-**Итого: ~23 новых колонки**
+**Итого: ~23 колонки (14 готово, 9 ожидает)**
 
 ### Фаза 2: Тренд расширенный (1-2 дня)
 
@@ -504,7 +505,7 @@
 
 ### Высший приоритет (реализовать первыми)
 
-1. ⏳ **Volatility indicators** — ✅ HV (реализовано), NATR, Garman-Klass (ожидает)
+1. ✅ **Volatility indicators** — ✅ HV, ✅ NATR (реализовано), Garman-Klass (ожидает)
 2. ⏳ **Trend confirmation** — ✅ SuperTrend (реализовано), Aroon (ожидает)
 3. ✅ **Volume delta** — CVD, CMF
 
@@ -524,7 +525,7 @@
 
 ### Фаза 1-5: Индикаторы из OHLCV
 1. [x] Создать `hv_loader.py` (Фаза 1 — HV, Ratio, Percentile) ✅ **ГОТОВО**
-   - [ ] Добавить NATR (Normalized ATR)
+   - [x] Добавить NATR (Normalized ATR) ✅ **ГОТОВО** (интегрирован в atr_loader.py)
    - [ ] Добавить Garman-Klass Volatility
 2. [x] Создать `supertrend_loader.py` (SuperTrend на основе ATR) ✅ **ГОТОВО**
    - 5 конфигураций: (7,1.5), (10,2.0), (10,3.0), (14,2.5), (20,3.0)
