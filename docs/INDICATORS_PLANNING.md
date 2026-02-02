@@ -17,12 +17,14 @@
 | **Тренд** | MACD | 24 | 8 конфигураций × 3 (line, signal, histogram) |
 | **Тренд** | ADX | 24 | 8 периодов × 3 (ADX, +DI, -DI) |
 | **Тренд** | Ichimoku | 16 | 2 конфига × 8 компонентов |
+| **Тренд** | SuperTrend | 20 | 5 конфигов × 4 (value, dir, upper, lower) |
 | **Моментум** | RSI | 5 | 7, 9, 14, 21, 25 |
 | **Моментум** | Stochastic | 16 | 8 конфигураций × 2 (%K, %D) |
 | **Моментум** | Williams %R | 5 | 6, 10, 14, 20, 30 |
 | **Моментум** | MFI | 5 | 7, 10, 14, 20, 25 |
 | **Волатильность** | ATR | 6 | 7, 14, 21, 30, 50, 100 |
 | **Волатильность** | Bollinger Bands | 78 | 13 конфигураций × 6 компонентов |
+| **Волатильность** | HV | 8 | 5 периодов + ratio + 2 percentile |
 | **Объём** | VMA | 5 | 10, 20, 50, 100, 200 |
 | **Объём** | OBV | 1 | — |
 | **Объём** | VWAP | 16 | 1 daily + 15 rolling |
@@ -32,7 +34,7 @@
 | **Деривативы** | Funding Rate | 1 | — |
 | **Деривативы** | Premium Index | 1 | — |
 
-**Итого:** ~216 колонок индикаторов
+**Итого:** ~244 колонок индикаторов
 
 ---
 
@@ -503,7 +505,7 @@
 ### Высший приоритет (реализовать первыми)
 
 1. ⏳ **Volatility indicators** — ✅ HV (реализовано), NATR, Garman-Klass (ожидает)
-2. ✅ **Trend confirmation** — Supertrend, Aroon
+2. ⏳ **Trend confirmation** — ✅ SuperTrend (реализовано), Aroon (ожидает)
 3. ✅ **Volume delta** — CVD, CMF
 
 ### Средний приоритет
@@ -524,7 +526,10 @@
 1. [x] Создать `hv_loader.py` (Фаза 1 — HV, Ratio, Percentile) ✅ **ГОТОВО**
    - [ ] Добавить NATR (Normalized ATR)
    - [ ] Добавить Garman-Klass Volatility
-2. [ ] Создать `trend_extended_loader.py` (Фаза 2)
+2. [x] Создать `supertrend_loader.py` (SuperTrend на основе ATR) ✅ **ГОТОВО**
+   - 5 конфигураций: (7,1.5), (10,2.0), (10,3.0), (14,2.5), (20,3.0)
+   - 20 колонок на таймфрейм (5 × 4: value, dir, upper, lower)
+3. [ ] Создать `trend_extended_loader.py` (Aroon, Parabolic SAR)
 3. [ ] Создать `momentum_extended_loader.py` (Фаза 3)
 4. [ ] Создать `volume_extended_loader.py` (Фаза 4)
 5. [ ] Создать `derivatives_extended_loader.py` (Фаза 5)

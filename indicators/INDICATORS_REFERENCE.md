@@ -20,6 +20,7 @@
 8. [ATR (Average True Range)](#-atr-average-true-range---средний-истинный-диапазон) - Средний истинный диапазон
 9. [Bollinger Bands](#-bollinger-bands-bb---полосы-боллинджера) - Полосы Боллинджера
 10. [HV (Historical Volatility)](#-hv-historical-volatility---историческая-волатильность) - Историческая волатильность
+11. [SuperTrend](#-supertrend---трендовый-индикатор-на-основе-atr) - Трендовый индикатор на основе ATR
 
 ### Объемные индикаторы
 10. [VMA (Volume Moving Average)](#-vma-volume-moving-average---скользящая-средняя-объема) - Скользящая средняя объема
@@ -3482,6 +3483,303 @@ python3 hv_loader.py --symbol ETHUSDT --timeframe 15m --force-reload
 - "Volatility Clustering" — высокая волатильность порождает высокую волатильность
 - HV_30 на дневном графике — стандарт для институциональных инвесторов
 - Стратегия "Mean Reversion of Volatility" — волатильность стремится к среднему значению
+
+---
+
+## 📈 SuperTrend - Трендовый индикатор на основе ATR
+
+### Описание
+
+SuperTrend — популярный трендовый индикатор, который показывает текущее направление тренда и потенциальные точки разворота. Основан на **ATR (Average True Range)** и использует волатильность для определения динамических уровней поддержки/сопротивления.
+
+**Ключевые особенности:**
+- Линия SuperTrend находится **под ценой** при восходящем тренде (UPTREND)
+- Линия SuperTrend находится **над ценой** при нисходящем тренде (DOWNTREND)
+- Может использоваться как **trailing stop-loss**
+- Адаптируется к волатильности через ATR
+
+### Формула расчёта
+
+```
+1. Basic Bands (базовые границы):
+   Basic Upper Band = (High + Low) / 2 + Multiplier × ATR(period)
+   Basic Lower Band = (High + Low) / 2 - Multiplier × ATR(period)
+
+2. Final Bands (финальные границы с "lock" механизмом):
+   Final Upper Band:
+     - Если Basic Upper < Previous Final Upper ИЛИ Previous Close > Previous Final Upper:
+       Final Upper = Basic Upper (обновляем)
+     - Иначе: Final Upper = Previous Final Upper (фиксируем)
+
+   Final Lower Band:
+     - Если Basic Lower > Previous Final Lower ИЛИ Previous Close < Previous Final Lower:
+       Final Lower = Basic Lower (обновляем)
+     - Иначе: Final Lower = Previous Final Lower (фиксируем)
+
+3. SuperTrend и Direction:
+   Если Previous Direction = UPTREND (1):
+     - Если Close >= Final Lower → SuperTrend = Final Lower, Direction = 1 (UPTREND)
+     - Иначе → SuperTrend = Final Upper, Direction = -1 (DOWNTREND flip!)
+
+   Если Previous Direction = DOWNTREND (-1):
+     - Если Close <= Final Upper → SuperTrend = Final Upper, Direction = -1 (DOWNTREND)
+     - Иначе → SuperTrend = Final Lower, Direction = 1 (UPTREND flip!)
+```
+
+### Параметры
+
+| Параметр | Описание | Типичные значения |
+|----------|----------|-------------------|
+| **period** | Период ATR (lookback window) | 7, 10, 14, 20 |
+| **multiplier** | Множитель ATR (ширина канала) | 1.5, 2.0, 2.5, 3.0 |
+
+**Влияние параметров:**
+- **Меньший period** → быстрее реакция, больше сигналов, больше шума
+- **Больший period** → медленнее реакция, меньше сигналов, меньше шума
+- **Меньший multiplier** → узкий канал, чаще смена тренда
+- **Больший multiplier** → широкий канал, реже смена тренда
+
+### Конфигурации в системе
+
+| Название | Period | Multiplier | Назначение |
+|----------|--------|------------|------------|
+| **Scalping** | 7 | 1.5 | Быстрые сигналы, много шума |
+| **Standard** | 10 | 2.0 | Классический баланс |
+| **Conservative** | 10 | 3.0 | Меньше сигналов, выше качество |
+| **Medium-term** | 14 | 2.5 | Позиционная торговля |
+| **Long-term** | 20 | 3.0 | Крупные тренды |
+
+### Колонки в базе данных
+
+**Именование:** `supertrend_p{period}_m{multiplier×10}`
+
+Для каждой конфигурации создаётся 4 колонки:
+
+| Колонка | Тип | Описание |
+|---------|-----|----------|
+| `supertrend_p7_m15` | NUMERIC(20,8) | Значение линии SuperTrend |
+| `supertrend_p7_m15_dir` | SMALLINT | Направление: 1=UPTREND, -1=DOWNTREND |
+| `supertrend_p7_m15_upper` | NUMERIC(20,8) | Final Upper Band |
+| `supertrend_p7_m15_lower` | NUMERIC(20,8) | Final Lower Band |
+
+**Итого:** 5 конфигураций × 4 колонки = **20 колонок** на таймфрейм
+
+### Сигналы торговли
+
+#### Базовые сигналы:
+
+```
+BUY Signal:
+  ✓ direction изменился с -1 на 1 (DOWNTREND → UPTREND)
+  → Цена пробила верхнюю границу канала
+
+SELL Signal:
+  ✓ direction изменился с 1 на -1 (UPTREND → DOWNTREND)
+  → Цена пробила нижнюю границу канала
+```
+
+#### Consensus Score (сумма direction всех конфигураций):
+
+```python
+consensus = sum([
+    supertrend_p7_m15_dir,
+    supertrend_p10_m20_dir,
+    supertrend_p10_m30_dir,
+    supertrend_p14_m25_dir,
+    supertrend_p20_m30_dir
+])
+# Результат от -5 до +5
+```
+
+| Consensus | Интерпретация | Действие |
+|-----------|---------------|----------|
+| **+5** | Все 5 конфигураций UPTREND | Сильный бычий тренд, HOLD LONG |
+| **+3** | 4 из 5 UPTREND | Уверенный тренд вверх |
+| **+1** | 3 UPTREND, 2 DOWNTREND | Неопределённость |
+| **-1** | 2 UPTREND, 3 DOWNTREND | Начало разворота вниз |
+| **-3** | 4 из 5 DOWNTREND | Уверенный тренд вниз |
+| **-5** | Все 5 DOWNTREND | Сильный медвежий тренд, HOLD SHORT |
+
+### Комбинация с другими индикаторами
+
+#### SuperTrend + RSI:
+```sql
+-- Сильный сигнал покупки
+SELECT * FROM indicators_bybit_futures_1h
+WHERE symbol = 'BTCUSDT'
+  AND supertrend_p10_m20_dir = 1           -- UPTREND
+  AND LAG(supertrend_p10_m20_dir) = -1     -- Только что перевернулся
+  AND rsi_14 < 40                          -- RSI не перекуплен
+ORDER BY timestamp DESC
+LIMIT 10;
+```
+
+#### SuperTrend + ADX:
+```sql
+-- Сильный трендовый сигнал
+SELECT * FROM indicators_bybit_futures_1h
+WHERE symbol = 'BTCUSDT'
+  AND supertrend_p10_m20_dir = 1           -- UPTREND
+  AND adx_14 > 25                          -- Сильный тренд
+  AND adx_14_plus_di > adx_14_minus_di     -- +DI > -DI (бычий)
+ORDER BY timestamp DESC
+LIMIT 10;
+```
+
+#### Multi-timeframe Confluence:
+```sql
+-- 1h и 15m оба в UPTREND
+SELECT
+    h.timestamp,
+    h.supertrend_p10_m20 as st_1h,
+    h.supertrend_p10_m20_dir as dir_1h,
+    m.supertrend_p10_m20 as st_15m,
+    m.supertrend_p10_m20_dir as dir_15m
+FROM indicators_bybit_futures_1h h
+JOIN indicators_bybit_futures_15m m
+    ON m.timestamp >= h.timestamp
+    AND m.timestamp < h.timestamp + INTERVAL '1 hour'
+    AND m.symbol = h.symbol
+WHERE h.symbol = 'BTCUSDT'
+  AND h.supertrend_p10_m20_dir = 1   -- 1h UPTREND
+  AND m.supertrend_p10_m20_dir = 1   -- 15m UPTREND
+ORDER BY h.timestamp DESC
+LIMIT 10;
+```
+
+### Использование загрузчика
+
+```bash
+cd indicators
+
+# Загрузить SuperTrend для всех символов и таймфреймов
+python3 supertrend_loader.py
+
+# Конкретный символ
+python3 supertrend_loader.py --symbol BTCUSDT
+
+# Конкретный таймфрейм
+python3 supertrend_loader.py --timeframe 1h
+
+# Полная перезагрузка
+python3 supertrend_loader.py --force-reload
+
+# Комбинация
+python3 supertrend_loader.py --symbol ETHUSDT --timeframe 15m --force-reload
+```
+
+### Примеры SQL-запросов
+
+#### Текущее состояние SuperTrend:
+```sql
+SELECT
+    timestamp,
+    supertrend_p7_m15, supertrend_p7_m15_dir,
+    supertrend_p10_m20, supertrend_p10_m20_dir,
+    supertrend_p10_m30, supertrend_p10_m30_dir,
+    supertrend_p14_m25, supertrend_p14_m25_dir,
+    supertrend_p20_m30, supertrend_p20_m30_dir,
+    -- Consensus Score
+    (supertrend_p7_m15_dir + supertrend_p10_m20_dir +
+     supertrend_p10_m30_dir + supertrend_p14_m25_dir +
+     supertrend_p20_m30_dir) as consensus_score
+FROM indicators_bybit_futures_1h
+WHERE symbol = 'BTCUSDT'
+ORDER BY timestamp DESC
+LIMIT 10;
+```
+
+#### Найти смены тренда (flips):
+```sql
+WITH trend_changes AS (
+    SELECT
+        timestamp,
+        supertrend_p10_m20_dir as current_dir,
+        LAG(supertrend_p10_m20_dir) OVER (ORDER BY timestamp) as prev_dir
+    FROM indicators_bybit_futures_1h
+    WHERE symbol = 'BTCUSDT'
+)
+SELECT
+    timestamp,
+    current_dir,
+    CASE
+        WHEN current_dir = 1 AND prev_dir = -1 THEN 'FLIP TO UPTREND'
+        WHEN current_dir = -1 AND prev_dir = 1 THEN 'FLIP TO DOWNTREND'
+    END as signal
+FROM trend_changes
+WHERE current_dir != prev_dir
+ORDER BY timestamp DESC
+LIMIT 20;
+```
+
+#### Расстояние до SuperTrend (для trailing stop):
+```sql
+SELECT
+    i.timestamp,
+    c.close,
+    i.supertrend_p10_m20,
+    i.supertrend_p10_m20_dir,
+    ABS(c.close - i.supertrend_p10_m20) as distance,
+    ROUND(ABS(c.close - i.supertrend_p10_m20) / c.close * 100, 2) as distance_pct
+FROM indicators_bybit_futures_1h i
+JOIN candles_bybit_futures_1m c
+    ON c.timestamp = i.timestamp AND c.symbol = i.symbol
+WHERE i.symbol = 'BTCUSDT'
+ORDER BY i.timestamp DESC
+LIMIT 10;
+```
+
+### Визуальное представление
+
+```
+Цена                          SuperTrend
+  │
+  │         ╭───╮
+  │    ╭───╯   ╰──╮              🟢 UPTREND (линия ПОД ценой)
+  │   ╱            ╲
+  │  ╱   ══════════ ╲            ← SuperTrend линия (зелёная)
+  │ ╱                 ╲
+  │╱══════════════════ ╲
+  │       UPTREND       ╲
+  │                      ╲───────
+  │                        ══════ ← SuperTrend линия (красная)
+  │                      DOWNTREND
+  │                              🔴 DOWNTREND (линия НАД ценой)
+  ├────────────────────────────▶ Время
+
+Сигналы разворота:
+  🟢 BUY:  Цена пересекает SuperTrend снизу вверх (direction: -1 → 1)
+  🔴 SELL: Цена пересекает SuperTrend сверху вниз (direction: 1 → -1)
+```
+
+### Преимущества и недостатки
+
+#### Преимущества ✅
+
+| Преимущество | Описание |
+|-------------|----------|
+| **Простота** | Один визуальный элемент: линия выше/ниже цены |
+| **Адаптивность** | Использует ATR — адаптируется к волатильности |
+| **Чёткие сигналы** | direction = 1/-1, легко использовать в алготрейдинге |
+| **Trailing Stop** | Может использоваться как динамический стоп-лосс |
+| **Фильтр шума** | Multiplier отсекает мелкие колебания |
+
+#### Недостатки ❌
+
+| Недостаток | Описание |
+|-----------|----------|
+| **Запаздывание** | Сигнал появляется после начала движения |
+| **Боковой рынок** | Много ложных сигналов при флэте |
+| **Зависимость от параметров** | Разные настройки — разные результаты |
+| **Не показывает силу** | Только направление, не силу тренда (используйте ADX) |
+
+### Интересные факты
+
+- SuperTrend разработан Olivier Seban (Оливье Себан)
+- Популярен в индийском трейдинг-сообществе
+- Часто используется вместе с EMA для фильтрации сигналов
+- На TradingView — один из самых популярных индикаторов
+- Consensus из нескольких конфигураций значительно улучшает качество сигналов
 
 ---
 
