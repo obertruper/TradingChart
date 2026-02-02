@@ -539,9 +539,10 @@ class ATRLoader:
                 progress_desc = f"{self.symbol} {self.symbol_progress} ATR/NATR-{period} {table_name.split('_')[-1].upper()}"
                 pbar = tqdm(
                     total=total_days,
-                    desc=f"{progress_desc} - Обновление БД",
-                    unit=" день",
-                    bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]'
+                    desc=progress_desc,
+                    unit="d",
+                    ncols=100,
+                    bar_format='{desc}: {percentage:3.0f}%|{bar:20}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]'
                 )
 
                 try:
@@ -858,9 +859,10 @@ class ATRLoader:
                     progress_desc = f"{self.symbol} {self.symbol_progress} NATR-{period} {timeframe.upper()}"
                     pbar = tqdm(
                         total=total_days,
-                        desc=f"{progress_desc} - Backfill",
-                        unit=" день",
-                        bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]'
+                        desc=progress_desc,
+                        unit="d",
+                        ncols=100,
+                        bar_format='{desc}: {percentage:3.0f}%|{bar:20}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]'
                     )
 
                     try:
