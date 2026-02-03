@@ -247,7 +247,8 @@ class SMALoader:
 
     def get_null_timestamps(self, timeframe: str, periods: List[int]) -> Tuple[Optional[datetime], Optional[datetime], int]:
         """
-        Находит диапазон timestamps где есть NULL значения для любого SMA периода
+        Находит диапазон timestamps где есть NULL значения для любого SMA периода,
+        ИСКЛЮЧАЯ неизбежные NULL в начале данных (где нет достаточной истории для расчёта)
 
         Args:
             timeframe: Таймфрейм (1m, 15m, 1h)
@@ -257,6 +258,8 @@ class SMALoader:
             Tuple (min_timestamp, max_timestamp, count) или (None, None, 0) если NULL нет
         """
         table_name = f'indicators_bybit_futures_{timeframe}'
+        minutes = self.timeframe_minutes[timeframe]
+        max_period = max(periods)
 
         # Формируем условие WHERE для проверки NULL в любом SMA столбце
         null_conditions = ' OR '.join([f'sma_{p} IS NULL' for p in periods])
@@ -265,12 +268,29 @@ class SMALoader:
             cur = conn.cursor()
 
             try:
-                # Находим диапазон и количество NULL
+                # Сначала находим минимальную дату данных для этого символа
+                cur.execute(f"""
+                    SELECT MIN(timestamp)
+                    FROM {table_name}
+                    WHERE symbol = %s
+                """, (self.symbol,))
+                min_data_date = cur.fetchone()[0]
+
+                if min_data_date is None:
+                    return None, None, 0
+
+                # Рассчитываем границу "неизбежных NULL" - первые max_period записей
+                # где SMA_200 не может быть рассчитан из-за отсутствия истории
+                unavoidable_null_boundary = min_data_date + timedelta(minutes=max_period * minutes)
+
+                # Находим диапазон и количество NULL ПОСЛЕ границы неизбежных NULL
                 cur.execute(f"""
                     SELECT MIN(timestamp), MAX(timestamp), COUNT(*)
                     FROM {table_name}
-                    WHERE symbol = %s AND ({null_conditions})
-                """, (self.symbol,))
+                    WHERE symbol = %s
+                      AND ({null_conditions})
+                      AND timestamp >= %s
+                """, (self.symbol, unavoidable_null_boundary))
 
                 result = cur.fetchone()
 
