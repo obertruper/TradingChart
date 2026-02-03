@@ -245,6 +245,154 @@ class SMALoader:
             finally:
                 cur.close()
 
+    def get_null_timestamps(self, timeframe: str, periods: List[int]) -> Tuple[Optional[datetime], Optional[datetime], int]:
+        """
+        Находит диапазон timestamps где есть NULL значения для любого SMA периода
+
+        Args:
+            timeframe: Таймфрейм (1m, 15m, 1h)
+            periods: Список периодов SMA
+
+        Returns:
+            Tuple (min_timestamp, max_timestamp, count) или (None, None, 0) если NULL нет
+        """
+        table_name = f'indicators_bybit_futures_{timeframe}'
+
+        # Формируем условие WHERE для проверки NULL в любом SMA столбце
+        null_conditions = ' OR '.join([f'sma_{p} IS NULL' for p in periods])
+
+        with self.db.get_connection() as conn:
+            cur = conn.cursor()
+
+            try:
+                # Находим диапазон и количество NULL
+                cur.execute(f"""
+                    SELECT MIN(timestamp), MAX(timestamp), COUNT(*)
+                    FROM {table_name}
+                    WHERE symbol = %s AND ({null_conditions})
+                """, (self.symbol,))
+
+                result = cur.fetchone()
+
+                if result and result[0] is not None:
+                    return result[0], result[1], result[2]
+                else:
+                    return None, None, 0
+
+            finally:
+                cur.close()
+
+    def fill_null_values(self, timeframe: str, periods: List[int]) -> int:
+        """
+        Заполняет NULL значения SMA для указанного таймфрейма
+
+        Алгоритм:
+        1. Найти MIN и MAX timestamp где есть NULL
+        2. Загрузить свечи с lookback для расчёта SMA
+        3. Рассчитать SMA для всего диапазона
+        4. Обновить только записи где был NULL
+
+        Args:
+            timeframe: Таймфрейм (1m, 15m, 1h)
+            periods: Список периодов SMA
+
+        Returns:
+            Количество обновлённых записей
+        """
+        table_name = f'indicators_bybit_futures_{timeframe}'
+
+        # Находим диапазон NULL
+        min_null, max_null, null_count = self.get_null_timestamps(timeframe, periods)
+
+        if null_count == 0:
+            logger.info(f"✅ [{self.symbol}] {timeframe}: Нет NULL значений, пропускаем")
+            return 0
+
+        logger.info(f"🔍 [{self.symbol}] {timeframe}: Найдено {null_count:,} записей с NULL")
+        logger.info(f"   Диапазон: {min_null} - {max_null}")
+
+        # Определяем lookback для загрузки данных
+        max_period = max(periods)
+        minutes = self.timeframe_minutes[timeframe]
+        lookback = timedelta(minutes=max_period * minutes)
+
+        # Загружаем свечи с lookback
+        data_start = min_null - lookback
+        df = self.aggregate_candles(data_start, max_null + timedelta(minutes=minutes), timeframe)
+
+        if df.empty:
+            logger.warning(f"⚠️ [{self.symbol}] {timeframe}: Нет данных для расчёта")
+            return 0
+
+        # Рассчитываем SMA
+        for period in periods:
+            df[f'sma_{period}'] = df['close'].rolling(window=period, min_periods=period).mean()
+
+        # Фильтруем только диапазон с NULL (без lookback данных)
+        df_to_update = df[(df['timestamp'] >= min_null) & (df['timestamp'] <= max_null)].copy()
+
+        # Удаляем строки где все SMA = NaN
+        sma_columns = [f'sma_{p}' for p in periods]
+        df_to_update = df_to_update.dropna(subset=sma_columns, how='all')
+
+        if df_to_update.empty:
+            logger.info(f"⚠️ [{self.symbol}] {timeframe}: Нет данных для обновления после расчёта")
+            return 0
+
+        # Обновляем только записи с NULL через UPDATE
+        updated_count = 0
+
+        with self.db.get_connection() as conn:
+            cur = conn.cursor()
+
+            try:
+                # Формируем SET clause для всех SMA колонок
+                set_clauses = []
+                for period in periods:
+                    set_clauses.append(f'sma_{period} = %s')
+                set_clause = ', '.join(set_clauses)
+
+                # Формируем условие WHERE с проверкой NULL
+                null_conditions = ' OR '.join([f'sma_{p} IS NULL' for p in periods])
+
+                update_query = f"""
+                    UPDATE {table_name}
+                    SET {set_clause}
+                    WHERE timestamp = %s AND symbol = %s AND ({null_conditions})
+                """
+
+                # Подготавливаем данные
+                update_data = []
+                for _, row in df_to_update.iterrows():
+                    values = [float(row[f'sma_{p}']) if pd.notna(row[f'sma_{p}']) else None for p in periods]
+                    values.extend([row['timestamp'], self.symbol])
+                    update_data.append(tuple(values))
+
+                # Выполняем batch update с прогресс-баром
+                progress_desc = f"{self.symbol} {self.symbol_progress} SMA {timeframe.upper()}"
+                batch_size = 1000
+
+                with tqdm(total=len(update_data), desc=progress_desc, unit="rec",
+                         ncols=100, bar_format='{desc}: {percentage:3.0f}%|{bar:20}| {n_fmt}/{total_fmt}') as pbar:
+                    for i in range(0, len(update_data), batch_size):
+                        batch = update_data[i:i+batch_size]
+                        psycopg2.extras.execute_batch(cur, update_query, batch, page_size=100)
+                        pbar.update(len(batch))
+
+                conn.commit()
+                updated_count = len(update_data)
+
+                logger.info(f"✅ [{self.symbol}] {timeframe}: Обновлено {updated_count:,} записей")
+
+            except Exception as e:
+                logger.error(f"❌ Ошибка при обновлении NULL: {e}")
+                conn.rollback()
+                raise
+            finally:
+                cur.close()
+
+        return updated_count
+
     def clear_sma_columns(self, timeframe: str, periods: List[int]) -> bool:
         """
         Обнуляет (устанавливает NULL) все SMA столбцы для указанного таймфрейма и символа
@@ -731,6 +879,8 @@ def main():
                       help='Размер батча в днях (по умолчанию 30)')
     parser.add_argument('--force-reload', action='store_true',
                       help='Обнулить все SMA столбцы перед загрузкой (принудительный полный пересчет)')
+    parser.add_argument('--check-nulls', action='store_true',
+                      help='Проверить и заполнить NULL значения в середине данных')
 
     args = parser.parse_args()
 
@@ -779,11 +929,23 @@ def main():
             # Передаем флаг принудительного пересчета
             loader.force_reload = args.force_reload
 
-            # Если указан конкретный таймфрейм, обрабатываем только его
-            if timeframes and len(timeframes) == 1:
-                loader.process_timeframe(timeframes[0])
+            if args.check_nulls:
+                # Режим проверки и заполнения NULL значений
+                sma_config = loader.config.get('indicators', {}).get('sma', {})
+                periods = sma_config.get('periods', [10, 30, 50, 100, 200])
+
+                # Определяем таймфреймы для проверки
+                tfs_to_check = timeframes if timeframes else loader.config.get('timeframes', ['1m', '15m', '1h'])
+
+                logger.info(f"🔍 Режим --check-nulls: проверка NULL значений")
+                for tf in tfs_to_check:
+                    loader.fill_null_values(tf, periods)
             else:
-                loader.run(timeframes=timeframes)
+                # Обычный режим: загрузка новых данных
+                if timeframes and len(timeframes) == 1:
+                    loader.process_timeframe(timeframes[0])
+                else:
+                    loader.run(timeframes=timeframes)
 
             logger.info(f"\n✅ Символ {symbol} обработан\n")
         except KeyboardInterrupt:
