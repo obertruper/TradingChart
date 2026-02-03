@@ -996,9 +996,10 @@ class RSILoader:
             current_states = {period: {} for period in periods}
 
             action = 'Загрузка' if from_beginning else 'Обновление'
-            periods_str = ','.join(map(str, periods))
-            progress_desc = f"{self.symbol} {self.symbol_progress} RSI[{periods_str}] {timeframe.upper()}" if self.symbol_progress else f"{self.symbol} RSI[{periods_str}] {timeframe.upper()}"
-            with tqdm(total=total_batches, desc=f"{progress_desc} - {action}") as pbar:
+            periods_str = '/'.join(map(str, periods))
+            progress_desc = f"{self.symbol} {self.symbol_progress} RSI[{periods_str}] {timeframe.upper()} - {action}" if self.symbol_progress else f"{self.symbol} RSI[{periods_str}] {timeframe.upper()} - {action}"
+            with tqdm(total=total_batches, desc=progress_desc, unit="batch",
+                     ncols=100, bar_format='{desc}: {percentage:3.0f}%|{bar:20}| {n}/{total} [{elapsed}<{remaining}]') as pbar:
                 batch_num = 0
 
                 while current_date < max_date:
@@ -1169,7 +1170,12 @@ class RSILoader:
         total_days = (end_date - start_date).days + 1
         total_batches = (total_days + batch_days - 1) // batch_days  # Ceiling division
 
-        with tqdm(total=total_batches, desc=f"{self.symbol} {timeframe} - Запись в БД") as pbar:
+        # Формируем описание прогресс-бара с номером символа
+        periods_str = '/'.join(map(str, periods))
+        progress_desc = f"{self.symbol} {self.symbol_progress} RSI[{periods_str}] {timeframe.upper()}" if self.symbol_progress else f"{self.symbol} RSI[{periods_str}] {timeframe.upper()}"
+
+        with tqdm(total=total_batches, desc=progress_desc, unit="batch",
+                 ncols=100, bar_format='{desc}: {percentage:3.0f}%|{bar:20}| {n}/{total} [{elapsed}<{remaining}]') as pbar:
             batch_num = 0
 
             while current_date <= end_date:
@@ -1213,7 +1219,6 @@ class RSILoader:
                             conn.commit()
 
                 batch_num += 1
-                pbar.set_description(f"{self.symbol} {timeframe} - Батч {batch_num}/{total_batches}")
                 pbar.update(1)
 
                 current_date = batch_end
