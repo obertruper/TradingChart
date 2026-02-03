@@ -302,15 +302,66 @@ class SMALoader:
             finally:
                 cur.close()
 
+    def get_null_timestamp_list(self, timeframe: str, periods: List[int]) -> List[datetime]:
+        """
+        Возвращает список конкретных timestamps где есть NULL значения,
+        ИСКЛЮЧАЯ неизбежные NULL в начале данных
+
+        Args:
+            timeframe: Таймфрейм (1m, 15m, 1h)
+            periods: Список периодов SMA
+
+        Returns:
+            List[datetime] - список timestamps с NULL
+        """
+        table_name = f'indicators_bybit_futures_{timeframe}'
+        minutes = self.timeframe_minutes[timeframe]
+        max_period = max(periods)
+
+        null_conditions = ' OR '.join([f'sma_{p} IS NULL' for p in periods])
+
+        with self.db.get_connection() as conn:
+            cur = conn.cursor()
+
+            try:
+                # Находим минимальную дату данных для этого символа
+                cur.execute(f"""
+                    SELECT MIN(timestamp)
+                    FROM {table_name}
+                    WHERE symbol = %s
+                """, (self.symbol,))
+                min_data_date = cur.fetchone()[0]
+
+                if min_data_date is None:
+                    return []
+
+                # Граница "неизбежных NULL"
+                unavoidable_null_boundary = min_data_date + timedelta(minutes=max_period * minutes)
+
+                # Получаем список конкретных timestamps с NULL
+                cur.execute(f"""
+                    SELECT timestamp
+                    FROM {table_name}
+                    WHERE symbol = %s
+                      AND ({null_conditions})
+                      AND timestamp >= %s
+                    ORDER BY timestamp
+                """, (self.symbol, unavoidable_null_boundary))
+
+                return [row[0] for row in cur.fetchall()]
+
+            finally:
+                cur.close()
+
     def fill_null_values(self, timeframe: str, periods: List[int]) -> int:
         """
         Заполняет NULL значения SMA для указанного таймфрейма
 
         Алгоритм:
-        1. Найти MIN и MAX timestamp где есть NULL
+        1. Получить список конкретных timestamps где есть NULL
         2. Загрузить свечи с lookback для расчёта SMA
         3. Рассчитать SMA для всего диапазона
-        4. Обновить только записи где был NULL
+        4. Обновить ТОЛЬКО записи из списка NULL timestamps
 
         Args:
             timeframe: Таймфрейм (1m, 15m, 1h)
@@ -321,12 +372,16 @@ class SMALoader:
         """
         table_name = f'indicators_bybit_futures_{timeframe}'
 
-        # Находим диапазон NULL
-        min_null, max_null, null_count = self.get_null_timestamps(timeframe, periods)
+        # Получаем список конкретных timestamps с NULL
+        null_timestamps = self.get_null_timestamp_list(timeframe, periods)
 
-        if null_count == 0:
+        if not null_timestamps:
             logger.info(f"✅ [{self.symbol}] {timeframe}: Нет NULL значений, пропускаем")
             return 0
+
+        min_null = min(null_timestamps)
+        max_null = max(null_timestamps)
+        null_count = len(null_timestamps)
 
         logger.info(f"🔍 [{self.symbol}] {timeframe}: Найдено {null_count:,} записей с NULL")
         logger.info(f"   Диапазон: {min_null} - {max_null}")
@@ -348,8 +403,9 @@ class SMALoader:
         for period in periods:
             df[f'sma_{period}'] = df['close'].rolling(window=period, min_periods=period).mean()
 
-        # Фильтруем только диапазон с NULL (без lookback данных)
-        df_to_update = df[(df['timestamp'] >= min_null) & (df['timestamp'] <= max_null)].copy()
+        # Фильтруем ТОЛЬКО записи с NULL timestamps (не по диапазону!)
+        null_timestamps_set = set(null_timestamps)
+        df_to_update = df[df['timestamp'].isin(null_timestamps_set)].copy()
 
         # Удаляем строки где все SMA = NaN
         sma_columns = [f'sma_{p}' for p in periods]
