@@ -151,10 +151,13 @@ python3 rsi_loader.py
 python3 rsi_loader.py --symbol ETHUSDT --timeframe 1h  # Specific symbol and timeframe
 python3 rsi_loader.py --start-date 2024-01-01 --force-reload  # From specific date
 python3 rsi_loader.py --batch-days 14  # Larger batches for faster DB writes
+python3 rsi_loader.py --check-nulls  # Check and fill NULL values (FULL recalc from start!)
+python3 rsi_loader.py --check-nulls --symbol BTCUSDT  # Check NULLs for specific symbol
 # Architecture: Single-pass calculation (load all → calculate → write in batches)
 # Accuracy: 100% mathematical correctness (validated against independent calculation)
 # Performance: 3.9x faster than old checkpoint-based approach
 # Lookback: 10x multiplier for Wilder smoothing (99.996% convergence)
+# --check-nulls: RSI uses Wilder smoothing (cumulative), requires full recalc for 100% accuracy
 # 5 periods: RSI 7, 9, 14, 21, 25
 # Batch writes: Database writes only, calculation is single-pass
 
@@ -1181,7 +1184,7 @@ GET https://pro-api.coinmarketcap.com/v1/global-metrics/quotes/latest
     - `indicators/indicators_config.yaml` (added ichimoku section)
     - `indicators/start_all_loaders.py` (added to LOADER_MAPPING)
     - `indicators/INDICATORS_REFERENCE.md` (full documentation)
-- **SMA/EMA Loaders --check-nulls Flag** (2026-02-03):
+- **SMA/EMA/RSI Loaders --check-nulls Flag** (2026-02-03):
   - **New Feature**: Added `--check-nulls` flag to detect and fill NULL values in the middle of data
   - **Problem Solved**: Monitor adds new records, but historical NULLs in the middle were never filled
   - **SMA Implementation** (non-cumulative indicator):
@@ -1194,6 +1197,11 @@ GET https://pro-api.coinmarketcap.com/v1/global-metrics/quotes/latest
     - `fill_null_values()` - **full recalculation from data start** for 100% accuracy
     - **Why full recalc**: EMA is cumulative - each value depends on ALL previous values
     - **Performance**: Slower but guarantees mathematical correctness
+  - **RSI Implementation** (cumulative indicator - Wilder smoothing):
+    - `get_null_timestamp_list()` - finds NULL timestamps (excludes first max_period+1 records)
+    - `fill_null_values()` - **full recalculation from data start** for 100% accuracy
+    - **Why full recalc**: RSI uses Wilder smoothing - cumulative formula where each value depends on previous
+    - **Boundary**: `unavoidable_null_boundary = min_data_date + ((max_period + 1) * minutes)` (RSI needs period+1 values)
   - **Bug Fix**: Initial version filtered by date range (166K records), fixed to filter by actual NULL timestamps (5 records)
   - **Usage**:
     ```bash
@@ -1206,8 +1214,13 @@ GET https://pro-api.coinmarketcap.com/v1/global-metrics/quotes/latest
     python3 ema_loader.py --check-nulls
     python3 ema_loader.py --check-nulls --symbol ETHUSDT
     python3 ema_loader.py --check-nulls --timeframe 15m
+
+    # RSI (full recalculation from start)
+    python3 rsi_loader.py --check-nulls
+    python3 rsi_loader.py --check-nulls --symbol BTCUSDT
+    python3 rsi_loader.py --check-nulls --timeframe 1h
     ```
-  - **Files Modified**: `indicators/sma_loader.py`, `indicators/ema_loader.py`
+  - **Files Modified**: `indicators/sma_loader.py`, `indicators/ema_loader.py`, `indicators/rsi_loader.py`
 
 ### Security Notes
 - Database passwords are stored in `.env` file (not in repository)
