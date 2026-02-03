@@ -21,6 +21,7 @@ from typing import Dict, List, Optional, Tuple
 import pandas as pd
 import numpy as np
 import yaml
+import psycopg2.extras
 from tqdm import tqdm
 import argparse
 import warnings
@@ -303,6 +304,235 @@ class RSILoader:
             cur = conn.cursor()
             cur.execute(query, (self.symbol,))
             return {row[0] for row in cur.fetchall()}
+
+    def get_null_timestamp_list(self, timeframe: str, periods: List[int]) -> List[datetime]:
+        """
+        Возвращает список конкретных timestamps где есть NULL значения RSI,
+        ИСКЛЮЧАЯ неизбежные NULL в начале данных (где нет достаточной истории для расчёта)
+
+        Args:
+            timeframe: Таймфрейм (1m, 15m, 1h)
+            periods: Список периодов RSI
+
+        Returns:
+            List[datetime] - список timestamps с NULL
+        """
+        table_name = f'indicators_bybit_futures_{timeframe}'
+        minutes = self.timeframe_minutes[timeframe]
+        max_period = max(periods)
+
+        null_conditions = ' OR '.join([f'rsi_{p} IS NULL' for p in periods])
+
+        with self.db.get_connection() as conn:
+            cur = conn.cursor()
+
+            try:
+                # Находим минимальную дату данных для этого символа
+                cur.execute(f"""
+                    SELECT MIN(timestamp)
+                    FROM {table_name}
+                    WHERE symbol = %s
+                """, (self.symbol,))
+                min_data_date = cur.fetchone()[0]
+
+                if min_data_date is None:
+                    return []
+
+                # Граница "неизбежных NULL" - первые max_period записей
+                # RSI требует period+1 значений для первого расчёта
+                unavoidable_null_boundary = min_data_date + timedelta(minutes=(max_period + 1) * minutes)
+
+                # Получаем список конкретных timestamps с NULL
+                cur.execute(f"""
+                    SELECT timestamp
+                    FROM {table_name}
+                    WHERE symbol = %s
+                      AND ({null_conditions})
+                      AND timestamp >= %s
+                    ORDER BY timestamp
+                """, (self.symbol, unavoidable_null_boundary))
+
+                return [row[0] for row in cur.fetchall()]
+
+            finally:
+                cur.close()
+
+    def fill_null_values(self, timeframe: str, periods: List[int]) -> int:
+        """
+        Заполняет NULL значения RSI для указанного таймфрейма.
+
+        ВАЖНО: Использует ПОЛНЫЙ пересчёт с начала данных для 100% точности,
+        так как RSI использует Wilder smoothing - кумулятивную формулу,
+        где каждое значение зависит от предыдущего.
+
+        Алгоритм:
+        1. Получить список конкретных timestamps где есть NULL
+        2. Загрузить ВСЕ свечи с начала данных
+        3. Рассчитать RSI с нуля для всего диапазона
+        4. Записать ТОЛЬКО записи из списка NULL timestamps
+
+        Args:
+            timeframe: Таймфрейм (1m, 15m, 1h)
+            periods: Список периодов RSI
+
+        Returns:
+            Количество обновлённых записей
+        """
+        table_name = f'indicators_bybit_futures_{timeframe}'
+        minutes = self.timeframe_minutes[timeframe]
+
+        # Получаем список конкретных timestamps с NULL
+        null_timestamps = self.get_null_timestamp_list(timeframe, periods)
+
+        if not null_timestamps:
+            logger.info(f"✅ [{self.symbol}] {timeframe}: Нет NULL значений, пропускаем")
+            return 0
+
+        min_null = min(null_timestamps)
+        max_null = max(null_timestamps)
+        null_count = len(null_timestamps)
+
+        logger.info(f"🔍 [{self.symbol}] {timeframe}: Найдено {null_count:,} записей с NULL")
+        logger.info(f"   Диапазон: {min_null} - {max_null}")
+        logger.info(f"   ⚠️ Полный пересчёт RSI с начала данных (100% точность)")
+
+        with self.db.get_connection() as conn:
+            cur = conn.cursor()
+
+            try:
+                # Получаем минимальную дату данных
+                cur.execute(f"""
+                    SELECT MIN(timestamp)
+                    FROM {table_name}
+                    WHERE symbol = %s
+                """, (self.symbol,))
+                min_data_date = cur.fetchone()[0]
+
+                if min_data_date is None:
+                    logger.warning(f"⚠️ [{self.symbol}] {timeframe}: Нет данных в таблице")
+                    return 0
+
+                logger.info(f"   📅 Загрузка данных с {min_data_date}")
+
+                # Загружаем ВСЕ свечи с начала данных
+                if timeframe == '1m':
+                    query = """
+                        SELECT timestamp, close
+                        FROM candles_bybit_futures_1m
+                        WHERE symbol = %s
+                        AND timestamp >= %s
+                        AND timestamp <= %s
+                        ORDER BY timestamp
+                    """
+                    cur.execute(query, (self.symbol, min_data_date, max_null))
+                else:
+                    # Для агрегированных таймфреймов
+                    if minutes == 60:  # 1h
+                        query = f"""
+                            WITH candle_data AS (
+                                SELECT
+                                    date_trunc('hour', timestamp) as period_start,
+                                    close,
+                                    timestamp as original_timestamp
+                                FROM candles_bybit_futures_1m
+                                WHERE symbol = %s AND timestamp >= %s AND timestamp <= %s
+                            ),
+                            last_in_period AS (
+                                SELECT DISTINCT ON (period_start)
+                                    period_start as timestamp,
+                                    close as price
+                                FROM candle_data
+                                ORDER BY period_start, original_timestamp DESC
+                            )
+                            SELECT timestamp, price
+                            FROM last_in_period
+                            ORDER BY timestamp
+                        """
+                    else:  # 15m and other sub-hourly
+                        query = f"""
+                            WITH candle_data AS (
+                                SELECT
+                                    date_trunc('hour', timestamp) +
+                                    INTERVAL '{minutes} minutes' * (EXTRACT(MINUTE FROM timestamp)::INTEGER / {minutes}) as period_start,
+                                    close,
+                                    timestamp as original_timestamp
+                                FROM candles_bybit_futures_1m
+                                WHERE symbol = %s AND timestamp >= %s AND timestamp <= %s
+                            ),
+                            last_in_period AS (
+                                SELECT DISTINCT ON (period_start)
+                                    period_start as timestamp,
+                                    close as price
+                                FROM candle_data
+                                ORDER BY period_start, original_timestamp DESC
+                            )
+                            SELECT timestamp, price
+                            FROM last_in_period
+                            ORDER BY timestamp
+                        """
+                    cur.execute(query, (self.symbol, min_data_date, max_null))
+
+                rows = cur.fetchall()
+
+                if not rows:
+                    logger.warning(f"⚠️ [{self.symbol}] {timeframe}: Нет данных для расчёта")
+                    return 0
+
+                logger.info(f"   📊 Загружено {len(rows):,} свечей для расчёта")
+
+                # Создаем DataFrame
+                df = pd.DataFrame(rows, columns=['timestamp', 'close'])
+                df['close'] = df['close'].astype(float)
+
+                # Рассчитываем RSI с нуля для каждого периода
+                closes = df['close'].values
+                for period in periods:
+                    col_name = f'rsi_{period}'
+                    df[col_name] = self.calculate_rsi(closes, period)
+
+                # Фильтруем ТОЛЬКО записи с NULL timestamps
+                null_timestamps_set = set(null_timestamps)
+                df_to_update = df[df['timestamp'].isin(null_timestamps_set)].copy()
+
+                # Удаляем строки где все RSI = NaN
+                rsi_columns = [f'rsi_{p}' for p in periods]
+                df_to_update = df_to_update.dropna(subset=rsi_columns, how='all')
+
+                if df_to_update.empty:
+                    logger.info(f"⚠️ [{self.symbol}] {timeframe}: Нет данных для обновления после расчёта")
+                    return 0
+
+                # Обновляем записи в БД
+                set_clauses = ', '.join([f'rsi_{p} = %s' for p in periods])
+                update_query = f"""
+                    UPDATE {table_name}
+                    SET {set_clauses}
+                    WHERE timestamp = %s AND symbol = %s
+                """
+
+                update_data = []
+                for _, row in df_to_update.iterrows():
+                    values = [float(row[f'rsi_{p}']) if pd.notna(row[f'rsi_{p}']) else None for p in periods]
+                    values.extend([row['timestamp'], self.symbol])
+                    update_data.append(tuple(values))
+
+                # Batch update с прогресс-баром
+                progress_desc = f"{self.symbol} {self.symbol_progress} RSI {timeframe.upper()}"
+                batch_size = 1000
+
+                with tqdm(total=len(update_data), desc=progress_desc, unit="rec",
+                         ncols=100, bar_format='{desc}: {percentage:3.0f}%|{bar:20}| {n_fmt}/{total_fmt}') as pbar:
+                    for i in range(0, len(update_data), batch_size):
+                        batch = update_data[i:i+batch_size]
+                        psycopg2.extras.execute_batch(cur, update_query, batch, page_size=100)
+                        pbar.update(len(batch))
+
+                conn.commit()
+                logger.info(f"✅ [{self.symbol}] {timeframe}: Обновлено {len(update_data):,} записей")
+                return len(update_data)
+
+            finally:
+                cur.close()
 
     def calculate_rsi(self, closes: np.ndarray, period: int) -> np.ndarray:
         """
@@ -1051,6 +1281,8 @@ def main():
                        help='Начальная дата в формате YYYY-MM-DD (если не указана, автоматическое определение)')
     parser.add_argument('--force-reload', action='store_true',
                        help='Обнулить все RSI столбцы перед загрузкой (принудительный полный пересчет)')
+    parser.add_argument('--check-nulls', action='store_true',
+                       help='Проверить и заполнить NULL значения в середине данных (полный пересчёт RSI с начала)')
 
     args = parser.parse_args()
 
@@ -1090,6 +1322,10 @@ def main():
 
     logger.info(f"🎯 Обработка символов: {symbols}")
 
+    # Режим --check-nulls
+    if args.check_nulls:
+        logger.info(f"🔍 Режим --check-nulls: проверка NULL значений (полный пересчёт RSI)")
+
     # Засекаем время начала обработки
     start_time = time.time()
 
@@ -1108,7 +1344,23 @@ def main():
             loader = RSILoader(symbol=symbol)
             loader.symbol_progress = f"[{idx}/{total_symbols}]"
             loader.force_reload = args.force_reload
-            loader.run(timeframes, args.batch_days, start_date)
+
+            if args.check_nulls:
+                # Режим проверки и заполнения NULL
+                # Получаем периоды из конфига
+                rsi_config = loader.config.get('indicators', {}).get('rsi', {})
+                periods = rsi_config.get('periods', [7, 9, 14, 21, 25])
+
+                # Определяем таймфреймы для проверки
+                check_timeframes = timeframes if timeframes else loader.config.get('timeframes', ['1m', '15m', '1h'])
+
+                for tf in check_timeframes:
+                    if tf in loader.timeframe_minutes:
+                        loader.fill_null_values(tf, periods)
+            else:
+                # Обычный режим загрузки
+                loader.run(timeframes, args.batch_days, start_date)
+
             logger.info(f"✅ Символ {symbol} обработан")
         except KeyboardInterrupt:
             logger.info("⚠️ Прервано пользователем. Можно продолжить позже с этого места.")
