@@ -627,14 +627,28 @@ class OrderbookLoader:
         })
 
     def ensure_table(self):
-        """Создаёт таблицу и индексы если не существуют"""
+        """Проверяет существование таблицы, создаёт если нет"""
         with self.db.get_connection() as conn:
             with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT EXISTS (
+                        SELECT 1 FROM information_schema.tables
+                        WHERE table_schema = 'public' AND table_name = %s
+                    )
+                """, (TABLE_NAME,))
+                exists = cur.fetchone()[0]
+
+                if exists:
+                    logger.info(f"Таблица {TABLE_NAME} существует")
+                    return
+
+                # Таблица не существует — создаём
+                logger.info(f"Создаём таблицу {TABLE_NAME}...")
                 cur.execute(CREATE_TABLE_SQL)
                 for idx_sql in CREATE_INDEXES_SQL:
                     cur.execute(idx_sql)
                 conn.commit()
-        logger.info(f"Таблица {TABLE_NAME} готова")
+                logger.info(f"Таблица {TABLE_NAME} создана")
 
     def get_start_date(self) -> datetime:
         """
