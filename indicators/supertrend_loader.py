@@ -539,7 +539,7 @@ class SuperTrendLoader:
         total_days = (end_date - start_date).days + 1
         total_batches = (total_days + batch_days - 1) // batch_days
 
-        with tqdm(total=total_batches, desc=f"{self.symbol} {timeframe} - Запись в БД") as pbar:
+        with tqdm(total=total_batches, desc=f"{self.symbol} {self.symbol_progress} {timeframe} - Запись в БД") as pbar:
             batch_num = 0
 
             while current_date <= end_date:
@@ -607,7 +607,7 @@ class SuperTrendLoader:
             batch_days: Размер батча для записи в днях
         """
         logger.info(f"\n{'='*80}")
-        logger.info(f"SuperTrend для {self.symbol} - таймфрейм {timeframe}")
+        logger.info(f"SuperTrend для {self.symbol} {self.symbol_progress} - таймфрейм {timeframe}")
         logger.info(f"{'='*80}")
 
         # Шаг 1: Создаём колонки
@@ -643,10 +643,10 @@ class SuperTrendLoader:
 
         calc_start = time.time()
 
-        with tqdm(total=len(self.CONFIGURATIONS), desc=f"{self.symbol} {timeframe} - Расчёт") as pbar:
+        with tqdm(total=len(self.CONFIGURATIONS), desc=f"{self.symbol} {self.symbol_progress} {timeframe} - Расчёт") as pbar:
             for period, multiplier in self.CONFIGURATIONS:
                 base_name = self._get_column_base_name(period, multiplier)
-                pbar.set_description(f"{self.symbol} {timeframe} - {base_name}")
+                pbar.set_description(f"{self.symbol} {self.symbol_progress} {timeframe} - {base_name}")
 
                 # Рассчитываем ATR
                 atr = self.calculate_atr(df, period)
@@ -726,7 +726,7 @@ class SuperTrendLoader:
         if timeframes is None:
             timeframes = list(self.timeframe_minutes.keys())
 
-        logger.info(f"\nЗапуск SuperTrend Loader для {self.symbol}")
+        logger.info(f"\nЗапуск SuperTrend Loader для {self.symbol} {self.symbol_progress}")
         logger.info(f"Таймфреймы: {timeframes}")
         logger.info(f"Конфигурации: {self.CONFIGURATIONS}")
         logger.info(f"Размер батча: {batch_days} дней")
@@ -734,7 +734,7 @@ class SuperTrendLoader:
         for timeframe in timeframes:
             self.process_timeframe(timeframe, batch_days)
 
-        logger.info(f"\nВсе таймфреймы обработаны для {self.symbol}")
+        logger.info(f"\nВсе таймфреймы обработаны для {self.symbol} {self.symbol_progress}")
 
 
 def main():
