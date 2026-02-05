@@ -69,6 +69,15 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from indicators.database import DatabaseConnection
 
+
+def format_elapsed(seconds: float) -> str:
+    """Форматирует время в формат Xm YYs или Xs"""
+    if seconds < 60:
+        return f"{int(seconds)}s"
+    minutes = int(seconds // 60)
+    secs = int(seconds % 60)
+    return f"{minutes}m{secs:02d}s"
+
 # Настройка логирования
 logger = logging.getLogger(__name__)
 
@@ -813,6 +822,7 @@ class OrderbookLoader:
 
                 date_str = file_date.strftime('%Y-%m-%d')
                 pbar.set_postfix_str(date_str)
+                day_start_time = time.time()
 
                 # Скачиваем в RAM
                 try:
@@ -843,6 +853,10 @@ class OrderbookLoader:
                         raise
 
                     total_rows += len(rows)
+
+                # Обновляем postfix с временем обработки дня
+                day_elapsed = time.time() - day_start_time
+                pbar.set_postfix_str(f"{date_str}, elapsed: {format_elapsed(day_elapsed)}")
 
                 logger.debug(f"{date_str}: {len(rows)} строк записано")
 
