@@ -543,7 +543,55 @@ class SMALoader:
                 # ВАЖНО: Timestamp = НАЧАЛО периода (Bybit standard)
                 # Пример для 1h: timestamp 14:00 содержит данные 14:00:00-14:59:59
                 # Пример для 15m: timestamp 14:15 содержит данные 14:15:00-14:29:59
-                if minutes == 60:  # 1h timeframe
+                # Пример для 4h: timestamp 04:00 содержит данные 04:00:00-07:59:59
+                # Пример для 1d: timestamp 00:00 содержит данные 00:00:00-23:59:59
+                if minutes == 1440:  # 1d timeframe
+                    query = f"""
+                        WITH time_groups AS (
+                            SELECT
+                                date_trunc('day', timestamp) as period_start,
+                                close,
+                                symbol,
+                                timestamp as original_timestamp
+                            FROM candles_bybit_futures_1m
+                            WHERE symbol = %s AND timestamp >= %s AND timestamp < %s
+                        ),
+                        last_in_period AS (
+                            SELECT DISTINCT ON (period_start, symbol)
+                                period_start as timestamp,
+                                symbol,
+                                close
+                            FROM time_groups
+                            ORDER BY period_start, symbol, original_timestamp DESC
+                        )
+                        SELECT * FROM last_in_period
+                        ORDER BY timestamp
+                    """
+                elif minutes == 240:  # 4h timeframe
+                    # Фиксированные интервалы: 00:00, 04:00, 08:00, 12:00, 16:00, 20:00 UTC
+                    query = f"""
+                        WITH time_groups AS (
+                            SELECT
+                                date_trunc('day', timestamp) +
+                                INTERVAL '4 hours' * (EXTRACT(HOUR FROM timestamp)::INTEGER / 4) as period_start,
+                                close,
+                                symbol,
+                                timestamp as original_timestamp
+                            FROM candles_bybit_futures_1m
+                            WHERE symbol = %s AND timestamp >= %s AND timestamp < %s
+                        ),
+                        last_in_period AS (
+                            SELECT DISTINCT ON (period_start, symbol)
+                                period_start as timestamp,
+                                symbol,
+                                close
+                            FROM time_groups
+                            ORDER BY period_start, symbol, original_timestamp DESC
+                        )
+                        SELECT * FROM last_in_period
+                        ORDER BY timestamp
+                    """
+                elif minutes == 60:  # 1h timeframe
                     query = f"""
                         WITH time_groups AS (
                             SELECT

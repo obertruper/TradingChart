@@ -313,7 +313,7 @@ python3 hv_loader.py --force-reload  # Full reload (all data)
 # 5 periods: HV 7, 14, 30, 60, 90 (in % annualized)
 # 3 derived: hv_ratio_7_30, hv_percentile_7d, hv_percentile_90d
 # Total: 8 columns per timeframe
-# Current timeframes: 1m, 15m, 1h (4h and 1d require table creation first)
+# Current timeframes: 1m, 15m, 1h, 4h, 1d
 # Annualization: 1m=725×, 15m=187×, 1h=93.6×, 4h=46.8×, 1d=19.1×
 # Percentile uses 7 days and 90 days lookback windows
 # Incremental loading: only NULL records updated (unless --force-reload)
@@ -442,16 +442,18 @@ cat INDICATORS_REFERENCE.md
 
 | Table | Total Size | Data | Indexes | Rows | Columns |
 |-------|------------|------|---------|------|---------|
-| indicators_bybit_futures_1m | **113 GB** | 108 GB | 5.3 GB | 24.8M | 206 |
-| indicators_bybit_futures_15m | 7.6 GB | 7.3 GB | 313 MB | 1.7M | 206 |
+| indicators_bybit_futures_1m | **114 GB** | 108 GB | 5.3 GB | 25.6M | 261 |
+| indicators_bybit_futures_15m | 7.7 GB | 7.3 GB | 313 MB | 1.7M | 261 |
 | candles_bybit_futures_1m | 6.7 GB | 3.3 GB | 3.4 GB | 38M | 8 |
 | candles_bybit_spot_1m | 5.5 GB | 2.7 GB | 2.8 GB | 31M | 8 |
 | backtest_ml | 2.9 GB | 2.4 GB | 503 MB | 2M | 80 |
-| indicators_bybit_futures_1h | 2 GB | 1.9 GB | 82 MB | 413K | 206 |
+| indicators_bybit_futures_1h | 2 GB | 1.9 GB | 82 MB | 437K | 261 |
+| indicators_bybit_futures_4h | 32 KB | - | - | 0 | 261 |
+| indicators_bybit_futures_1d | 32 KB | - | - | 0 | 261 |
 | eda | 48 KB | 0 | 48 KB | 0 | 22 |
 
 **Storage per row:**
-- indicators tables: ~4.7 KB/row (206 columns of numeric data)
+- indicators tables: ~4.7 KB/row (261 columns of numeric data)
 - candles tables: ~90 bytes/row (8 columns)
 - backtest_ml: ~1.3 KB/row (80 columns)
 
@@ -480,10 +482,16 @@ cat INDICATORS_REFERENCE.md
   - Spot: Most pairs from 2021-07-05 12:00:00 UTC (verified for BTCUSDT, ETHUSDT), BNBUSDT from 2022-03
 
 #### Indicators Tables
-- **Tables**: `indicators_bybit_futures_1m`, `indicators_bybit_futures_15m`, `indicators_bybit_futures_1h`
+- **Tables**: `indicators_bybit_futures_1m`, `indicators_bybit_futures_15m`, `indicators_bybit_futures_1h`, `indicators_bybit_futures_4h`, `indicators_bybit_futures_1d`
 - **Architecture**: One table per timeframe, indicators stored as columns (wide table format)
 - **Primary Key**: (timestamp, symbol) - matches candles tables
-- **Indicator Columns** (220+ total columns):
+- **Timeframe Aggregation**:
+  - 1m: Base data from candles_bybit_futures_1m
+  - 15m: Aggregated from 1m (15 candles per period)
+  - 1h: Aggregated from 1m (60 candles per period)
+  - 4h: Fixed intervals 00:00, 04:00, 08:00, 12:00, 16:00, 20:00 UTC
+  - 1d: Daily aggregation at 00:00 UTC
+- **Indicator Columns** (261 total columns):
   - **Moving Averages**: sma_10, sma_30, sma_50, sma_100, sma_200 (5 columns)
   - **EMA**: ema_9, ema_12, ema_21, ema_26, ema_50, ema_100, ema_200 (7 columns)
   - **RSI**: rsi_7, rsi_9, rsi_14, rsi_21, rsi_25 (5 columns)
@@ -504,8 +512,9 @@ cat INDICATORS_REFERENCE.md
   - **Ichimoku Cloud**: 2 configs × 8 values (tenkan, kijun, senkou_a, senkou_b, chikou, cloud_thick, price_cloud, tk_cross) = 16 columns
   - **Fear & Greed**: fear_and_greed_value, fear_and_greed_classification (2 columns)
   - **Market Metrics**: Various CoinMarketCap global metrics columns
-- **Data Flow**: 1m candles → calculate indicators → aggregate to 15m/1h with indicator recalculation
+- **Data Flow**: 1m candles → calculate indicators → aggregate to 15m/1h/4h/1d with indicator recalculation
 - **Update Strategy**: INSERT...ON CONFLICT DO UPDATE for idempotent loading
+- **Note**: 4h and 1d tables created 2026-02-05, pending initial data load
 
 #### Backtest Tables
 - **Table**: `backtest_ml`
@@ -1221,6 +1230,22 @@ GET https://pro-api.coinmarketcap.com/v1/global-metrics/quotes/latest
     python3 rsi_loader.py --check-nulls --timeframe 1h
     ```
   - **Files Modified**: `indicators/sma_loader.py`, `indicators/ema_loader.py`, `indicators/rsi_loader.py`
+- **4h and 1d Timeframe Support** (2026-02-05):
+  - **New Feature**: Added support for 4-hour and daily timeframes in indicator system
+  - **Tables Created**:
+    - `indicators_bybit_futures_4h` - 4-hour aggregated indicators (261 columns)
+    - `indicators_bybit_futures_1d` - Daily aggregated indicators (261 columns)
+  - **Aggregation Logic**:
+    - 4h: Fixed intervals at 00:00, 04:00, 08:00, 12:00, 16:00, 20:00 UTC
+    - 1d: Daily aggregation at 00:00 UTC (uses `date_trunc('day', timestamp)`)
+  - **Implementation**:
+    - Modified `sma_loader.py` `aggregate_candles()` method with new SQL queries
+    - Updated `indicators_config.yaml` to include `4h` and `1d` in timeframes list
+    - Tables created with `CREATE TABLE ... (LIKE indicators_bybit_futures_1h INCLUDING ALL)`
+    - Indexes auto-created: `_pkey`, `_symbol_timestamp_idx`, `_timestamp_idx`
+  - **Permissions**: Same as other indicator tables (trading_admin, trading_writer, trading_reader, trading_bot, yura_db_read)
+  - **Status**: Tables created, pending initial data load via `sma_loader.py --timeframe 4h/1d`
+  - **Files Modified**: `indicators/sma_loader.py`, `indicators/indicators_config.yaml`
 
 ### Security Notes
 - Database passwords are stored in `.env` file (not in repository)
