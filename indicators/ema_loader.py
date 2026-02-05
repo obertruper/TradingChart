@@ -929,7 +929,8 @@ class EMALoader:
             with tqdm(total=total_batches,
                      desc=progress_desc,
                      unit='batch',
-                     bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]') as pbar:
+                     ncols=100,
+                     bar_format='{desc}: {percentage:3.0f}%|{bar:20}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]') as pbar:
 
                 batch_count = 0
                 total_records = 0
