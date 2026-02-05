@@ -805,7 +805,8 @@ class SMALoader:
                 with tqdm(total=total_batches,
                          desc=progress_desc,
                          unit="batch",
-                         bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]') as pbar:
+                         ncols=100,
+                         bar_format='{desc}: {percentage:3.0f}%|{bar:20}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]') as pbar:
 
                     while current_date <= max_date:
                         batch_end = min(current_date + timedelta(days=batch_days), max_date)
