@@ -427,7 +427,50 @@ class RSILoader:
                     cur.execute(query, (self.symbol, min_data_date, max_null))
                 else:
                     # Для агрегированных таймфреймов
-                    if minutes == 60:  # 1h
+                    if minutes == 1440:  # 1d timeframe
+                        query = f"""
+                            WITH candle_data AS (
+                                SELECT
+                                    date_trunc('day', timestamp) as period_start,
+                                    close,
+                                    timestamp as original_timestamp
+                                FROM candles_bybit_futures_1m
+                                WHERE symbol = %s AND timestamp >= %s AND timestamp <= %s
+                            ),
+                            last_in_period AS (
+                                SELECT DISTINCT ON (period_start)
+                                    period_start as timestamp,
+                                    close as price
+                                FROM candle_data
+                                ORDER BY period_start, original_timestamp DESC
+                            )
+                            SELECT timestamp, price
+                            FROM last_in_period
+                            ORDER BY timestamp
+                        """
+                    elif minutes == 240:  # 4h timeframe (fixed intervals: 00, 04, 08, 12, 16, 20 UTC)
+                        query = f"""
+                            WITH candle_data AS (
+                                SELECT
+                                    date_trunc('day', timestamp) +
+                                    INTERVAL '4 hours' * (EXTRACT(HOUR FROM timestamp)::INTEGER / 4) as period_start,
+                                    close,
+                                    timestamp as original_timestamp
+                                FROM candles_bybit_futures_1m
+                                WHERE symbol = %s AND timestamp >= %s AND timestamp <= %s
+                            ),
+                            last_in_period AS (
+                                SELECT DISTINCT ON (period_start)
+                                    period_start as timestamp,
+                                    close as price
+                                FROM candle_data
+                                ORDER BY period_start, original_timestamp DESC
+                            )
+                            SELECT timestamp, price
+                            FROM last_in_period
+                            ORDER BY timestamp
+                        """
+                    elif minutes == 60:  # 1h
                         query = f"""
                             WITH candle_data AS (
                                 SELECT
@@ -661,7 +704,7 @@ class RSILoader:
                 cur.execute(query, params)
 
             else:
-                # For aggregated timeframes (15m, 1h), aggregate from 1m data
+                # For aggregated timeframes (15m, 1h, 4h, 1d), aggregate from 1m data
                 # IMPORTANT: Timestamp = START of period (Bybit standard)
 
                 # Subtract one period to load enough 1m candles
@@ -670,7 +713,53 @@ class RSILoader:
                 else:
                     query_adjusted_start = None
 
-                if minutes == 60:  # 1h
+                if minutes == 1440:  # 1d timeframe
+                    query = """
+                        SELECT
+                            date_trunc('day', timestamp) as period_start,
+                            (array_agg(close ORDER BY timestamp DESC))[1] as close_price
+                        FROM candles_bybit_futures_1m
+                        WHERE symbol = %s
+                    """
+                    params = [self.symbol]
+
+                    if query_adjusted_start:
+                        query += " AND timestamp >= %s"
+                        params.append(query_adjusted_start)
+                    if end_date:
+                        query += " AND timestamp <= %s"
+                        params.append(end_date)
+
+                    query += """
+                        GROUP BY date_trunc('day', timestamp)
+                        ORDER BY period_start
+                    """
+
+                elif minutes == 240:  # 4h timeframe (fixed intervals: 00, 04, 08, 12, 16, 20 UTC)
+                    query = """
+                        SELECT
+                            date_trunc('day', timestamp) +
+                            INTERVAL '4 hours' * (EXTRACT(HOUR FROM timestamp)::INTEGER / 4) as period_start,
+                            (array_agg(close ORDER BY timestamp DESC))[1] as close_price
+                        FROM candles_bybit_futures_1m
+                        WHERE symbol = %s
+                    """
+                    params = [self.symbol]
+
+                    if query_adjusted_start:
+                        query += " AND timestamp >= %s"
+                        params.append(query_adjusted_start)
+                    if end_date:
+                        query += " AND timestamp <= %s"
+                        params.append(end_date)
+
+                    query += """
+                        GROUP BY date_trunc('day', timestamp),
+                                 EXTRACT(HOUR FROM timestamp)::INTEGER / 4
+                        ORDER BY period_start
+                    """
+
+                elif minutes == 60:  # 1h
                     query = """
                         SELECT
                             date_trunc('hour', timestamp) as period_start,
@@ -692,7 +781,7 @@ class RSILoader:
                         ORDER BY period_start
                     """
 
-                else:  # 15m
+                else:  # 15m and other sub-hourly
                     query = f"""
                         SELECT
                             date_trunc('hour', timestamp) +
@@ -771,7 +860,34 @@ class RSILoader:
                 # ВАЖНО: Timestamp = НАЧАЛО периода (Bybit standard)
                 # Пример для 1h: timestamp 14:00 содержит данные 14:00:00 - 14:59:59
                 # Пример для 15m: timestamp 14:00 содержит данные 14:00:00 - 14:14:59
-                if interval_minutes == 60:  # 1h
+                # Пример для 4h: timestamp 04:00 содержит данные 04:00:00 - 07:59:59
+                # Пример для 1d: timestamp 00:00 содержит данные 00:00:00 - 23:59:59
+                if interval_minutes == 1440:  # 1d
+                    cur.execute(f"""
+                        SELECT
+                            date_trunc('day', timestamp) as period_start,
+                            (array_agg(close ORDER BY timestamp DESC))[1] as close_price
+                        FROM candles_bybit_futures_1m
+                        WHERE symbol = %s
+                        AND timestamp >= %s
+                        AND timestamp <= %s
+                        GROUP BY date_trunc('day', timestamp)
+                        ORDER BY period_start
+                    """, (self.symbol, adjusted_start, end_date))
+                elif interval_minutes == 240:  # 4h (fixed intervals: 00, 04, 08, 12, 16, 20 UTC)
+                    cur.execute(f"""
+                        SELECT
+                            date_trunc('day', timestamp) +
+                            INTERVAL '4 hours' * (EXTRACT(HOUR FROM timestamp)::INTEGER / 4) as period_start,
+                            (array_agg(close ORDER BY timestamp DESC))[1] as close_price
+                        FROM candles_bybit_futures_1m
+                        WHERE symbol = %s
+                        AND timestamp >= %s
+                        AND timestamp <= %s
+                        GROUP BY date_trunc('day', timestamp), EXTRACT(HOUR FROM timestamp)::INTEGER / 4
+                        ORDER BY period_start
+                    """, (self.symbol, adjusted_start, end_date))
+                elif interval_minutes == 60:  # 1h
                     cur.execute(f"""
                         SELECT
                             date_trunc('hour', timestamp) as period_start,
@@ -783,7 +899,7 @@ class RSILoader:
                         GROUP BY date_trunc('hour', timestamp)
                         ORDER BY period_start
                     """, (self.symbol, adjusted_start, end_date))
-                else:  # 15m
+                else:  # 15m and other sub-hourly
                     cur.execute(f"""
                         SELECT
                             date_trunc('hour', timestamp) +
@@ -838,7 +954,42 @@ class RSILoader:
                         adjusted_buffer_start = buffer_start - timedelta(minutes=interval_minutes)
 
                         # ВАЖНО: Используем period_start (начало периода, Bybit standard)
-                        if interval_minutes == 60:  # 1h
+                        if interval_minutes == 1440:  # 1d
+                            cur.execute(f"""
+                                SELECT
+                                    (array_agg(close ORDER BY timestamp DESC))[1] as close_price
+                                FROM (
+                                    SELECT
+                                        date_trunc('day', timestamp) as period_start,
+                                        timestamp,
+                                        close
+                                    FROM candles_bybit_futures_1m
+                                    WHERE symbol = %s
+                                    AND timestamp >= %s
+                                    AND timestamp <= %s
+                                ) t
+                                GROUP BY period_start
+                                ORDER BY period_start
+                            """, (self.symbol, adjusted_buffer_start, start_date))
+                        elif interval_minutes == 240:  # 4h (fixed intervals: 00, 04, 08, 12, 16, 20 UTC)
+                            cur.execute(f"""
+                                SELECT
+                                    (array_agg(close ORDER BY timestamp DESC))[1] as close_price
+                                FROM (
+                                    SELECT
+                                        date_trunc('day', timestamp) +
+                                        INTERVAL '4 hours' * (EXTRACT(HOUR FROM timestamp)::INTEGER / 4) as period_start,
+                                        timestamp,
+                                        close
+                                    FROM candles_bybit_futures_1m
+                                    WHERE symbol = %s
+                                    AND timestamp >= %s
+                                    AND timestamp <= %s
+                                ) t
+                                GROUP BY period_start
+                                ORDER BY period_start
+                            """, (self.symbol, adjusted_buffer_start, start_date))
+                        elif interval_minutes == 60:  # 1h
                             cur.execute(f"""
                                 SELECT
                                     (array_agg(close ORDER BY timestamp DESC))[1] as close_price
@@ -855,7 +1006,7 @@ class RSILoader:
                                 GROUP BY period_start
                                 ORDER BY period_start
                             """, (self.symbol, adjusted_buffer_start, start_date))
-                        else:  # 15m
+                        else:  # 15m and other sub-hourly
                             cur.execute(f"""
                                 SELECT
                                     (array_agg(close ORDER BY timestamp DESC))[1] as close_price
