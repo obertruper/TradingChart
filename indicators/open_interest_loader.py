@@ -85,7 +85,9 @@ class OpenInterestLoader:
         self.api_interval_map = {
             '1m': None,  # API не поддерживает 1m, будем использовать 5min и интерполировать или NULL
             '15m': '15min',
-            '1h': '1h'
+            '1h': '1h',
+            '4h': '4h',
+            '1d': '1d'
         }
 
         logger.info(f"Инициализирован OpenInterestLoader для {symbol} на {timeframe}")

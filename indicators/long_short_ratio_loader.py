@@ -84,7 +84,9 @@ class LongShortRatioLoader:
         self.api_period_map = {
             '1m': None,  # API не поддерживает 1m
             '15m': '15min',
-            '1h': '1h'
+            '1h': '1h',
+            '4h': '4h',
+            '1d': '1d'
         }
 
         logger.info(f"Инициализирован LongShortRatioLoader для {symbol} на {timeframe}")
