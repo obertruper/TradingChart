@@ -325,6 +325,13 @@ class VMALoader:
             if current_time.minute == 0 and current_time.second == 0:
                 result -= timedelta(hours=1)
             return result
+        elif timeframe == '4h':
+            # Последний завершенный 4-часовой период (00, 04, 08, 12, 16, 20 UTC)
+            hour_block = (current_time.hour // 4) * 4
+            result = current_time.replace(hour=hour_block, minute=0, second=0, microsecond=0)
+            if current_time.hour % 4 == 0 and current_time.minute == 0 and current_time.second == 0:
+                result -= timedelta(hours=4)
+            return result
         elif timeframe == '1d':
             # Вчерашний день
             return (current_time - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
@@ -361,24 +368,80 @@ class VMALoader:
             else:
                 # Для остальных таймфреймов агрегируем СУММУ объемов
                 # ВАЖНО: Timestamp = НАЧАЛО периода (Bybit standard)
-                query = f"""
-                    WITH time_groups AS (
+                if minutes == 1440:  # 1d timeframe
+                    query = """
+                        WITH time_groups AS (
+                            SELECT
+                                date_trunc('day', timestamp) as period_start,
+                                volume,
+                                symbol
+                            FROM candles_bybit_futures_1m
+                            WHERE symbol = %s AND timestamp >= %s AND timestamp < %s
+                        )
                         SELECT
-                            date_trunc('hour', timestamp) +
-                            INTERVAL '{minutes} minutes' * (EXTRACT(MINUTE FROM timestamp)::integer / {minutes}) as period_start,
-                            volume,
-                            symbol
-                        FROM candles_bybit_futures_1m
-                        WHERE symbol = %s AND timestamp >= %s AND timestamp < %s
-                    )
-                    SELECT
-                        period_start as timestamp,
-                        symbol,
-                        SUM(volume) as volume
-                    FROM time_groups
-                    GROUP BY period_start, symbol
-                    ORDER BY period_start
-                """
+                            period_start as timestamp,
+                            symbol,
+                            SUM(volume) as volume
+                        FROM time_groups
+                        GROUP BY period_start, symbol
+                        ORDER BY period_start
+                    """
+                elif minutes == 240:  # 4h timeframe (fixed intervals: 00, 04, 08, 12, 16, 20 UTC)
+                    query = """
+                        WITH time_groups AS (
+                            SELECT
+                                date_trunc('day', timestamp) +
+                                INTERVAL '4 hours' * (EXTRACT(HOUR FROM timestamp)::integer / 4) as period_start,
+                                volume,
+                                symbol
+                            FROM candles_bybit_futures_1m
+                            WHERE symbol = %s AND timestamp >= %s AND timestamp < %s
+                        )
+                        SELECT
+                            period_start as timestamp,
+                            symbol,
+                            SUM(volume) as volume
+                        FROM time_groups
+                        GROUP BY period_start, symbol
+                        ORDER BY period_start
+                    """
+                elif minutes == 60:  # 1h timeframe
+                    query = """
+                        WITH time_groups AS (
+                            SELECT
+                                date_trunc('hour', timestamp) as period_start,
+                                volume,
+                                symbol
+                            FROM candles_bybit_futures_1m
+                            WHERE symbol = %s AND timestamp >= %s AND timestamp < %s
+                        )
+                        SELECT
+                            period_start as timestamp,
+                            symbol,
+                            SUM(volume) as volume
+                        FROM time_groups
+                        GROUP BY period_start, symbol
+                        ORDER BY period_start
+                    """
+                else:  # 15m and other sub-hourly
+                    query = f"""
+                        WITH time_groups AS (
+                            SELECT
+                                date_trunc('hour', timestamp) +
+                                INTERVAL '{minutes} minutes' * (EXTRACT(MINUTE FROM timestamp)::integer / {minutes}) as period_start,
+                                volume,
+                                symbol
+                            FROM candles_bybit_futures_1m
+                            WHERE symbol = %s AND timestamp >= %s AND timestamp < %s
+                        )
+                        SELECT
+                            period_start as timestamp,
+                            symbol,
+                            SUM(volume) as volume
+                        FROM time_groups
+                        GROUP BY period_start, symbol
+                        ORDER BY period_start
+                    """
                 df = pd.read_sql_query(query, conn, params=(self.symbol, start_date, end_date))
 
             if df.empty:
@@ -494,7 +557,8 @@ class VMALoader:
             with tqdm(total=total_batches,
                      desc=f"{self.symbol} {self.symbol_progress} VMA-{period} {timeframe.upper()}",
                      unit="batch",
-                     bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]') as pbar:
+                     ncols=100,
+                     bar_format='{desc}: {percentage:3.0f}%|{bar:20}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]') as pbar:
 
                 while current_date <= end_date:
                     batch_end = min(current_date + timedelta(days=batch_days), end_date)
