@@ -519,7 +519,7 @@ class ADXLoader:
                 df_agg = self.aggregate_to_timeframe(df, timeframe)
 
                 if len(df_agg) < period * 2:
-                    self.logger.warning(f"Insufficient data for ADX_{period} calculation")
+                    self.logger.debug(f"Insufficient data for ADX_{period} calculation (have {len(df_agg)}, need {period * 2})")
                     current_date = batch_end
                     pbar.update((batch_end - current_date).days + self.batch_days)
                     continue
