@@ -847,7 +847,14 @@ def main():
     elif args.timeframes:
         timeframes = args.timeframes.split(',')
     else:
-        timeframes = ['1m', '15m', '1h']  # По умолчанию все
+        config_path = os.path.join(os.path.dirname(__file__), 'indicators_config.yaml')
+        if os.path.exists(config_path):
+            import yaml
+            with open(config_path, 'r', encoding='utf-8') as f:
+                cfg = yaml.safe_load(f)
+                timeframes = cfg.get('timeframes', ['1m', '15m', '1h'])
+        else:
+            timeframes = ['1m', '15m', '1h']
 
     logger.info(f"⏰ Таймфреймы: {timeframes}")
 
