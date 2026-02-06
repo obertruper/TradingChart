@@ -266,7 +266,12 @@ class SuperTrendLoader:
         last_complete = max_date - timedelta(minutes=minutes)
 
         # Выравниваем по границе периода
-        if timeframe == '1h':
+        if timeframe == '1d':
+            last_complete = last_complete.replace(hour=0, minute=0, second=0, microsecond=0)
+        elif timeframe == '4h':
+            hour_block = (last_complete.hour // 4) * 4
+            last_complete = last_complete.replace(hour=hour_block, minute=0, second=0, microsecond=0)
+        elif timeframe == '1h':
             last_complete = last_complete.replace(minute=0, second=0, microsecond=0)
         elif timeframe == '15m':
             minute_aligned = (last_complete.minute // 15) * 15
@@ -304,8 +309,48 @@ class SuperTrendLoader:
                     params=(self.symbol, start_date),
                     parse_dates=['timestamp']
                 )
+            elif timeframe == '1d':
+                # Для 1d - агрегируем по дням
+                query = """
+                    SELECT
+                        date_trunc('day', timestamp) as timestamp,
+                        MAX(high) as high,
+                        MIN(low) as low,
+                        (ARRAY_AGG(close ORDER BY timestamp DESC))[1] as close
+                    FROM candles_bybit_futures_1m
+                    WHERE symbol = %s AND timestamp >= %s
+                    GROUP BY date_trunc('day', timestamp)
+                    ORDER BY timestamp ASC
+                """
+                df = pd.read_sql_query(
+                    query,
+                    conn,
+                    params=(self.symbol, start_date),
+                    parse_dates=['timestamp']
+                )
+            elif timeframe == '4h':
+                # Для 4h - агрегируем по 4-часовым интервалам
+                query = """
+                    SELECT
+                        date_trunc('day', timestamp) +
+                        INTERVAL '4 hours' * (EXTRACT(HOUR FROM timestamp)::integer / 4) as timestamp,
+                        MAX(high) as high,
+                        MIN(low) as low,
+                        (ARRAY_AGG(close ORDER BY timestamp DESC))[1] as close
+                    FROM candles_bybit_futures_1m
+                    WHERE symbol = %s AND timestamp >= %s
+                    GROUP BY date_trunc('day', timestamp) +
+                             INTERVAL '4 hours' * (EXTRACT(HOUR FROM timestamp)::integer / 4)
+                    ORDER BY timestamp ASC
+                """
+                df = pd.read_sql_query(
+                    query,
+                    conn,
+                    params=(self.symbol, start_date),
+                    parse_dates=['timestamp']
+                )
             else:
-                # Агрегация из 1m данных
+                # Для 15m и субчасовых таймфреймов
                 minutes = self.timeframe_minutes[timeframe]
                 query = f"""
                     WITH time_groups AS (

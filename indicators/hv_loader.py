@@ -375,7 +375,53 @@ class HVLoader:
                 else:
                     query_adjusted_start = None
 
-                if minutes == 60:  # 1h
+                if minutes == 1440:  # 1d
+                    query = """
+                        SELECT
+                            date_trunc('day', timestamp) as period_start,
+                            (array_agg(close ORDER BY timestamp DESC))[1] as close_price
+                        FROM candles_bybit_futures_1m
+                        WHERE symbol = %s
+                    """
+                    params = [self.symbol]
+
+                    if query_adjusted_start:
+                        query += " AND timestamp >= %s"
+                        params.append(query_adjusted_start)
+                    if end_date:
+                        query += " AND timestamp <= %s"
+                        params.append(end_date)
+
+                    query += """
+                        GROUP BY date_trunc('day', timestamp)
+                        ORDER BY period_start
+                    """
+
+                elif minutes == 240:  # 4h
+                    query = """
+                        SELECT
+                            date_trunc('day', timestamp) +
+                            INTERVAL '4 hours' * (EXTRACT(HOUR FROM timestamp)::integer / 4) as period_start,
+                            (array_agg(close ORDER BY timestamp DESC))[1] as close_price
+                        FROM candles_bybit_futures_1m
+                        WHERE symbol = %s
+                    """
+                    params = [self.symbol]
+
+                    if query_adjusted_start:
+                        query += " AND timestamp >= %s"
+                        params.append(query_adjusted_start)
+                    if end_date:
+                        query += " AND timestamp <= %s"
+                        params.append(end_date)
+
+                    query += """
+                        GROUP BY date_trunc('day', timestamp) +
+                                 INTERVAL '4 hours' * (EXTRACT(HOUR FROM timestamp)::integer / 4)
+                        ORDER BY period_start
+                    """
+
+                elif minutes == 60:  # 1h
                     query = """
                         SELECT
                             date_trunc('hour', timestamp) as period_start,

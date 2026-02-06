@@ -470,6 +470,8 @@ class IchimokuLoader:
         rule_map = {
             '15m': '15min',
             '1h': '1h',
+            '4h': '4h',
+            '1d': '1D',
         }
 
         if timeframe not in rule_map:
@@ -509,6 +511,10 @@ class IchimokuLoader:
             lookback_start = start_date - timedelta(minutes=lookback_periods * 15)
         elif timeframe == '1h':
             lookback_start = start_date - timedelta(hours=lookback_periods)
+        elif timeframe == '4h':
+            lookback_start = start_date - timedelta(hours=lookback_periods * 4)
+        elif timeframe == '1d':
+            lookback_start = start_date - timedelta(days=lookback_periods)
         else:
             raise ValueError(f"Unsupported timeframe: {timeframe}")
 
@@ -564,6 +570,11 @@ class IchimokuLoader:
             max_date = max_date.replace(minute=(max_date.minute // 15) * 15, second=0, microsecond=0)
         elif timeframe == '1h':
             max_date = max_date.replace(minute=0, second=0, microsecond=0)
+        elif timeframe == '4h':
+            hour_block = (max_date.hour // 4) * 4
+            max_date = max_date.replace(hour=hour_block, minute=0, second=0, microsecond=0)
+        elif timeframe == '1d':
+            max_date = max_date.replace(hour=0, minute=0, second=0, microsecond=0)
 
         self.logger.info(f"⏸️  Ограничение max_date до последнего завершенного периода: {max_date}")
 
@@ -579,7 +590,7 @@ class IchimokuLoader:
         # Используем RAW lookback (без множителя), т.к. нам нужен минимум для расчёта
         # До этой даты NULL - это "естественные" пустоты (недостаточно истории)
         raw_lookback = self.get_raw_lookback_period(configs)
-        timeframe_minutes = {'1m': 1, '15m': 15, '1h': 60}.get(timeframe, 1)
+        timeframe_minutes = {'1m': 1, '15m': 15, '1h': 60, '4h': 240, '1d': 1440}.get(timeframe, 1)
         effective_min_date = min_date + timedelta(minutes=raw_lookback * timeframe_minutes)
         self.logger.info(f"📏 Raw lookback: {raw_lookback} периодов → effective min date: {effective_min_date}")
 

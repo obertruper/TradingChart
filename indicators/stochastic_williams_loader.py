@@ -336,6 +336,16 @@ class StochasticLoader:
 
             return result
 
+        elif timeframe == '4h':
+            hour_block = (current_time.hour // 4) * 4
+            result = current_time.replace(hour=hour_block, minute=0, second=0, microsecond=0)
+            if current_time.hour % 4 == 0 and current_time.minute == 0 and current_time.second == 0:
+                result -= timedelta(hours=4)
+            return result
+
+        elif timeframe == '1d':
+            return (current_time - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+
         else:
             total_minutes = int(current_time.timestamp() / 60)
             period_start_minutes = (total_minutes // minutes) * minutes
@@ -375,29 +385,77 @@ class StochasticLoader:
                 minutes = self.timeframe_minutes[timeframe]
 
                 # ВАЖНО: Timestamp = НАЧАЛО периода (Bybit standard)
-                query = f"""
-                    WITH time_groups AS (
+                if timeframe == '1d':
+                    query = """
+                        WITH time_groups AS (
+                            SELECT
+                                timestamp,
+                                date_trunc('day', timestamp) as period_start,
+                                high, low, close,
+                                symbol
+                            FROM candles_bybit_futures_1m
+                            WHERE symbol = %s
+                              AND timestamp >= %s
+                              AND timestamp <= %s
+                        )
                         SELECT
-                            timestamp,
-                            DATE_TRUNC('hour', timestamp) +
-                            INTERVAL '1 minute' * (FLOOR(EXTRACT(MINUTE FROM timestamp) / {minutes}) * {minutes}) as period_start,
-                            high, low, close,
-                            symbol
-                        FROM candles_bybit_futures_1m
-                        WHERE symbol = %s
-                          AND timestamp >= %s
-                          AND timestamp <= %s
-                    )
-                    SELECT
-                        period_start as timestamp,
-                        symbol,
-                        MAX(high) as high,
-                        MIN(low) as low,
-                        (ARRAY_AGG(close ORDER BY timestamp DESC))[1] as close
-                    FROM time_groups
-                    GROUP BY period_start, symbol
-                    ORDER BY period_start
-                """
+                            period_start as timestamp,
+                            symbol,
+                            MAX(high) as high,
+                            MIN(low) as low,
+                            (ARRAY_AGG(close ORDER BY timestamp DESC))[1] as close
+                        FROM time_groups
+                        GROUP BY period_start, symbol
+                        ORDER BY period_start
+                    """
+                elif timeframe == '4h':
+                    query = """
+                        WITH time_groups AS (
+                            SELECT
+                                timestamp,
+                                date_trunc('day', timestamp) +
+                                INTERVAL '4 hours' * (EXTRACT(HOUR FROM timestamp)::integer / 4) as period_start,
+                                high, low, close,
+                                symbol
+                            FROM candles_bybit_futures_1m
+                            WHERE symbol = %s
+                              AND timestamp >= %s
+                              AND timestamp <= %s
+                        )
+                        SELECT
+                            period_start as timestamp,
+                            symbol,
+                            MAX(high) as high,
+                            MIN(low) as low,
+                            (ARRAY_AGG(close ORDER BY timestamp DESC))[1] as close
+                        FROM time_groups
+                        GROUP BY period_start, symbol
+                        ORDER BY period_start
+                    """
+                else:
+                    query = f"""
+                        WITH time_groups AS (
+                            SELECT
+                                timestamp,
+                                DATE_TRUNC('hour', timestamp) +
+                                INTERVAL '1 minute' * (FLOOR(EXTRACT(MINUTE FROM timestamp) / {minutes}) * {minutes}) as period_start,
+                                high, low, close,
+                                symbol
+                            FROM candles_bybit_futures_1m
+                            WHERE symbol = %s
+                              AND timestamp >= %s
+                              AND timestamp <= %s
+                        )
+                        SELECT
+                            period_start as timestamp,
+                            symbol,
+                            MAX(high) as high,
+                            MIN(low) as low,
+                            (ARRAY_AGG(close ORDER BY timestamp DESC))[1] as close
+                        FROM time_groups
+                        GROUP BY period_start, symbol
+                        ORDER BY period_start
+                    """
 
                 df = pd.read_sql_query(query, conn, params=(self.symbol, start_date, end_date))
 
@@ -871,6 +929,16 @@ class WilliamsRLoader:
 
             return result
 
+        elif timeframe == '4h':
+            hour_block = (current_time.hour // 4) * 4
+            result = current_time.replace(hour=hour_block, minute=0, second=0, microsecond=0)
+            if current_time.hour % 4 == 0 and current_time.minute == 0 and current_time.second == 0:
+                result -= timedelta(hours=4)
+            return result
+
+        elif timeframe == '1d':
+            return (current_time - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+
         else:
             total_minutes = int(current_time.timestamp() / 60)
             period_start_minutes = (total_minutes // minutes) * minutes
@@ -898,29 +966,77 @@ class WilliamsRLoader:
                 minutes = self.timeframe_minutes[timeframe]
 
                 # ВАЖНО: Timestamp = НАЧАЛО периода (Bybit standard)
-                query = f"""
-                    WITH time_groups AS (
+                if timeframe == '1d':
+                    query = """
+                        WITH time_groups AS (
+                            SELECT
+                                timestamp,
+                                date_trunc('day', timestamp) as period_start,
+                                high, low, close,
+                                symbol
+                            FROM candles_bybit_futures_1m
+                            WHERE symbol = %s
+                              AND timestamp >= %s
+                              AND timestamp <= %s
+                        )
                         SELECT
-                            timestamp,
-                            DATE_TRUNC('hour', timestamp) +
-                            INTERVAL '1 minute' * (FLOOR(EXTRACT(MINUTE FROM timestamp) / {minutes}) * {minutes}) as period_start,
-                            high, low, close,
-                            symbol
-                        FROM candles_bybit_futures_1m
-                        WHERE symbol = %s
-                          AND timestamp >= %s
-                          AND timestamp <= %s
-                    )
-                    SELECT
-                        period_start as timestamp,
-                        symbol,
-                        MAX(high) as high,
-                        MIN(low) as low,
-                        (ARRAY_AGG(close ORDER BY timestamp DESC))[1] as close
-                    FROM time_groups
-                    GROUP BY period_start, symbol
-                    ORDER BY period_start
-                """
+                            period_start as timestamp,
+                            symbol,
+                            MAX(high) as high,
+                            MIN(low) as low,
+                            (ARRAY_AGG(close ORDER BY timestamp DESC))[1] as close
+                        FROM time_groups
+                        GROUP BY period_start, symbol
+                        ORDER BY period_start
+                    """
+                elif timeframe == '4h':
+                    query = """
+                        WITH time_groups AS (
+                            SELECT
+                                timestamp,
+                                date_trunc('day', timestamp) +
+                                INTERVAL '4 hours' * (EXTRACT(HOUR FROM timestamp)::integer / 4) as period_start,
+                                high, low, close,
+                                symbol
+                            FROM candles_bybit_futures_1m
+                            WHERE symbol = %s
+                              AND timestamp >= %s
+                              AND timestamp <= %s
+                        )
+                        SELECT
+                            period_start as timestamp,
+                            symbol,
+                            MAX(high) as high,
+                            MIN(low) as low,
+                            (ARRAY_AGG(close ORDER BY timestamp DESC))[1] as close
+                        FROM time_groups
+                        GROUP BY period_start, symbol
+                        ORDER BY period_start
+                    """
+                else:
+                    query = f"""
+                        WITH time_groups AS (
+                            SELECT
+                                timestamp,
+                                DATE_TRUNC('hour', timestamp) +
+                                INTERVAL '1 minute' * (FLOOR(EXTRACT(MINUTE FROM timestamp) / {minutes}) * {minutes}) as period_start,
+                                high, low, close,
+                                symbol
+                            FROM candles_bybit_futures_1m
+                            WHERE symbol = %s
+                              AND timestamp >= %s
+                              AND timestamp <= %s
+                        )
+                        SELECT
+                            period_start as timestamp,
+                            symbol,
+                            MAX(high) as high,
+                            MIN(low) as low,
+                            (ARRAY_AGG(close ORDER BY timestamp DESC))[1] as close
+                        FROM time_groups
+                        GROUP BY period_start, symbol
+                        ORDER BY period_start
+                    """
 
                 df = pd.read_sql_query(query, conn, params=(self.symbol, start_date, end_date))
 

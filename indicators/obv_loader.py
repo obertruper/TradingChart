@@ -280,8 +280,68 @@ class OBVLoader:
                     params=(self.symbol, start_date),
                     parse_dates=['timestamp']
                 )
+
+            elif self.timeframe == '1d':
+                # Для 1d - агрегируем по дням
+                query = f"""
+                    SELECT
+                        date_trunc('day', timestamp) as timestamp,
+                        (array_agg(close ORDER BY timestamp DESC))[1] as close,
+                        SUM(volume) as volume
+                    FROM {self.candles_table}
+                    WHERE symbol = %s AND timestamp >= %s
+                    GROUP BY date_trunc('day', timestamp)
+                    ORDER BY timestamp ASC
+                """
+                df = pd.read_sql_query(
+                    query,
+                    conn,
+                    params=(self.symbol, start_date),
+                    parse_dates=['timestamp']
+                )
+
+            elif self.timeframe == '4h':
+                # Для 4h - агрегируем по 4-часовым интервалам (00:00, 04:00, 08:00, 12:00, 16:00, 20:00 UTC)
+                query = f"""
+                    SELECT
+                        date_trunc('day', timestamp) +
+                        INTERVAL '4 hours' * (EXTRACT(HOUR FROM timestamp)::INTEGER / 4) as timestamp,
+                        (array_agg(close ORDER BY timestamp DESC))[1] as close,
+                        SUM(volume) as volume
+                    FROM {self.candles_table}
+                    WHERE symbol = %s AND timestamp >= %s
+                    GROUP BY date_trunc('day', timestamp) +
+                             INTERVAL '4 hours' * (EXTRACT(HOUR FROM timestamp)::INTEGER / 4)
+                    ORDER BY timestamp ASC
+                """
+                df = pd.read_sql_query(
+                    query,
+                    conn,
+                    params=(self.symbol, start_date),
+                    parse_dates=['timestamp']
+                )
+
+            elif self.timeframe == '1h':
+                # Для 1h - агрегируем по часам
+                query = f"""
+                    SELECT
+                        date_trunc('hour', timestamp) as timestamp,
+                        (array_agg(close ORDER BY timestamp DESC))[1] as close,
+                        SUM(volume) as volume
+                    FROM {self.candles_table}
+                    WHERE symbol = %s AND timestamp >= %s
+                    GROUP BY date_trunc('hour', timestamp)
+                    ORDER BY timestamp ASC
+                """
+                df = pd.read_sql_query(
+                    query,
+                    conn,
+                    params=(self.symbol, start_date),
+                    parse_dates=['timestamp']
+                )
+
             else:
-                # Для 15m и 1h - агрегируем из 1m данных
+                # Для 15m и других субчасовых таймфреймов - агрегируем из 1m данных
                 interval_minutes = self.timeframe_minutes
                 query = f"""
                     SELECT
@@ -332,8 +392,8 @@ class OBVLoader:
                     desc=f"{progress_desc} - Обновление БД",
                     unit=" день",
                     leave=False,
-                    ncols=120,
-                    bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]'
+                    ncols=100,
+                    bar_format='{desc}: {percentage:3.0f}%|{bar:20}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]'
                 )
 
                 try:
