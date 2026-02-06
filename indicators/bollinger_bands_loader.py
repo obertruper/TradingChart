@@ -384,7 +384,7 @@ class BollingerBandsLoader:
 
         Args:
             df_1m: DataFrame с минутными данными
-            timeframe: Целевой таймфрейм ('15m', '1h')
+            timeframe: Целевой таймфрейм ('15m', '1h', '4h', '1d')
 
         Returns:
             Агрегированный DataFrame
@@ -396,6 +396,8 @@ class BollingerBandsLoader:
         rule_map = {
             '15m': '15min',
             '1h': '1h',
+            '4h': '4h',
+            '1d': '1D',
         }
 
         if timeframe not in rule_map:
@@ -433,6 +435,10 @@ class BollingerBandsLoader:
             lookback_start = start_date - timedelta(minutes=lookback_periods * 15)
         elif timeframe == '1h':
             lookback_start = start_date - timedelta(hours=lookback_periods)
+        elif timeframe == '4h':
+            lookback_start = start_date - timedelta(hours=lookback_periods * 4)
+        elif timeframe == '1d':
+            lookback_start = start_date - timedelta(days=lookback_periods)
         else:
             raise ValueError(f"Unsupported timeframe: {timeframe}")
 
@@ -505,7 +511,9 @@ class BollingerBandsLoader:
             total_days = (end_date - start_date).days
             pbar = tqdm(total=total_days,
                        desc=f"{self.symbol} {self.symbol_progress} BB-{name}({period},{std_dev},{base.upper()}) {timeframe.upper()}",
-                       unit='day')
+                       unit='day',
+                       ncols=100,
+                       bar_format='{desc}: {percentage:3.0f}%|{bar:20}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]')
 
             while current_date < end_date:
                 batch_end = min(current_date + timedelta(days=self.batch_days), end_date)
@@ -517,6 +525,10 @@ class BollingerBandsLoader:
                     lookback_start = current_date - timedelta(minutes=lookback_periods * 15)
                 elif timeframe == '1h':
                     lookback_start = current_date - timedelta(hours=lookback_periods)
+                elif timeframe == '4h':
+                    lookback_start = current_date - timedelta(hours=lookback_periods * 4)
+                elif timeframe == '1d':
+                    lookback_start = current_date - timedelta(days=lookback_periods)
 
                 # Загружаем данные из 1m таблицы
                 query = f"""
@@ -621,6 +633,10 @@ class BollingerBandsLoader:
             max_date = max_date.replace(minute=(max_date.minute // 15) * 15, second=0, microsecond=0)
         elif timeframe == '1h':
             max_date = max_date.replace(minute=0, second=0, microsecond=0)
+        elif timeframe == '4h':
+            max_date = max_date.replace(hour=(max_date.hour // 4) * 4, minute=0, second=0, microsecond=0)
+        elif timeframe == '1d':
+            max_date = max_date.replace(hour=0, minute=0, second=0, microsecond=0)
 
         self.logger.info(f"⏸️  Ограничение max_date до последнего завершенного периода: {max_date}")
 
@@ -640,6 +656,10 @@ class BollingerBandsLoader:
                 start_date = last_date + timedelta(minutes=15)
             elif timeframe == '1h':
                 start_date = last_date + timedelta(hours=1)
+            elif timeframe == '4h':
+                start_date = last_date + timedelta(hours=4)
+            elif timeframe == '1d':
+                start_date = last_date + timedelta(days=1)
         else:
             start_date = min_date
             self.logger.info(f"📌 Начинаем с начала: {start_date}")
@@ -664,7 +684,9 @@ class BollingerBandsLoader:
             # Прогресс-бар для батчей
             pbar = tqdm(total=total_days,
                        desc=f"{self.symbol} {self.symbol_progress} BB(ALL) {timeframe.upper()}",
-                       unit='day')
+                       unit='day',
+                       ncols=100,
+                       bar_format='{desc}: {percentage:3.0f}%|{bar:20}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]')
 
             while current_date < max_date:
                 batch_end = min(current_date + timedelta(days=self.batch_days), max_date)
