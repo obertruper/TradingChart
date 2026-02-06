@@ -339,6 +339,27 @@ class MACDLoader:
 
             return result
 
+        elif timeframe == '4h':
+            # Для 4h: фиксированные интервалы 00:00, 04:00, 08:00, 12:00, 16:00, 20:00 UTC
+            hour_block = (current_time.hour // 4) * 4
+            result = current_time.replace(hour=hour_block, minute=0, second=0, microsecond=0)
+
+            # Если мы точно на границе 4h периода
+            if current_time.hour % 4 == 0 and current_time.minute == 0 and current_time.second == 0:
+                result -= timedelta(hours=4)
+
+            return result
+
+        elif timeframe == '1d':
+            # Для дневного таймфрейма: округляем до начала дня (00:00 UTC)
+            result = current_time.replace(hour=0, minute=0, second=0, microsecond=0)
+
+            # Если мы точно на границе дня (00:00:00)
+            if current_time.hour == 0 and current_time.minute == 0 and current_time.second == 0:
+                result -= timedelta(days=1)
+
+            return result
+
         else:
             # Для других таймфреймов: общая логика
             total_minutes = int(current_time.timestamp() / 60)
@@ -375,8 +396,85 @@ class MACDLoader:
                     ORDER BY timestamp
                 """
                 df = pd.read_sql_query(query, conn, params=(self.symbol, start_date, end_date))
+
+            elif timeframe == '1d':
+                # Для дневного таймфрейма: агрегация по дням
+                # ВАЖНО: Timestamp = НАЧАЛО периода (00:00 UTC)
+                query = """
+                    WITH time_groups AS (
+                        SELECT
+                            timestamp,
+                            DATE_TRUNC('day', timestamp) as period_start,
+                            close,
+                            symbol
+                        FROM candles_bybit_futures_1m
+                        WHERE symbol = %s
+                          AND timestamp >= %s
+                          AND timestamp <= %s
+                    )
+                    SELECT
+                        period_start as timestamp,
+                        symbol,
+                        (ARRAY_AGG(close ORDER BY timestamp DESC))[1] as close
+                    FROM time_groups
+                    GROUP BY period_start, symbol
+                    ORDER BY period_start
+                """
+                df = pd.read_sql_query(query, conn, params=(self.symbol, start_date, end_date))
+
+            elif timeframe == '4h':
+                # Для 4-часового таймфрейма: фиксированные интервалы 00:00, 04:00, 08:00, 12:00, 16:00, 20:00 UTC
+                # ВАЖНО: Timestamp = НАЧАЛО периода
+                query = """
+                    WITH time_groups AS (
+                        SELECT
+                            timestamp,
+                            DATE_TRUNC('day', timestamp) +
+                            INTERVAL '4 hours' * (EXTRACT(HOUR FROM timestamp)::INTEGER / 4) as period_start,
+                            close,
+                            symbol
+                        FROM candles_bybit_futures_1m
+                        WHERE symbol = %s
+                          AND timestamp >= %s
+                          AND timestamp <= %s
+                    )
+                    SELECT
+                        period_start as timestamp,
+                        symbol,
+                        (ARRAY_AGG(close ORDER BY timestamp DESC))[1] as close
+                    FROM time_groups
+                    GROUP BY period_start, symbol
+                    ORDER BY period_start
+                """
+                df = pd.read_sql_query(query, conn, params=(self.symbol, start_date, end_date))
+
+            elif timeframe == '1h':
+                # Для часового таймфрейма
+                # ВАЖНО: Timestamp = НАЧАЛО периода
+                query = """
+                    WITH time_groups AS (
+                        SELECT
+                            timestamp,
+                            DATE_TRUNC('hour', timestamp) as period_start,
+                            close,
+                            symbol
+                        FROM candles_bybit_futures_1m
+                        WHERE symbol = %s
+                          AND timestamp >= %s
+                          AND timestamp <= %s
+                    )
+                    SELECT
+                        period_start as timestamp,
+                        symbol,
+                        (ARRAY_AGG(close ORDER BY timestamp DESC))[1] as close
+                    FROM time_groups
+                    GROUP BY period_start, symbol
+                    ORDER BY period_start
+                """
+                df = pd.read_sql_query(query, conn, params=(self.symbol, start_date, end_date))
+
             else:
-                # Для старших таймфреймов агрегируем из минутных
+                # Для других таймфреймов (15m, 30m и т.д.): агрегируем из минутных
                 minutes = self.timeframe_minutes[timeframe]
 
                 # ВАЖНО: Timestamp = НАЧАЛО периода (Bybit standard)
@@ -385,7 +483,7 @@ class MACDLoader:
                         SELECT
                             timestamp,
                             DATE_TRUNC('hour', timestamp) +
-                            INTERVAL '1 minute' * (FLOOR(EXTRACT(MINUTE FROM timestamp) / {minutes}) * {minutes}) as period_start,
+                            INTERVAL '{minutes} minutes' * (EXTRACT(MINUTE FROM timestamp)::INTEGER / {minutes}) as period_start,
                             close,
                             symbol
                         FROM candles_bybit_futures_1m
@@ -548,7 +646,8 @@ class MACDLoader:
             with tqdm(total=total_days,
                      desc=f"{self.symbol} {self.symbol_progress} MACD-{config['name']}({config['fast']},{config['slow']},{config['signal']}) {timeframe.upper()}",
                      unit="day",
-                     bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}] {postfix}') as pbar:
+                     ncols=100,
+                     bar_format='{desc}: {percentage:3.0f}%|{bar:20}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}] {postfix}') as pbar:
                 while current_date <= max_date:
                     # Определяем конец батча
                     batch_end = min(
