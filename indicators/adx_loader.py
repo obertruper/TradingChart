@@ -36,7 +36,7 @@ from indicators.database import DatabaseConnection
 PERIODS = [7, 10, 14, 20, 21, 25, 30, 50]  # 8 periods
 LOOKBACK_MULTIPLIER = 4  # period × 4 for double smoothing
 BATCH_DAYS = 1  # Process 1 day at a time
-TIMEFRAMES = ['1m', '15m', '1h']
+TIMEFRAMES = ['1m', '15m', '1h', '4h', '1d']
 
 # Logging setup
 def setup_logging(symbol: str) -> logging.Logger:
@@ -414,7 +414,9 @@ class ADXLoader:
         # Map timeframe to pandas resample rule
         resample_rule = {
             '15m': '15min',
-            '1h': '1h'
+            '1h': '1h',
+            '4h': '4h',
+            '1d': '1D'
         }[timeframe]
 
         # Ensure timezone-aware datetime
@@ -482,7 +484,8 @@ class ADXLoader:
 
         columns = self.get_column_names(period)
 
-        with tqdm(total=total_days, desc=f"{self.symbol} {self.symbol_progress} ADX-{period} {timeframe.upper()}", unit="day") as pbar:
+        with tqdm(total=total_days, desc=f"{self.symbol} {self.symbol_progress} ADX-{period} {timeframe.upper()}", unit="day",
+                 ncols=100, bar_format='{desc}: {percentage:3.0f}%|{bar:20}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]') as pbar:
             while current_date < end_date:
                 batch_end = min(current_date + timedelta(days=self.batch_days), end_date)
 
