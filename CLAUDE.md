@@ -347,6 +347,19 @@ python3 fear_and_greed_coinmarketcap_loader.py --force-reload  # Full reload (al
 # Historical data: ~2.7 years (API limitation)
 # Incremental loading: only NULL records are updated (unless --force-reload)
 
+# Load Orderbook data (market depth from Bybit historical archives)
+python3 orderbook_loader.py
+python3 orderbook_loader.py --symbol BTCUSDT       # Specific symbol only
+python3 orderbook_loader.py --force-reload          # Full reload from 2023-01-18
+# Note: Separate table orderbook_bybit_futures_1m (NOT in indicators tables)
+# Source: Bybit historical archives (quote-saver.bycsi.com/orderbook/linear/)
+# ~600 orderbook updates/min aggregated into 1 row (58 columns)
+# 12 metric groups: Price, Spread, Bid/Ask Volume, Imbalance, Pressure, Walls, Slippage, Liquidity, Volatility, Activity
+# 2 JSONB columns: bid_levels, ask_levels (top-50 price levels)
+# Daily batching: download ZIP to RAM → process → write 1440 rows/day → COMMIT
+# Historical data: 2023-01-18 — current date
+# Documentation: docs/ORDERBOOK_REFERENCE.md (full column reference for analysts)
+
 # Check indicators status in database
 python3 check_indicators_status.py
 python3 check_atr_status.py  # ATR-specific status
@@ -418,6 +431,7 @@ cat INDICATORS_REFERENCE.md
   - **Volume**: VMA, OBV, VWAP, MFI
   - **Sentiment**: Long/Short Ratio, Fear & Greed Index
   - **Market Data**: Open Interest, Funding Rate, Premium Index
+  - **Market Microstructure**: Orderbook (separate table, not in indicators)
 
 - **Known Technical Debt**:
   - ~1000-1500 lines of duplicated code across loaders (logging setup, aggregation, timeframe parsing)
@@ -450,11 +464,13 @@ cat INDICATORS_REFERENCE.md
 | indicators_bybit_futures_1h | 2 GB | 1.9 GB | 82 MB | 437K | 261 |
 | indicators_bybit_futures_4h | 32 KB | - | - | 0 | 261 |
 | indicators_bybit_futures_1d | 32 KB | - | - | 0 | 261 |
+| orderbook_bybit_futures_1m | ~1.73 GB | 1.68 GB | 88 MB | ~1.1M | 60 |
 | eda | 48 KB | 0 | 48 KB | 0 | 22 |
 
 **Storage per row:**
 - indicators tables: ~4.7 KB/row (261 columns of numeric data)
 - candles tables: ~90 bytes/row (8 columns)
+- orderbook table: ~1.6 KB/row (56 numeric + 2 JSONB columns)
 - backtest_ml: ~1.3 KB/row (80 columns)
 
 #### Candles Tables
@@ -515,6 +531,33 @@ cat INDICATORS_REFERENCE.md
 - **Data Flow**: 1m candles → calculate indicators → aggregate to 15m/1h/4h/1d with indicator recalculation
 - **Update Strategy**: INSERT...ON CONFLICT DO UPDATE for idempotent loading
 - **Note**: 4h and 1d tables created 2026-02-05, pending initial data load
+
+#### Orderbook Table
+- **Table**: `orderbook_bybit_futures_1m`
+- **Purpose**: Aggregated order book (market depth) data from Bybit futures
+- **Source**: Historical archives from `quote-saver.bycsi.com/orderbook/linear/`
+- **Script**: `indicators/orderbook_loader.py`
+- **Primary Key**: (timestamp, symbol) - matches candles and indicators tables
+- **Columns** (60 total: 2 key + 56 numeric + 2 JSONB):
+  - **Price** (6): best_bid, best_ask, mid_price, microprice, vwap_bid, vwap_ask
+  - **Spread** (6): spread, spread_pct, spread_min, spread_max, spread_avg, spread_std
+  - **Bid Volume** (6): bid_vol_01pct, bid_vol_05pct, bid_vol_10pct, bid_volume, bid_vol_avg, bid_vol_std
+  - **Ask Volume** (6): ask_vol_01pct, ask_vol_05pct, ask_vol_10pct, ask_volume, ask_vol_avg, ask_vol_std
+  - **Imbalance** (7): imbalance, imbalance_01pct, imbalance_min/max/avg/std, imbalance_range
+  - **Pressure** (2): buy_pressure, depth_ratio
+  - **Walls** (6): bid_wall_price/volume/distance_pct, ask_wall_price/volume/distance_pct
+  - **Slippage** (6): slippage_buy_10k/50k/100k, slippage_sell_10k/50k/100k
+  - **Liquidity** (3): liquidity_score, bid_concentration, ask_concentration
+  - **Volatility** (3): mid_price_range, mid_price_std, price_momentum
+  - **Activity** (5): ob_bid_levels, ob_ask_levels, ob_update_count, best_bid_changes, best_ask_changes
+  - **Depth Levels** (2 JSONB): bid_levels, ask_levels — top-50 price levels `[{"p": price, "v": volume}, ...]`
+- **Indexes**: (symbol, timestamp), (timestamp)
+- **Data Availability**: 2023-01-18 — current date (ob500 until 2025-08-20, ob200 after)
+- **Aggregation**: ~600 orderbook updates/minute → 1 row (LAST state + MIN/MAX/AVG/STD statistics)
+- **Storage**: ~1.6 KB/row, ~2.24 MB/day per symbol, ~0.80 GB/year per symbol
+- **Current data**: BTCUSDT only (~1.1M rows), other symbols planned
+- **Architecture**: Separate table (not part of indicators tables), daily batching with ZIP download to RAM
+- **Documentation**: `docs/ORDERBOOK_REFERENCE.md` (full column reference), `docs/ORDERBOOK_PLANNING.md` (technical architecture)
 
 #### Backtest Tables
 - **Table**: `backtest_ml`
@@ -632,12 +675,16 @@ TradingChart/
 │   ├── premium_index_loader.py       # Premium Index from Bybit API (Mar 2020+)
 │   ├── fear_and_greed_loader.py       # Fear & Greed from Alternative.me API
 │   ├── fear_and_greed_coinmarketcap_loader.py  # Market metrics from CoinMarketCap API
+│   ├── orderbook_loader.py            # Orderbook data from Bybit historical archives
 │   ├── database.py                    # Database operations for indicators
 │   ├── indicators_config.yaml         # Indicators configuration
 │   ├── check_indicators_status.py     # Check indicators in DB
 │   ├── check_atr_status.py            # Check ATR-specific status
 │   ├── check_adx_status.py            # Check ADX-specific status
 │   └── INDICATORS_REFERENCE.md        # Technical indicators documentation
+├── docs/
+│   ├── ORDERBOOK_REFERENCE.md         # Orderbook columns reference (for analysts)
+│   └── ORDERBOOK_PLANNING.md          # Orderbook technical architecture
 ├── bybit_futures_check_start_date_by_symbol/
 │   ├── check_symbols_launch.py        # Symbol launch date checker
 │   └── symbols_launch_dates.json      # Symbol metadata
