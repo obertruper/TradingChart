@@ -300,6 +300,21 @@ class ATRLoader:
 
             return result
 
+        elif timeframe == '4h':
+            # Для 4h: фиксированные интервалы 00, 04, 08, 12, 16, 20 UTC
+            hour_block = (current_time.hour // 4) * 4
+            result = current_time.replace(hour=hour_block, minute=0, second=0, microsecond=0)
+
+            # Если мы точно на границе 4h периода
+            if current_time.hour % 4 == 0 and current_time.minute == 0 and current_time.second == 0:
+                result -= timedelta(hours=4)
+
+            return result
+
+        elif timeframe == '1d':
+            # Для дневных: вчерашний день 00:00 UTC
+            return (current_time - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+
         else:
             # Для других таймфреймов: общая логика
             total_minutes = int(current_time.timestamp() / 60)
@@ -340,31 +355,108 @@ class ATRLoader:
                 # Для старших таймфреймов агрегируем из минутных
                 minutes = self.timeframe_minutes[timeframe]
 
-                query = f"""
-                    WITH time_groups AS (
+                if minutes == 1440:  # 1d timeframe
+                    query = """
+                        WITH time_groups AS (
+                            SELECT
+                                timestamp,
+                                DATE_TRUNC('day', timestamp) as period_start,
+                                high,
+                                low,
+                                close,
+                                symbol
+                            FROM candles_bybit_futures_1m
+                            WHERE symbol = %s
+                              AND timestamp >= %s
+                              AND timestamp <= %s
+                        )
                         SELECT
-                            timestamp,
-                            DATE_TRUNC('hour', timestamp) +
-                            INTERVAL '1 minute' * (FLOOR(EXTRACT(MINUTE FROM timestamp) / {minutes}) * {minutes}) as period_start,
-                            high,
-                            low,
-                            close,
-                            symbol
-                        FROM candles_bybit_futures_1m
-                        WHERE symbol = %s
-                          AND timestamp >= %s
-                          AND timestamp <= %s
-                    )
-                    SELECT
-                        period_start as timestamp,
-                        symbol,
-                        MAX(high) as high,
-                        MIN(low) as low,
-                        (ARRAY_AGG(close ORDER BY timestamp DESC))[1] as close
-                    FROM time_groups
-                    GROUP BY period_start, symbol
-                    ORDER BY period_start
-                """
+                            period_start as timestamp,
+                            symbol,
+                            MAX(high) as high,
+                            MIN(low) as low,
+                            (ARRAY_AGG(close ORDER BY timestamp DESC))[1] as close
+                        FROM time_groups
+                        GROUP BY period_start, symbol
+                        ORDER BY period_start
+                    """
+                elif minutes == 240:  # 4h timeframe (fixed intervals: 00, 04, 08, 12, 16, 20 UTC)
+                    query = """
+                        WITH time_groups AS (
+                            SELECT
+                                timestamp,
+                                DATE_TRUNC('day', timestamp) +
+                                INTERVAL '4 hours' * (EXTRACT(HOUR FROM timestamp)::integer / 4) as period_start,
+                                high,
+                                low,
+                                close,
+                                symbol
+                            FROM candles_bybit_futures_1m
+                            WHERE symbol = %s
+                              AND timestamp >= %s
+                              AND timestamp <= %s
+                        )
+                        SELECT
+                            period_start as timestamp,
+                            symbol,
+                            MAX(high) as high,
+                            MIN(low) as low,
+                            (ARRAY_AGG(close ORDER BY timestamp DESC))[1] as close
+                        FROM time_groups
+                        GROUP BY period_start, symbol
+                        ORDER BY period_start
+                    """
+                elif minutes == 60:  # 1h timeframe
+                    query = """
+                        WITH time_groups AS (
+                            SELECT
+                                timestamp,
+                                DATE_TRUNC('hour', timestamp) as period_start,
+                                high,
+                                low,
+                                close,
+                                symbol
+                            FROM candles_bybit_futures_1m
+                            WHERE symbol = %s
+                              AND timestamp >= %s
+                              AND timestamp <= %s
+                        )
+                        SELECT
+                            period_start as timestamp,
+                            symbol,
+                            MAX(high) as high,
+                            MIN(low) as low,
+                            (ARRAY_AGG(close ORDER BY timestamp DESC))[1] as close
+                        FROM time_groups
+                        GROUP BY period_start, symbol
+                        ORDER BY period_start
+                    """
+                else:  # 15m and other sub-hourly
+                    query = f"""
+                        WITH time_groups AS (
+                            SELECT
+                                timestamp,
+                                DATE_TRUNC('hour', timestamp) +
+                                INTERVAL '1 minute' * (FLOOR(EXTRACT(MINUTE FROM timestamp) / {minutes}) * {minutes}) as period_start,
+                                high,
+                                low,
+                                close,
+                                symbol
+                            FROM candles_bybit_futures_1m
+                            WHERE symbol = %s
+                              AND timestamp >= %s
+                              AND timestamp <= %s
+                        )
+                        SELECT
+                            period_start as timestamp,
+                            symbol,
+                            MAX(high) as high,
+                            MIN(low) as low,
+                            (ARRAY_AGG(close ORDER BY timestamp DESC))[1] as close
+                        FROM time_groups
+                        GROUP BY period_start, symbol
+                        ORDER BY period_start
+                    """
 
                 df = pd.read_sql_query(query, conn, params=(self.symbol, start_date, end_date))
 
@@ -466,31 +558,104 @@ class ATRLoader:
                     parse_dates=['timestamp']
                 )
             else:
-                # Для 15m и 1h - агрегируем из 1m данных
+                # Для 15m, 1h, 4h, 1d - агрегируем из 1m данных
                 minutes = self.timeframe_minutes[timeframe]
-                query = f"""
-                    WITH time_groups AS (
+
+                if minutes == 1440:  # 1d timeframe
+                    query = """
+                        WITH time_groups AS (
+                            SELECT
+                                timestamp,
+                                DATE_TRUNC('day', timestamp) as period_start,
+                                high,
+                                low,
+                                close,
+                                symbol
+                            FROM candles_bybit_futures_1m
+                            WHERE symbol = %s AND timestamp >= %s
+                        )
                         SELECT
-                            timestamp,
-                            DATE_TRUNC('hour', timestamp) +
-                            INTERVAL '1 minute' * (FLOOR(EXTRACT(MINUTE FROM timestamp) / {minutes}) * {minutes}) as period_start,
-                            high,
-                            low,
-                            close,
-                            symbol
-                        FROM candles_bybit_futures_1m
-                        WHERE symbol = %s AND timestamp >= %s
-                    )
-                    SELECT
-                        period_start as timestamp,
-                        symbol,
-                        MAX(high) as high,
-                        MIN(low) as low,
-                        (ARRAY_AGG(close ORDER BY timestamp DESC))[1] as close
-                    FROM time_groups
-                    GROUP BY period_start, symbol
-                    ORDER BY period_start ASC
-                """
+                            period_start as timestamp,
+                            symbol,
+                            MAX(high) as high,
+                            MIN(low) as low,
+                            (ARRAY_AGG(close ORDER BY timestamp DESC))[1] as close
+                        FROM time_groups
+                        GROUP BY period_start, symbol
+                        ORDER BY period_start ASC
+                    """
+                elif minutes == 240:  # 4h timeframe (fixed intervals: 00, 04, 08, 12, 16, 20 UTC)
+                    query = """
+                        WITH time_groups AS (
+                            SELECT
+                                timestamp,
+                                DATE_TRUNC('day', timestamp) +
+                                INTERVAL '4 hours' * (EXTRACT(HOUR FROM timestamp)::integer / 4) as period_start,
+                                high,
+                                low,
+                                close,
+                                symbol
+                            FROM candles_bybit_futures_1m
+                            WHERE symbol = %s AND timestamp >= %s
+                        )
+                        SELECT
+                            period_start as timestamp,
+                            symbol,
+                            MAX(high) as high,
+                            MIN(low) as low,
+                            (ARRAY_AGG(close ORDER BY timestamp DESC))[1] as close
+                        FROM time_groups
+                        GROUP BY period_start, symbol
+                        ORDER BY period_start ASC
+                    """
+                elif minutes == 60:  # 1h timeframe
+                    query = """
+                        WITH time_groups AS (
+                            SELECT
+                                timestamp,
+                                DATE_TRUNC('hour', timestamp) as period_start,
+                                high,
+                                low,
+                                close,
+                                symbol
+                            FROM candles_bybit_futures_1m
+                            WHERE symbol = %s AND timestamp >= %s
+                        )
+                        SELECT
+                            period_start as timestamp,
+                            symbol,
+                            MAX(high) as high,
+                            MIN(low) as low,
+                            (ARRAY_AGG(close ORDER BY timestamp DESC))[1] as close
+                        FROM time_groups
+                        GROUP BY period_start, symbol
+                        ORDER BY period_start ASC
+                    """
+                else:  # 15m and other sub-hourly
+                    query = f"""
+                        WITH time_groups AS (
+                            SELECT
+                                timestamp,
+                                DATE_TRUNC('hour', timestamp) +
+                                INTERVAL '1 minute' * (FLOOR(EXTRACT(MINUTE FROM timestamp) / {minutes}) * {minutes}) as period_start,
+                                high,
+                                low,
+                                close,
+                                symbol
+                            FROM candles_bybit_futures_1m
+                            WHERE symbol = %s AND timestamp >= %s
+                        )
+                        SELECT
+                            period_start as timestamp,
+                            symbol,
+                            MAX(high) as high,
+                            MIN(low) as low,
+                            (ARRAY_AGG(close ORDER BY timestamp DESC))[1] as close
+                        FROM time_groups
+                        GROUP BY period_start, symbol
+                        ORDER BY period_start ASC
+                    """
+
                 df = pd.read_sql_query(
                     query,
                     conn,
@@ -804,32 +969,107 @@ class ATRLoader:
                         ORDER BY i.timestamp
                     """
                 else:
-                    # Для 15m/1h - агрегируем Close из 1m свечей
+                    # Для 15m/1h/4h/1d - агрегируем Close из 1m свечей
                     minutes = self.timeframe_minutes[timeframe]
-                    query = f"""
-                        WITH aggregated_close AS (
+
+                    if minutes == 1440:  # 1d timeframe
+                        query = f"""
+                            WITH aggregated_close AS (
+                                SELECT
+                                    DATE_TRUNC('day', timestamp) as period_ts,
+                                    symbol,
+                                    (ARRAY_AGG(close ORDER BY timestamp DESC))[1] as close
+                                FROM candles_bybit_futures_1m
+                                WHERE symbol = %s
+                                GROUP BY period_ts, symbol
+                            )
                             SELECT
-                                DATE_TRUNC('hour', timestamp) +
-                                INTERVAL '1 minute' * (FLOOR(EXTRACT(MINUTE FROM timestamp) / {minutes}) * {minutes}) as period_ts,
-                                symbol,
-                                (ARRAY_AGG(close ORDER BY timestamp DESC))[1] as close
-                            FROM candles_bybit_futures_1m
-                            WHERE symbol = %s
-                            GROUP BY period_ts, symbol
-                        )
-                        SELECT
-                            i.timestamp,
-                            i.symbol,
-                            i.{atr_col} as atr,
-                            ac.close
-                        FROM {table_name} i
-                        JOIN aggregated_close ac
-                            ON i.timestamp = ac.period_ts AND i.symbol = ac.symbol
-                        WHERE i.symbol = %s
-                          AND i.{atr_col} IS NOT NULL
-                          AND i.{natr_col} IS NULL
-                        ORDER BY i.timestamp
-                    """
+                                i.timestamp,
+                                i.symbol,
+                                i.{atr_col} as atr,
+                                ac.close
+                            FROM {table_name} i
+                            JOIN aggregated_close ac
+                                ON i.timestamp = ac.period_ts AND i.symbol = ac.symbol
+                            WHERE i.symbol = %s
+                              AND i.{atr_col} IS NOT NULL
+                              AND i.{natr_col} IS NULL
+                            ORDER BY i.timestamp
+                        """
+                    elif minutes == 240:  # 4h timeframe (fixed intervals: 00, 04, 08, 12, 16, 20 UTC)
+                        query = f"""
+                            WITH aggregated_close AS (
+                                SELECT
+                                    DATE_TRUNC('day', timestamp) +
+                                    INTERVAL '4 hours' * (EXTRACT(HOUR FROM timestamp)::integer / 4) as period_ts,
+                                    symbol,
+                                    (ARRAY_AGG(close ORDER BY timestamp DESC))[1] as close
+                                FROM candles_bybit_futures_1m
+                                WHERE symbol = %s
+                                GROUP BY period_ts, symbol
+                            )
+                            SELECT
+                                i.timestamp,
+                                i.symbol,
+                                i.{atr_col} as atr,
+                                ac.close
+                            FROM {table_name} i
+                            JOIN aggregated_close ac
+                                ON i.timestamp = ac.period_ts AND i.symbol = ac.symbol
+                            WHERE i.symbol = %s
+                              AND i.{atr_col} IS NOT NULL
+                              AND i.{natr_col} IS NULL
+                            ORDER BY i.timestamp
+                        """
+                    elif minutes == 60:  # 1h timeframe
+                        query = f"""
+                            WITH aggregated_close AS (
+                                SELECT
+                                    DATE_TRUNC('hour', timestamp) as period_ts,
+                                    symbol,
+                                    (ARRAY_AGG(close ORDER BY timestamp DESC))[1] as close
+                                FROM candles_bybit_futures_1m
+                                WHERE symbol = %s
+                                GROUP BY period_ts, symbol
+                            )
+                            SELECT
+                                i.timestamp,
+                                i.symbol,
+                                i.{atr_col} as atr,
+                                ac.close
+                            FROM {table_name} i
+                            JOIN aggregated_close ac
+                                ON i.timestamp = ac.period_ts AND i.symbol = ac.symbol
+                            WHERE i.symbol = %s
+                              AND i.{atr_col} IS NOT NULL
+                              AND i.{natr_col} IS NULL
+                            ORDER BY i.timestamp
+                        """
+                    else:  # 15m and other sub-hourly
+                        query = f"""
+                            WITH aggregated_close AS (
+                                SELECT
+                                    DATE_TRUNC('hour', timestamp) +
+                                    INTERVAL '1 minute' * (FLOOR(EXTRACT(MINUTE FROM timestamp) / {minutes}) * {minutes}) as period_ts,
+                                    symbol,
+                                    (ARRAY_AGG(close ORDER BY timestamp DESC))[1] as close
+                                FROM candles_bybit_futures_1m
+                                WHERE symbol = %s
+                                GROUP BY period_ts, symbol
+                            )
+                            SELECT
+                                i.timestamp,
+                                i.symbol,
+                                i.{atr_col} as atr,
+                                ac.close
+                            FROM {table_name} i
+                            JOIN aggregated_close ac
+                                ON i.timestamp = ac.period_ts AND i.symbol = ac.symbol
+                            WHERE i.symbol = %s
+                              AND i.{atr_col} IS NOT NULL
+                              AND i.{natr_col} IS NULL
+                            ORDER BY i.timestamp
+                        """
 
                 if timeframe == '1m':
                     df = pd.read_sql_query(query, conn, params=(self.symbol,))
