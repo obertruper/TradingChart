@@ -382,7 +382,7 @@ class PremiumIndexLoader:
 
         logger.info(f"🔧 Заполнение пробелов за {len(gap_dates)} дней...")
 
-        for gap_date in tqdm(gap_dates, desc=f"🔧 {self.symbol} {self.timeframe} gaps", unit=" days"):
+        for gap_date in tqdm(gap_dates, desc=f"🔧 {self.symbol} {self.symbol_progress} {self.timeframe} gaps", unit=" days"):
             if shutdown_requested:
                 logger.info("⚠️  Прервано пользователем.")
                 return
@@ -499,7 +499,7 @@ class PremiumIndexLoader:
 
             with tqdm(
                 total=total_days,
-                desc=f"📅 {self.symbol} {self.timeframe}",
+                desc=f"📅 {self.symbol} {self.symbol_progress} {self.timeframe}",
                 unit=" дней",
                 dynamic_ncols=True,
                 leave=True
