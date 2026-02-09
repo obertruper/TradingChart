@@ -389,13 +389,10 @@ class PremiumIndexLoader:
 
             # Определяем диапазон для этой даты
             start_dt = datetime.combine(gap_date, datetime.min.time()).replace(tzinfo=pytz.UTC)
-            end_dt = start_dt + timedelta(days=1) - timedelta(milliseconds=1)
-
-            start_ts = int(start_dt.timestamp() * 1000)
-            end_ts = int(end_dt.timestamp() * 1000)
+            end_dt = start_dt + timedelta(days=1)
 
             # Загружаем данные для этой даты
-            premium_data = self.fetch_premium_index_data(start_ts, end_ts)
+            premium_data = self.fetch_day_data(start_dt, end_dt)
 
             if premium_data:
                 # Сохраняем данные (только для NULL записей)
@@ -537,11 +534,6 @@ class PremiumIndexLoader:
 
             logger.info(f"✅ Загружено и сохранено: {total_saved:,} записей")
 
-        # Этап 2: Проверка и заполнение пробелов (для исторических gaps в API)
-        if not shutdown_requested:
-            logger.info(f"🔍 Проверка пробелов для {self.symbol} {self.timeframe}...")
-            self.check_and_fill_gaps()
-
         logger.info(f"✅ {self.symbol} {self.timeframe} завершен")
         logger.info("")
 
@@ -607,6 +599,12 @@ Premium Index показывает разницу между ценой фьюч
         help='Принудительная перезагрузка всех данных (перезапишет существующие)'
     )
 
+    parser.add_argument(
+        '--check-nulls',
+        action='store_true',
+        help='Проверить и заполнить NULL значения (пробелы) в данных Premium Index'
+    )
+
     return parser.parse_args()
 
 
@@ -667,6 +665,8 @@ def main():
     logger.info(f"📊 Индикатор: Premium Index")
     if args.force_reload:
         logger.info(f"🔄 Режим: FORCE-RELOAD")
+    if args.check_nulls:
+        logger.info(f"🔍 Режим: CHECK-NULLS (проверка и заполнение пробелов)")
     logger.info("")
 
     # Засекаем время
@@ -695,7 +695,11 @@ def main():
                 loader.symbol_progress = f"[{symbol_idx}/{total_symbols}]"
                 loader.force_reload = args.force_reload
 
-                loader.load_premium_index_for_symbol()
+                if args.check_nulls:
+                    logger.info(f"🔍 Проверка пробелов для {symbol} {timeframe}...")
+                    loader.check_and_fill_gaps()
+                else:
+                    loader.load_premium_index_for_symbol()
 
             except Exception as e:
                 logger.error(f"❌ Ошибка обработки {symbol} на {timeframe}: {e}", exc_info=True)
