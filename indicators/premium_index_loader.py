@@ -501,7 +501,7 @@ class PremiumIndexLoader:
                 total=total_days,
                 desc=f"📅 {self.symbol} {self.symbol_progress} {self.timeframe}",
                 unit=" дней",
-                dynamic_ncols=True,
+                ncols=100,
                 leave=True
             ) as pbar:
                 while current_date.date() <= end_date.date():
