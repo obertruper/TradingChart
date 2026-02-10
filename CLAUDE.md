@@ -360,6 +360,21 @@ python3 orderbook_loader.py --force-reload          # Full reload from 2023-01-1
 # Historical data: 2023-01-18 — current date
 # Documentation: docs/ORDERBOOK_REFERENCE.md (full column reference for analysts)
 
+# Load Binance Orderbook data (cross-exchange depth from data.binance.vision)
+python3 orderbook_binance_loader.py                        # All symbols from config
+python3 orderbook_binance_loader.py --symbol BTCUSDT       # Specific symbol only
+python3 orderbook_binance_loader.py --force-reload          # Full reload from 2023-01-01
+# Note: Separate table orderbook_binance_futures_1m (NOT in indicators tables)
+# Two data sources from Binance public archives:
+#   bookDepth (2023-01-01+): depth by % levels (±1-5%, ±0.2%), ~500KB/day ZIP
+#   bookTicker (2023-05-16+): best bid/ask ticks (~4.5M/day), 50-130MB/day ZIP
+# 46 columns: 2 PK + 22 bookTicker + 22 bookDepth
+# bookTicker columns NULL before 2023-05-16, ±0.2% levels NULL before 2026-01-15
+# Daily batching: download ZIP to RAM → process → merge → INSERT...ON CONFLICT → COMMIT
+# Graceful shutdown: 1st Ctrl+C finishes current day, 2nd force exits
+# Multi-symbol: reads symbols from indicators_config.yaml → binance_orderbook.symbols
+# Documentation: docs/ORDERBOOK_BINANCE_REFERENCE.md (full column reference)
+
 # Check indicators status in database
 python3 check_indicators_status.py
 python3 check_atr_status.py  # ATR-specific status
@@ -431,7 +446,7 @@ cat INDICATORS_REFERENCE.md
   - **Volume**: VMA, OBV, VWAP, MFI
   - **Sentiment**: Long/Short Ratio, Fear & Greed Index
   - **Market Data**: Open Interest, Funding Rate, Premium Index
-  - **Market Microstructure**: Orderbook (separate table, not in indicators)
+  - **Market Microstructure**: Orderbook Bybit + Orderbook Binance (separate tables, not in indicators)
 
 - **Known Technical Debt**:
   - ~1000-1500 lines of duplicated code across loaders (logging setup, aggregation, timeframe parsing)
@@ -465,12 +480,14 @@ cat INDICATORS_REFERENCE.md
 | indicators_bybit_futures_4h | 32 KB | - | - | 0 | 261 |
 | indicators_bybit_futures_1d | 32 KB | - | - | 0 | 261 |
 | orderbook_bybit_futures_1m | ~1.73 GB | 1.68 GB | 88 MB | ~1.1M | 60 |
+| orderbook_binance_futures_1m | 0 | - | - | 0 | 46 |
 | eda | 48 KB | 0 | 48 KB | 0 | 22 |
 
 **Storage per row:**
 - indicators tables: ~4.7 KB/row (261 columns of numeric data)
 - candles tables: ~90 bytes/row (8 columns)
-- orderbook table: ~1.6 KB/row (56 numeric + 2 JSONB columns)
+- orderbook Bybit table: ~1.6 KB/row (56 numeric + 2 JSONB columns)
+- orderbook Binance table: ~0.4 KB/row (44 numeric columns)
 - backtest_ml: ~1.3 KB/row (80 columns)
 
 #### Candles Tables
@@ -558,6 +575,38 @@ cat INDICATORS_REFERENCE.md
 - **Current data**: BTCUSDT only (~1.1M rows), other symbols planned
 - **Architecture**: Separate table (not part of indicators tables), daily batching with ZIP download to RAM
 - **Documentation**: `docs/ORDERBOOK_REFERENCE.md` (full column reference), `docs/ORDERBOOK_PLANNING.md` (technical architecture)
+
+#### Binance Orderbook Table
+- **Table**: `orderbook_binance_futures_1m`
+- **Purpose**: Cross-exchange orderbook data from Binance futures (55-65% of global futures volume)
+- **Source**: Public archives from `data.binance.vision`
+- **Script**: `indicators/orderbook_binance_loader.py`
+- **Primary Key**: (timestamp, symbol) - matches candles and indicators tables
+- **Columns** (46 total: 2 key + 22 bookTicker + 22 bookDepth):
+  - **bookTicker columns** (22, NULL before 2023-05-16):
+    - **Price** (6): best_bid, best_ask, best_bid_qty, best_ask_qty, mid_price, microprice
+    - **Spread** (6): spread, spread_pct, spread_min, spread_max, spread_avg, spread_std
+    - **Volatility** (3): mid_price_range, mid_price_std, price_momentum
+    - **Activity** (3): best_bid_changes, best_ask_changes, tick_count
+    - **Quantity Stats** (4): best_bid_qty_avg, best_bid_qty_max, best_ask_qty_avg, best_ask_qty_max
+  - **bookDepth columns** (22, available from 2023-01-01):
+    - **Bid Depth** (5): bid_depth_1pct, bid_depth_2pct, bid_depth_3pct, bid_depth_4pct, bid_depth_5pct
+    - **Ask Depth** (5): ask_depth_1pct, ask_depth_2pct, ask_depth_3pct, ask_depth_4pct, ask_depth_5pct
+    - **Notional** (2): bid_notional_5pct, ask_notional_5pct
+    - **±0.2% Levels** (2, NULL before 2026-01-15): bid_depth_02pct, ask_depth_02pct
+    - **Imbalance** (4): imbalance_1pct, imbalance_2pct, imbalance_3pct, imbalance_5pct
+    - **Pressure** (2): depth_ratio, buy_pressure
+    - **Liquidity** (1): liquidity_score
+    - **Activity** (1): snapshot_count
+- **Indexes**: (symbol, timestamp), (timestamp)
+- **Data Sources**:
+  - bookDepth: `data.binance.vision/data/futures/um/daily/bookDepth/{SYMBOL}/` (2023-01-01+, ~500KB/day)
+  - bookTicker: `data.binance.vision/data/futures/um/daily/bookTicker/{SYMBOL}/` (2023-05-16+, 50-130MB/day)
+- **Aggregation**: bookDepth LAST snapshot/min + bookTicker pandas groupby agg (LAST/MIN/MAX/AVG/STD)
+- **Storage**: ~0.4 KB/row, ~0.56 MB/day per symbol, ~0.20 GB/year per symbol
+- **Architecture**: Separate table, daily batching with ZIP download to RAM, INSERT...ON CONFLICT DO UPDATE
+- **Multi-symbol**: Reads symbols from `indicators_config.yaml` → `binance_orderbook.symbols`
+- **Documentation**: `docs/ORDERBOOK_BINANCE_REFERENCE.md` (full column reference)
 
 #### Backtest Tables
 - **Table**: `backtest_ml`
@@ -676,6 +725,7 @@ TradingChart/
 │   ├── fear_and_greed_loader.py       # Fear & Greed from Alternative.me API
 │   ├── fear_and_greed_coinmarketcap_loader.py  # Market metrics from CoinMarketCap API
 │   ├── orderbook_loader.py            # Orderbook data from Bybit historical archives
+│   ├── orderbook_binance_loader.py    # Orderbook data from Binance public archives
 │   ├── database.py                    # Database operations for indicators
 │   ├── indicators_config.yaml         # Indicators configuration
 │   ├── check_indicators_status.py     # Check indicators in DB
@@ -683,7 +733,8 @@ TradingChart/
 │   ├── check_adx_status.py            # Check ADX-specific status
 │   └── INDICATORS_REFERENCE.md        # Technical indicators documentation
 ├── docs/
-│   ├── ORDERBOOK_REFERENCE.md         # Orderbook columns reference (for analysts)
+│   ├── ORDERBOOK_REFERENCE.md         # Bybit orderbook columns reference (for analysts)
+│   ├── ORDERBOOK_BINANCE_REFERENCE.md # Binance orderbook columns reference (for analysts)
 │   └── ORDERBOOK_PLANNING.md          # Orderbook technical architecture
 ├── bybit_futures_check_start_date_by_symbol/
 │   ├── check_symbols_launch.py        # Symbol launch date checker
@@ -1293,6 +1344,30 @@ GET https://pro-api.coinmarketcap.com/v1/global-metrics/quotes/latest
   - **Permissions**: Same as other indicator tables (trading_admin, trading_writer, trading_reader, trading_bot, yura_db_read)
   - **Status**: Tables created, pending initial data load via `sma_loader.py --timeframe 4h/1d`
   - **Files Modified**: `indicators/sma_loader.py`, `indicators/indicators_config.yaml`
+- **Binance Orderbook Loader** (2026-02-10):
+  - **New Feature**: Cross-exchange orderbook data from Binance futures public archives (`data.binance.vision`)
+  - **Purpose**: Binance = 55-65% of global futures volume, supplements existing Bybit orderbook data
+  - **Two Data Sources**:
+    - bookDepth (2023-01-01+): depth by % levels (±1-5%, ±0.2%), ~500KB/day ZIP, LAST snapshot/min
+    - bookTicker (2023-05-16+): best bid/ask ticks (~4.5M/day), 50-130MB/day ZIP, vectorized pandas agg
+  - **Table**: `orderbook_binance_futures_1m` (46 columns: 2 PK + 22 bookTicker + 22 bookDepth)
+  - **Architecture**:
+    - Daily batching: download → process → merge → INSERT...ON CONFLICT DO UPDATE → COMMIT per day
+    - Graceful shutdown (Ctrl+C): first press finishes current day, second force exits
+    - Resume: MAX(timestamp) check, partial day detection (if not 23:59, reload that day)
+    - Multi-symbol: reads from `indicators_config.yaml` → `binance_orderbook.symbols`
+  - **bookTicker Processing**: Vectorized pandas groupby().agg() for 4.5M rows/day
+    - LAST: best_bid/ask, mid_price, microprice, spread
+    - MIN/MAX/AVG/STD: spread
+    - Range/STD: mid_price
+    - COUNT: bid/ask changes, tick_count
+  - **bookDepth Processing**: LAST snapshot per minute, calculated metrics:
+    - imbalance = (bid - ask) / (bid + ask) at 1%, 2%, 3%, 5% levels
+    - depth_ratio, buy_pressure, liquidity_score
+  - **NULL Handling**: bookTicker columns NULL before 2023-05-16, ±0.2% levels NULL before 2026-01-15
+  - **Performance Estimate**: bookDepth-only days ~1-2s/day, both sources ~15-90s/day
+  - **Files Created**: `indicators/orderbook_binance_loader.py`
+  - **Files Modified**: `indicators/indicators_config.yaml`, `indicators/start_all_loaders.py`
 
 ### Security Notes
 - Database passwords are stored in `.env` file (not in repository)
