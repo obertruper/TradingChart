@@ -595,7 +595,7 @@ cat INDICATORS_REFERENCE.md
     - **Notional** (2): bid_notional_5pct, ask_notional_5pct
     - **±0.2% Levels** (2, NULL before 2026-01-15): bid_depth_02pct, ask_depth_02pct
     - **Imbalance** (4): imbalance_1pct, imbalance_2pct, imbalance_3pct, imbalance_5pct
-    - **Pressure** (2): depth_ratio, buy_pressure
+    - **Pressure** (2): depth_ratio, buy_pressure (DECIMAL(20,8), capped at 9999)
     - **Liquidity** (1): liquidity_score
     - **Activity** (1): snapshot_count
 - **Indexes**: (symbol, timestamp), (timestamp)
