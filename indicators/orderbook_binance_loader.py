@@ -189,8 +189,8 @@ CREATE TABLE IF NOT EXISTS {TABLE_NAME} (
     imbalance_5pct DECIMAL(10,6),
 
     -- PRESSURE / RATIO
-    depth_ratio DECIMAL(10,6),
-    buy_pressure DECIMAL(10,6),
+    depth_ratio DECIMAL(20,8),
+    buy_pressure DECIMAL(20,8),
 
     -- LIQUIDITY
     liquidity_score DECIMAL(20,4),
@@ -348,11 +348,17 @@ def process_book_depth(zip_bytes: io.BytesIO) -> Dict[datetime, dict]:
             total = bid_val + ask_val
             metrics[f'imbalance_{pct_label}'] = (bid_val - ask_val) / total if total > 0 else None
 
-        # depth_ratio = bid_5pct / ask_5pct
-        metrics['depth_ratio'] = bid_5 / ask_5 if ask_5 > 0 else None
+        # depth_ratio = bid_5pct / ask_5pct (cap at 9999 for extreme cases)
+        if ask_5 > 0:
+            metrics['depth_ratio'] = min(bid_5 / ask_5, 9999.0)
+        else:
+            metrics['depth_ratio'] = None
 
-        # buy_pressure = bid_1pct / ask_1pct
-        metrics['buy_pressure'] = bid_1 / ask_1 if ask_1 > 0 else None
+        # buy_pressure = bid_1pct / ask_1pct (cap at 9999 for extreme cases)
+        if ask_1 > 0:
+            metrics['buy_pressure'] = min(bid_1 / ask_1, 9999.0)
+        else:
+            metrics['buy_pressure'] = None
 
         # liquidity_score = bid_notional_5pct + ask_notional_5pct
         bid_not = metrics.get('bid_notional_5pct', 0) or 0
