@@ -66,6 +66,7 @@ LOADER_MAPPING = {
     'ichimoku': 'ichimoku_loader.py',
     'hv': 'hv_loader.py',
     'supertrend': 'supertrend_loader.py',
+    'bybit_orderbook': 'orderbook_loader.py',
     'binance_orderbook': 'orderbook_binance_loader.py',
 
     # Специальные случаи (не стандартное название файла)
