@@ -841,12 +841,19 @@ def main():
 
     end_time = datetime.now()
     duration = end_time - start_time
+    total_seconds = int(duration.total_seconds())
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours > 0:
+        time_str = f"{hours}ч {minutes}м {seconds}с"
+    elif minutes > 0:
+        time_str = f"{minutes}м {seconds}с"
+    else:
+        time_str = f"{seconds}с"
 
     logger.info(f"\n{'#'*80}")
-    logger.info(f"# ЗАГРУЗКА ЗАВЕРШЕНА")
+    logger.info(f"# ICHIMOKU CLOUD LOADER — Завершено за {time_str}")
     logger.info(f"{'#'*80}")
-    logger.info(f"⏱️  Время завершения: {end_time}")
-    logger.info(f"⏱️  Общая продолжительность: {duration}")
     logger.info(f"📊 Обработано символов: {len(symbols)}")
     logger.info(f"⏰ Обработано таймфреймов: {len(timeframes)}")
     logger.info(f"⚙️  Конфигураций Ichimoku: {len(ICHIMOKU_CONFIGS)}")
