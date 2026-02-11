@@ -111,7 +111,8 @@ class BollingerBandsLoader:
     """
 
     def __init__(self, symbol: str = 'BTCUSDT', batch_days: int = 1,
-                 lookback_multiplier: int = 3, squeeze_threshold: float = 5.0):
+                 lookback_multiplier: int = 3, squeeze_threshold: float = 5.0,
+                 force_reload: bool = False, check_nulls: bool = False):
         """
         Инициализация загрузчика
 
@@ -120,12 +121,16 @@ class BollingerBandsLoader:
             batch_days: Размер батча в днях (по умолчанию 1)
             lookback_multiplier: Множитель для lookback периода (по умолчанию 3)
             squeeze_threshold: Порог для определения squeeze в % (по умолчанию 5.0)
+            force_reload: Полный пересчёт всех данных
+            check_nulls: Проверить и заполнить NULL значения в середине данных
         """
         self.symbol = symbol
         self.symbol_progress = ""  # Будет установлено из main() для отображения прогресса
         self.batch_days = batch_days
         self.lookback_multiplier = lookback_multiplier
         self.squeeze_threshold = squeeze_threshold
+        self.force_reload = force_reload
+        self.check_nulls = check_nulls
         self.db = DatabaseConnection()
         self.logger = logging.getLogger(__name__)
 
@@ -338,6 +343,63 @@ class BollingerBandsLoader:
 
         # Если ни одна конфигурация не обработана
         return None
+
+    def get_null_timestamps(self, timeframe: str, configs: List[Dict]) -> set:
+        """
+        Находит timestamps где хотя бы одна BB колонка IS NULL,
+        исключая естественные NULL в начале данных.
+
+        Args:
+            timeframe: Таймфрейм
+            configs: Список конфигураций BB
+
+        Returns:
+            set timestamps с NULL значениями
+        """
+        table_name = f"indicators_bybit_futures_{timeframe}"
+
+        # Собираем все колонки upper для всех конфигов
+        all_upper_cols = []
+        for config in configs:
+            columns = self.get_column_names(config['period'], config['std_dev'], config['base'])
+            all_upper_cols.append(columns['upper'])
+
+        null_conditions = ' OR '.join([f'{col} IS NULL' for col in all_upper_cols])
+
+        # Определяем границу естественных NULL (max_period * timeframe_minutes)
+        max_period = max(config['period'] for config in configs)
+        timeframe_minutes_map = {'1m': 1, '15m': 15, '1h': 60, '4h': 240, '1d': 1440}
+        minutes = timeframe_minutes_map.get(timeframe, 1)
+
+        with self.db.get_connection() as conn:
+            cur = conn.cursor()
+
+            # Минимальная дата данных
+            cur.execute(f"""
+                SELECT MIN(timestamp)
+                FROM {table_name}
+                WHERE symbol = %s
+            """, (self.symbol,))
+            result = cur.fetchone()
+            if not result or not result[0]:
+                cur.close()
+                return set()
+
+            from datetime import timedelta
+            boundary = result[0] + timedelta(minutes=max_period * minutes)
+
+            # Ищем NULL после границы
+            cur.execute(f"""
+                SELECT timestamp
+                FROM {table_name}
+                WHERE symbol = %s
+                  AND ({null_conditions})
+                  AND timestamp >= %s
+            """, (self.symbol, boundary))
+
+            timestamps = {row[0] for row in cur.fetchall()}
+            cur.close()
+            return timestamps
 
     def get_max_lookback_period(self, configs: List[Dict]) -> int:
         """
@@ -644,25 +706,41 @@ class BollingerBandsLoader:
         for config in configs:
             self.ensure_columns_exist(timeframe, config)
 
-        # Получаем MIN(last_date) среди всех конфигураций (для синхронизации)
-        last_date = self.get_all_last_processed_dates(timeframe, configs)
+        # Определяем режим и начальную дату
+        null_timestamps = None
 
-        if last_date:
-            self.logger.info(f"📌 Последняя обработанная дата (MIN среди конфигураций): {last_date}")
-            # Начинаем со следующего периода
-            if timeframe == '1m':
-                start_date = last_date + timedelta(minutes=1)
-            elif timeframe == '15m':
-                start_date = last_date + timedelta(minutes=15)
-            elif timeframe == '1h':
-                start_date = last_date + timedelta(hours=1)
-            elif timeframe == '4h':
-                start_date = last_date + timedelta(hours=4)
-            elif timeframe == '1d':
-                start_date = last_date + timedelta(days=1)
-        else:
+        if self.force_reload:
             start_date = min_date
-            self.logger.info(f"📌 Начинаем с начала: {start_date}")
+            self.logger.info(f"🔄 Режим force-reload: пересчёт с начала ({start_date})")
+        elif self.check_nulls:
+            # Режим --check-nulls: ищем NULL после естественной границы
+            null_ts = self.get_null_timestamps(timeframe, configs)
+            if not null_ts:
+                self.logger.info(f"✅ Все BB данные актуальны для {timeframe} — пропускаем")
+                return
+            null_timestamps = null_ts
+            start_date = min(null_ts).replace(hour=0, minute=0, second=0, microsecond=0)
+            self.logger.info(f"🔍 Режим check-nulls: найдено {len(null_ts):,} NULL записей (от {start_date.strftime('%Y-%m-%d')})")
+        else:
+            # Режим по умолчанию: инкрементально
+            last_date = self.get_all_last_processed_dates(timeframe, configs)
+
+            if last_date:
+                self.logger.info(f"📌 Последняя обработанная дата (MIN среди конфигураций): {last_date}")
+                # Начинаем со следующего периода
+                if timeframe == '1m':
+                    start_date = last_date + timedelta(minutes=1)
+                elif timeframe == '15m':
+                    start_date = last_date + timedelta(minutes=15)
+                elif timeframe == '1h':
+                    start_date = last_date + timedelta(hours=1)
+                elif timeframe == '4h':
+                    start_date = last_date + timedelta(hours=4)
+                elif timeframe == '1d':
+                    start_date = last_date + timedelta(days=1)
+            else:
+                start_date = min_date
+                self.logger.info(f"📌 Начинаем с начала: {start_date}")
 
         if start_date >= max_date:
             self.logger.info(f"✅ Все конфигурации уже актуальны")
@@ -742,6 +820,9 @@ class BollingerBandsLoader:
                     # Подготавливаем данные для UPDATE
                     update_data = []
                     for ts in df_batch.index[mask]:
+                        # В режиме check-nulls записываем только NULL timestamps
+                        if null_timestamps is not None and ts not in null_timestamps:
+                            continue
                         # Проверяем что основные значения валидны (не NaN и не infinity)
                         if np.isfinite(bb_data['upper'].loc[ts]):
                             # Для percent_b и bandwidth используем None если значение не валидно
@@ -820,6 +901,10 @@ def main():
     parser.add_argument('--timeframes', type=str, help='Таймфреймы через запятую (например, 1m,15m,1h)')
     parser.add_argument('--batch-days', type=int, default=1, help='Размер батча в днях (по умолчанию 1)')
     parser.add_argument('--config', type=str, help='Конкретная конфигурация (например, classic)')
+    parser.add_argument('--force-reload', action='store_true',
+                       help='Полный пересчёт всех данных с начала')
+    parser.add_argument('--check-nulls', action='store_true',
+                       help='Проверить и заполнить NULL значения в середине данных')
 
     args = parser.parse_args()
 
@@ -870,6 +955,10 @@ def main():
     logger.info(f"🎯 Обработка символов: {symbols}")
     logger.info(f"📊 Конфигурации: {[c['name'] for c in configs]}")
     logger.info(f"📦 Batch size: {args.batch_days} дней")
+    if args.force_reload:
+        logger.info(f"🔄 Режим FORCE RELOAD: все данные будут пересчитаны с начала")
+    elif args.check_nulls:
+        logger.info(f"🔍 Режим CHECK-NULLS: поиск и заполнение NULL значений")
 
     # Цикл по всем символам
     total_symbols = len(symbols)
@@ -879,7 +968,8 @@ def main():
         logger.info(f"{'='*80}\n")
 
         # Создаём загрузчик для текущего символа
-        loader = BollingerBandsLoader(symbol=symbol, batch_days=args.batch_days)
+        loader = BollingerBandsLoader(symbol=symbol, batch_days=args.batch_days,
+                                      force_reload=args.force_reload, check_nulls=args.check_nulls)
         loader.symbol_progress = f"[{idx}/{total_symbols}] "
 
         # Обрабатываем каждый таймфрейм

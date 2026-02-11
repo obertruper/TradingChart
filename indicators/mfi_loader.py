@@ -43,7 +43,8 @@ logger = logging.getLogger(__name__)
 class MFILoader:
     """Загрузчик индикатора MFI (Money Flow Index) для торговых данных"""
 
-    def __init__(self, symbol: str, timeframe: str, config: dict, force_reload: bool = False):
+    def __init__(self, symbol: str, timeframe: str, config: dict,
+                 force_reload: bool = False, check_nulls: bool = False):
         """
         Инициализация загрузчика MFI
 
@@ -52,11 +53,14 @@ class MFILoader:
             timeframe: Таймфрейм (1m, 15m, 1h)
             config: Конфигурация из indicators_config.yaml
             force_reload: Пересчитать все данные с начала (по умолчанию False)
+            check_nulls: Проверить и заполнить NULL значения в середине данных
         """
         self.symbol = symbol
         self.timeframe = timeframe
         self.timeframe_minutes = self._parse_timeframe(timeframe)
         self.force_reload = force_reload
+        self.check_nulls = check_nulls
+        self._null_timestamps = None  # Устанавливается при check_nulls
 
         # Настройки из конфига
         mfi_config = config['indicators']['mfi']
@@ -138,6 +142,38 @@ class MFILoader:
                     logger.info("✅ Все колонки MFI созданы")
                 else:
                     logger.info("✅ Все необходимые колонки уже существуют")
+
+    def get_null_timestamps(self) -> set:
+        """
+        Находит timestamps где хотя бы одна MFI колонка IS NULL,
+        исключая естественные NULL в начале данных.
+        """
+        mfi_cols = [f'mfi_{p}' for p in self.periods]
+        null_conditions = ' OR '.join([f'{col} IS NULL' for col in mfi_cols])
+        max_period = max(self.periods)
+
+        with self.db.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"""
+                    SELECT MIN(timestamp)
+                    FROM {self.indicators_table}
+                    WHERE symbol = %s
+                """, (self.symbol,))
+                result = cur.fetchone()
+                if not result or not result[0]:
+                    return set()
+
+                boundary = result[0] + timedelta(minutes=max_period * self.timeframe_minutes)
+
+                cur.execute(f"""
+                    SELECT timestamp
+                    FROM {self.indicators_table}
+                    WHERE symbol = %s
+                      AND ({null_conditions})
+                      AND timestamp >= %s
+                """, (self.symbol, boundary))
+
+                return {row[0] for row in cur.fetchall()}
 
     def get_date_range(self):
         """
@@ -436,6 +472,9 @@ class MFILoader:
         # Группируем данные по (timestamp, symbol) для батчевой вставки
         records_by_time = {}
         for timestamp, row in df_batch.iterrows():
+            # В режиме check-nulls записываем только NULL timestamps
+            if self._null_timestamps is not None and timestamp not in self._null_timestamps:
+                continue
             key = (timestamp, self.symbol)
             if key not in records_by_time:
                 records_by_time[key] = {
@@ -498,7 +537,24 @@ class MFILoader:
         self.ensure_columns_exist()
 
         # 2. Определяем диапазон дат
-        start_date, end_date = self.get_date_range()
+        if self.check_nulls:
+            # Режим --check-nulls: ищем NULL
+            null_ts = self.get_null_timestamps()
+            if not null_ts:
+                logger.info(f"✅ Все MFI данные актуальны — пропускаем")
+                return
+            self._null_timestamps = null_ts
+            logger.info(f"🔍 Режим check-nulls: найдено {len(null_ts):,} NULL записей")
+
+            # Получаем end_date из candles
+            with self.db.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(f"SELECT MAX(timestamp) FROM {self.candles_table} WHERE symbol = %s", (self.symbol,))
+                    max_candle = cur.fetchone()[0]
+            start_date = min(null_ts).replace(hour=0, minute=0, second=0, microsecond=0)
+            end_date = max_candle
+        else:
+            start_date, end_date = self.get_date_range()
 
         if start_date is None or end_date is None:
             logger.warning(f"⚠️  Нет данных для обработки: {self.symbol}")
@@ -621,6 +677,12 @@ def parse_args():
         help='Пересчитать все данные с начала (заполнить пробелы внутри истории)'
     )
 
+    parser.add_argument(
+        '--check-nulls',
+        action='store_true',
+        help='Проверить и заполнить NULL значения в середине данных'
+    )
+
     return parser.parse_args()
 
 
@@ -683,12 +745,15 @@ def main():
         config['indicators']['mfi']['batch_days'] = args.batch_days
         logger.info(f"📦 Размер батча из аргументов: {args.batch_days} дней")
 
-    # 7. Режим force_reload
+    # 7. Режим force_reload / check_nulls
     force_reload = args.force_reload if hasattr(args, 'force_reload') else False
+    check_nulls = args.check_nulls if hasattr(args, 'check_nulls') else False
     if force_reload:
         logger.info("🔄 РЕЖИМ FORCE RELOAD АКТИВИРОВАН")
         logger.info("   Будут пересчитаны ВСЕ данные с начала истории")
-        logger.info("   Это заполнит пробелы внутри данных и обновит существующие значения")
+        logger.info("")
+    elif check_nulls:
+        logger.info("🔍 Режим CHECK-NULLS: поиск и заполнение NULL значений")
         logger.info("")
 
     logger.info(f"📊 Индикатор: MFI")
@@ -707,7 +772,7 @@ def main():
         for timeframe in timeframes:
             try:
                 # Создаем экземпляр загрузчика с force_reload
-                loader = MFILoader(symbol, timeframe, config, force_reload=force_reload)
+                loader = MFILoader(symbol, timeframe, config, force_reload=force_reload, check_nulls=check_nulls)
                 loader.symbol_progress = f"[{symbol_idx}/{total_symbols}]"
 
                 # Запускаем загрузку

@@ -70,17 +70,19 @@ logger = setup_logging()
 class StochasticLoader:
     """Загрузчик Stochastic Oscillator для разных таймфреймов"""
 
-    def __init__(self, symbol: str = 'BTCUSDT', force_reload: bool = False):
+    def __init__(self, symbol: str = 'BTCUSDT', force_reload: bool = False, check_nulls: bool = False):
         """
         Инициализация загрузчика
 
         Args:
             symbol: Торговая пара
             force_reload: Принудительный пересчет всех данных с начала истории
+            check_nulls: Проверить и заполнить NULL значения в середине данных
         """
         self.db = DatabaseConnection()
         self.symbol = symbol
         self.force_reload = force_reload
+        self.check_nulls = check_nulls
         self.symbol_progress = ""  # Для отображения прогресса при multi-symbol
         self.config = self.load_config()
 
@@ -300,6 +302,54 @@ class StochasticLoader:
 
                 result = cur.fetchone()
                 return result[0] if result[0] else None
+            finally:
+                cur.close()
+
+    def get_null_timestamps_for_config(self, timeframe: str, config: Dict) -> set:
+        """
+        Находит timestamps с NULL значениями для конкретной конфигурации Stochastic.
+        Исключает естественные NULL в начале данных (недостаточно lookback).
+
+        Args:
+            timeframe: Таймфрейм
+            config: Конфигурация Stochastic
+
+        Returns:
+            set: Множество timestamps с NULL
+        """
+        table_name = self.get_table_name(timeframe)
+        k_period = config['k_period']
+        k_smooth = config['k_smooth']
+        d_period = config['d_period']
+        base_name = f"stoch_{k_period}_{k_smooth}_{d_period}"
+        col_k = f"{base_name}_k"
+        col_d = f"{base_name}_d"
+
+        # Natural boundary: k_period + k_smooth + d_period - 2 periods
+        max_lookback = k_period + k_smooth + d_period - 2
+        minutes = self.timeframe_minutes[timeframe]
+
+        with self.db.get_connection() as conn:
+            cur = conn.cursor()
+            try:
+                cur.execute(f"""
+                    SELECT MIN(timestamp) FROM {table_name}
+                    WHERE symbol = %s
+                """, (self.symbol,))
+                min_date = cur.fetchone()[0]
+                if not min_date:
+                    return set()
+
+                boundary = min_date + timedelta(minutes=max_lookback * minutes)
+
+                cur.execute(f"""
+                    SELECT timestamp FROM {table_name}
+                    WHERE symbol = %s
+                      AND timestamp >= %s
+                      AND ({col_k} IS NULL OR {col_d} IS NULL)
+                """, (self.symbol, boundary))
+
+                return {row[0] for row in cur.fetchall()}
             finally:
                 cur.close()
 
@@ -553,10 +603,20 @@ class StochasticLoader:
             logger.info(f"📊 Обработка конфигурации: {config['name']} ({config['k_period']}, {config['k_smooth']}, {config['d_period']})")
             logger.info(f"{'='*80}")
 
+            null_timestamps = None  # None = записываем всё, set() = только NULL timestamps
+
             # Если force_reload - всегда начинаем с начала
             if self.force_reload:
                 start_date = min_date
                 logger.info(f"🔄 Stochastic {config['name']}: FORCE RELOAD - пересчет с начала истории")
+            elif self.check_nulls:
+                null_ts = self.get_null_timestamps_for_config(timeframe, config)
+                if not null_ts:
+                    logger.info(f"  ✅ Stochastic {config['name']}: все данные актуальны — пропускаем")
+                    continue
+                null_timestamps = null_ts
+                logger.info(f"🔍 Stochastic {config['name']}: найдено {len(null_ts)} NULL записей")
+                start_date = min(null_ts).replace(hour=0, minute=0, second=0, microsecond=0)
             else:
                 # Находим последнюю дату с данными для этой конфигурации
                 last_date = self.get_last_stochastic_date(timeframe, config)
@@ -635,6 +695,16 @@ class StochasticLoader:
 
                         # Фильтруем только целевой диапазон (без lookback)
                         df_to_save = df[df['timestamp'] >= current_date].copy()
+
+                        # В режиме check_nulls записываем только NULL timestamps
+                        if null_timestamps is not None and not df_to_save.empty:
+                            df_to_save = df_to_save[df_to_save['timestamp'].isin(null_timestamps)]
+
+                        if df_to_save.empty:
+                            current_date += timedelta(days=batch_days)
+                            processed_days += batch_days
+                            pbar.update(min(batch_days, total_days - processed_days + batch_days))
+                            continue
 
                         # Сохраняем с retry логикой
                         max_retries = 3
@@ -722,17 +792,19 @@ class StochasticLoader:
 class WilliamsRLoader:
     """Загрузчик Williams %R для разных таймфреймов"""
 
-    def __init__(self, symbol: str = 'BTCUSDT', force_reload: bool = False):
+    def __init__(self, symbol: str = 'BTCUSDT', force_reload: bool = False, check_nulls: bool = False):
         """
         Инициализация загрузчика
 
         Args:
             symbol: Торговая пара
             force_reload: Принудительный пересчет всех данных с начала истории
+            check_nulls: Проверить и заполнить NULL значения в середине данных
         """
         self.db = DatabaseConnection()
         self.symbol = symbol
         self.force_reload = force_reload
+        self.check_nulls = check_nulls
         self.symbol_progress = ""  # Для отображения прогресса при multi-symbol
         self.config = self.load_config()
 
@@ -902,6 +974,46 @@ class WilliamsRLoader:
 
                 result = cur.fetchone()
                 return result[0] if result[0] else None
+            finally:
+                cur.close()
+
+    def get_null_timestamps_for_period(self, timeframe: str, period: int) -> set:
+        """
+        Находит timestamps с NULL значениями для конкретного периода Williams %R.
+        Исключает естественные NULL в начале данных (недостаточно lookback).
+
+        Args:
+            timeframe: Таймфрейм
+            period: Период Williams %R
+
+        Returns:
+            set: Множество timestamps с NULL
+        """
+        table_name = self.get_table_name(timeframe)
+        col_name = f"williamsr_{period}"
+        minutes = self.timeframe_minutes[timeframe]
+
+        with self.db.get_connection() as conn:
+            cur = conn.cursor()
+            try:
+                cur.execute(f"""
+                    SELECT MIN(timestamp) FROM {table_name}
+                    WHERE symbol = %s
+                """, (self.symbol,))
+                min_date = cur.fetchone()[0]
+                if not min_date:
+                    return set()
+
+                boundary = min_date + timedelta(minutes=period * minutes)
+
+                cur.execute(f"""
+                    SELECT timestamp FROM {table_name}
+                    WHERE symbol = %s
+                      AND timestamp >= %s
+                      AND {col_name} IS NULL
+                """, (self.symbol, boundary))
+
+                return {row[0] for row in cur.fetchall()}
             finally:
                 cur.close()
 
@@ -1118,10 +1230,20 @@ class WilliamsRLoader:
             logger.info(f"📊 Обработка Williams %R period={period}")
             logger.info(f"{'='*80}")
 
+            null_timestamps = None  # None = записываем всё, set() = только NULL timestamps
+
             # Если force_reload - всегда начинаем с начала
             if self.force_reload:
                 start_date = min_date
                 logger.info(f"🔄 Williams %R period={period}: FORCE RELOAD - пересчет с начала истории")
+            elif self.check_nulls:
+                null_ts = self.get_null_timestamps_for_period(timeframe, period)
+                if not null_ts:
+                    logger.info(f"  ✅ Williams %R period={period}: все данные актуальны — пропускаем")
+                    continue
+                null_timestamps = null_ts
+                logger.info(f"🔍 Williams %R period={period}: найдено {len(null_ts)} NULL записей")
+                start_date = min(null_ts).replace(hour=0, minute=0, second=0, microsecond=0)
             else:
                 # Находим последнюю дату с данными для этого периода
                 last_date = self.get_last_williams_r_date(timeframe, period)
@@ -1189,6 +1311,16 @@ class WilliamsRLoader:
 
                         # Фильтруем только целевой диапазон (без lookback)
                         df_to_save = df[df['timestamp'] >= current_date].copy()
+
+                        # В режиме check_nulls записываем только NULL timestamps
+                        if null_timestamps is not None and not df_to_save.empty:
+                            df_to_save = df_to_save[df_to_save['timestamp'].isin(null_timestamps)]
+
+                        if df_to_save.empty:
+                            current_date += timedelta(days=batch_days)
+                            processed_days += batch_days
+                            pbar.update(min(batch_days, total_days - processed_days + batch_days))
+                            continue
 
                         # Сохраняем с retry логикой
                         max_retries = 3
@@ -1285,6 +1417,8 @@ def main():
                        help='Какой индикатор загружать: stochastic, williams, или both (по умолчанию both)')
     parser.add_argument('--force-reload', action='store_true',
                        help='Принудительный пересчет ВСЕХ данных с начала истории')
+    parser.add_argument('--check-nulls', action='store_true',
+                       help='Проверить и заполнить NULL значения в середине данных')
 
     args = parser.parse_args()
 
@@ -1307,6 +1441,8 @@ def main():
     logger.info(f"📊 Индикаторы: {args.indicator}")
     if args.force_reload:
         logger.info(f"🔄 Режим FORCE RELOAD: все данные будут пересчитаны с начала истории")
+    if args.check_nulls:
+        logger.info(f"🔍 Режим CHECK NULLS: поиск и заполнение NULL значений в середине данных")
 
     # Цикл по всем символам
     total_symbols = len(symbols)
@@ -1322,7 +1458,7 @@ def main():
                 logger.info(f"📊 Загрузка Stochastic Oscillator для {symbol}")
                 logger.info(f"{'#'*80}\n")
 
-                stoch_loader = StochasticLoader(symbol=symbol, force_reload=args.force_reload)
+                stoch_loader = StochasticLoader(symbol=symbol, force_reload=args.force_reload, check_nulls=args.check_nulls)
                 stoch_loader.symbol_progress = f"[{idx}/{total_symbols}]"
                 stoch_loader.run(timeframe=args.timeframe, batch_days=args.batch_days)
 
@@ -1332,7 +1468,7 @@ def main():
                 logger.info(f"📊 Загрузка Williams %R для {symbol}")
                 logger.info(f"{'#'*80}\n")
 
-                williams_loader = WilliamsRLoader(symbol=symbol, force_reload=args.force_reload)
+                williams_loader = WilliamsRLoader(symbol=symbol, force_reload=args.force_reload, check_nulls=args.check_nulls)
                 williams_loader.symbol_progress = f"[{idx}/{total_symbols}]"
                 williams_loader.run(timeframe=args.timeframe, batch_days=args.batch_days)
 

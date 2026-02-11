@@ -60,17 +60,19 @@ logger = setup_logging()
 class VMALoader:
     """Загрузчик VMA (Volume Moving Average) для разных таймфреймов"""
 
-    def __init__(self, symbol: str = 'BTCUSDT', force_reload: bool = False):
+    def __init__(self, symbol: str = 'BTCUSDT', force_reload: bool = False, check_nulls: bool = False):
         """
         Инициализация загрузчика
 
         Args:
             symbol: Торговая пара
             force_reload: Принудительный пересчет всех данных с начала истории
+            check_nulls: Проверить и заполнить NULL значения в середине данных
         """
         self.db = DatabaseConnection()
         self.symbol = symbol
         self.force_reload = force_reload
+        self.check_nulls = check_nulls
         self.symbol_progress = ""  # Будет установлено из main() для отображения прогресса
         self.config = self.load_config()
 
@@ -493,6 +495,49 @@ class VMALoader:
             finally:
                 cur.close()
 
+    def get_null_timestamps_for_period(self, timeframe: str, period: int) -> set:
+        """
+        Находит timestamps где vma_{period} IS NULL, исключая естественные NULL в начале данных.
+
+        Args:
+            timeframe: Таймфрейм
+            period: Период VMA
+
+        Returns:
+            set timestamps с NULL значениями
+        """
+        table_name = f'indicators_bybit_futures_{timeframe}'
+        column = f'vma_{period}'
+        minutes = self.timeframe_minutes.get(timeframe, 1)
+
+        with self.db.get_connection() as conn:
+            cur = conn.cursor()
+
+            # Находим минимальную дату данных
+            cur.execute(f"""
+                SELECT MIN(timestamp)
+                FROM {table_name}
+                WHERE symbol = %s
+            """, (self.symbol,))
+            result = cur.fetchone()
+            if not result or not result[0]:
+                return set()
+            min_date = result[0]
+
+            # Граница естественных NULL: min_date + period * minutes
+            boundary = min_date + timedelta(minutes=period * minutes)
+
+            # Ищем NULL после границы
+            cur.execute(f"""
+                SELECT timestamp
+                FROM {table_name}
+                WHERE symbol = %s
+                  AND {column} IS NULL
+                  AND timestamp >= %s
+            """, (self.symbol, boundary))
+
+            return {row[0] for row in cur.fetchall()}
+
     def calculate_and_save_vma(self, timeframe: str, periods: List[int],
                                batch_days: int = 1):
         """
@@ -520,20 +565,29 @@ class VMALoader:
             logger.info(f"📈 Обработка VMA_{period} ({idx + 1}/{len(periods)}):")
             logger.info(f"{'─'*50}")
 
-            # Если force_reload - всегда начинаем с начала
+            # Определяем режим и начальную дату
+            null_timestamps = None
+
             if self.force_reload:
                 start_date = min_date
                 logger.info(f"  🔄 VMA_{period}: FORCE RELOAD - пересчет с начала истории")
+            elif self.check_nulls:
+                # Режим --check-nulls: ищем NULL после естественной границы
+                null_ts = self.get_null_timestamps_for_period(timeframe, period)
+                if not null_ts:
+                    logger.info(f"  ✅ VMA_{period}: все данные актуальны — пропускаем")
+                    continue
+                null_timestamps = null_ts
+                start_date = min(null_ts).replace(hour=0, minute=0, second=0, microsecond=0)
+                logger.info(f"  🔍 VMA_{period}: найдено {len(null_ts):,} NULL записей (от {start_date.strftime('%Y-%m-%d')})")
             else:
-                # Находим последнюю дату для ЭТОГО периода
+                # Режим по умолчанию: инкрементально от последней даты
                 last_date = self.get_last_vma_date(timeframe, period)
 
                 if last_date is None:
-                    # Колонка пустая, начинаем с начала данных
                     start_date = min_date
                     logger.info(f"  📝 VMA_{period}: нет данных (загрузка с начала)")
                 else:
-                    # Перезаписываем последний день (на случай обрыва)
                     start_date = last_date.replace(hour=0, minute=0, second=0, microsecond=0)
                     days_behind = (end_date - last_date).days
                     logger.info(f"  ✅ VMA_{period}: последняя дата {last_date.strftime('%Y-%m-%d %H:%M')} "
@@ -584,6 +638,10 @@ class VMALoader:
 
                     # Удаляем строки где VMA = NaN (недостаточно данных)
                     df_to_save = df_to_save.dropna(subset=[f'vma_{period}'])
+
+                    # В режиме check-nulls записываем только NULL timestamps
+                    if null_timestamps is not None and not df_to_save.empty:
+                        df_to_save = df_to_save[df_to_save['timestamp'].isin(null_timestamps)]
 
                     if not df_to_save.empty:
                         # Сохраняем в БД с retry
@@ -702,6 +760,8 @@ def main():
                       help='Периоды VMA через запятую (10,20,50)')
     parser.add_argument('--force-reload', action='store_true',
                       help='Принудительный пересчет ВСЕХ данных с начала истории')
+    parser.add_argument('--check-nulls', action='store_true',
+                      help='Проверить и заполнить NULL значения в середине данных')
 
     args = parser.parse_args()
 
@@ -730,6 +790,8 @@ def main():
     logger.info(f"🎯 Обработка символов: {symbols}")
     if args.force_reload:
         logger.info(f"🔄 Режим FORCE RELOAD: все данные будут пересчитаны с начала истории")
+    elif args.check_nulls:
+        logger.info(f"🔍 Режим CHECK-NULLS: поиск и заполнение NULL значений")
 
     # Засекаем время начала обработки
     start_time = time.time()
@@ -743,7 +805,7 @@ def main():
 
         try:
             # Создаем и запускаем загрузчик для текущего символа
-            loader = VMALoader(symbol=symbol, force_reload=args.force_reload)
+            loader = VMALoader(symbol=symbol, force_reload=args.force_reload, check_nulls=args.check_nulls)
             loader.symbol_progress = f"[{idx}/{total_symbols}] "
 
             # Если указан конкретный таймфрейм, обрабатываем только его

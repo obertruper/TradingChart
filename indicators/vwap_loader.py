@@ -44,7 +44,8 @@ logger = logging.getLogger(__name__)
 class VWAPLoader:
     """Загрузчик индикатора VWAP для торговых данных"""
 
-    def __init__(self, symbol: str, timeframe: str, config: dict):
+    def __init__(self, symbol: str, timeframe: str, config: dict,
+                 force_reload: bool = False, check_nulls: bool = False):
         """
         Инициализация загрузчика VWAP
 
@@ -52,10 +53,15 @@ class VWAPLoader:
             symbol: Торговая пара (например, BTCUSDT)
             timeframe: Таймфрейм (1m, 15m, 1h)
             config: Конфигурация из indicators_config.yaml
+            force_reload: Полный пересчёт всех данных
+            check_nulls: Проверить и заполнить NULL значения в середине данных
         """
         self.symbol = symbol
         self.timeframe = timeframe
         self.timeframe_minutes = self._parse_timeframe(timeframe)
+        self.force_reload = force_reload
+        self.check_nulls = check_nulls
+        self._null_timestamps = None  # Устанавливается в load_vwap_for_symbol при check_nulls
 
         # Настройки из конфига
         vwap_config = config['indicators']['vwap']
@@ -143,6 +149,46 @@ class VWAPLoader:
                     logger.info("✅ Все колонки VWAP созданы")
                 else:
                     logger.info("✅ Все необходимые колонки уже существуют")
+
+    def get_null_timestamps(self) -> set:
+        """
+        Находит timestamps где хотя бы одна VWAP колонка IS NULL,
+        исключая естественные NULL в начале данных.
+        """
+        # Собираем все VWAP колонки
+        vwap_cols = []
+        if self.daily_enabled:
+            vwap_cols.append('vwap_daily')
+        for period in self.rolling_periods:
+            vwap_cols.append(f'vwap_{period}')
+
+        null_conditions = ' OR '.join([f'{col} IS NULL' for col in vwap_cols])
+
+        # Граница естественных NULL: max_rolling_period * timeframe_minutes
+        max_period = max(self.rolling_periods) if self.rolling_periods else 1
+
+        with self.db.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"""
+                    SELECT MIN(timestamp)
+                    FROM {self.indicators_table}
+                    WHERE symbol = %s
+                """, (self.symbol,))
+                result = cur.fetchone()
+                if not result or not result[0]:
+                    return set()
+
+                boundary = result[0] + timedelta(minutes=max_period * self.timeframe_minutes)
+
+                cur.execute(f"""
+                    SELECT timestamp
+                    FROM {self.indicators_table}
+                    WHERE symbol = %s
+                      AND ({null_conditions})
+                      AND timestamp >= %s
+                """, (self.symbol, boundary))
+
+                return {row[0] for row in cur.fetchall()}
 
     def get_date_range(self):
         """
@@ -433,6 +479,9 @@ class VWAPLoader:
         # Подготавливаем данные для UPDATE
         update_data = []
         for timestamp, row in df_batch.iterrows():
+            # В режиме check-nulls записываем только NULL timestamps
+            if self._null_timestamps is not None and timestamp not in self._null_timestamps:
+                continue
             for col in columns:
                 if col in row and pd.notna(row[col]):
                     update_data.append({
@@ -480,11 +529,50 @@ class VWAPLoader:
         self.ensure_columns_exist()
 
         # 2. Определяем диапазон дат
-        start_date, end_date = self.get_date_range()
+        if self.force_reload or self.check_nulls:
+            # Для force-reload и check-nulls нужен полный диапазон candles
+            with self.db.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(f"""
+                        SELECT MIN(timestamp), MAX(timestamp)
+                        FROM {self.candles_table}
+                        WHERE symbol = %s
+                    """, (self.symbol,))
+                    min_candle, max_candle = cur.fetchone()
 
-        if start_date is None or end_date is None:
-            logger.warning(f"⚠️  Нет данных для обработки: {self.symbol}")
-            return
+            if not min_candle or not max_candle:
+                logger.warning(f"⚠️  Нет данных для обработки: {self.symbol}")
+                return
+
+            # Выравниваем end_date
+            end_date = max_candle
+            if self.timeframe == '15m':
+                end_date = end_date.replace(minute=(end_date.minute // 15) * 15, second=0, microsecond=0)
+            elif self.timeframe == '1h':
+                end_date = end_date.replace(minute=0, second=0, microsecond=0)
+            elif self.timeframe == '4h':
+                end_date = end_date.replace(hour=(end_date.hour // 4) * 4, minute=0, second=0, microsecond=0)
+            elif self.timeframe == '1d':
+                end_date = end_date.replace(hour=0, minute=0, second=0, microsecond=0)
+
+            if self.force_reload:
+                start_date = min_candle
+                logger.info(f"🔄 Режим force-reload: пересчёт с {start_date}")
+            else:
+                # check_nulls
+                null_ts = self.get_null_timestamps()
+                if not null_ts:
+                    logger.info(f"✅ Все VWAP данные актуальны — пропускаем")
+                    return
+                self._null_timestamps = null_ts
+                start_date = min(null_ts).replace(hour=0, minute=0, second=0, microsecond=0)
+                logger.info(f"🔍 Режим check-nulls: найдено {len(null_ts):,} NULL записей (от {start_date.strftime('%Y-%m-%d')})")
+        else:
+            start_date, end_date = self.get_date_range()
+
+            if start_date is None or end_date is None:
+                logger.warning(f"⚠️  Нет данных для обработки: {self.symbol}")
+                return
 
         if start_date >= end_date:
             logger.info(f"✅ {self.symbol} - данные VWAP актуальны")
@@ -611,7 +699,8 @@ def parse_args():
   python3 vwap_loader.py                                    # Все символы, все таймфреймы
   python3 vwap_loader.py --symbol BTCUSDT                   # Конкретный символ
   python3 vwap_loader.py --symbol BTCUSDT --timeframe 1m    # Символ + таймфрейм
-  python3 vwap_loader.py --symbol BTCUSDT ETHUSDT           # Несколько символов
+  python3 vwap_loader.py --check-nulls                      # Проверить и заполнить NULL
+  python3 vwap_loader.py --force-reload                     # Полный пересчёт всех данных
   python3 vwap_loader.py --batch-days 7                     # Изменить размер батча
         """
     )
@@ -631,6 +720,18 @@ def parse_args():
         '--batch-days',
         type=int,
         help='Размер батча в днях. По умолчанию - из конфига (обычно 1)'
+    )
+
+    parser.add_argument(
+        '--force-reload',
+        action='store_true',
+        help='Полный пересчёт всех данных с начала'
+    )
+
+    parser.add_argument(
+        '--check-nulls',
+        action='store_true',
+        help='Проверить и заполнить NULL значения в середине данных'
     )
 
     return parser.parse_args()
@@ -696,6 +797,10 @@ def main():
         logger.info(f"📦 Размер батча из аргументов: {args.batch_days} дней")
 
     logger.info(f"📊 Индикатор: VWAP")
+    if args.force_reload:
+        logger.info(f"🔄 Режим FORCE RELOAD: все данные будут пересчитаны с начала")
+    elif args.check_nulls:
+        logger.info(f"🔍 Режим CHECK-NULLS: поиск и заполнение NULL значений")
     logger.info("")
 
     # 7. Обработка
@@ -711,7 +816,9 @@ def main():
         for timeframe in timeframes:
             try:
                 # Создаем экземпляр загрузчика
-                loader = VWAPLoader(symbol, timeframe, config)
+                loader = VWAPLoader(symbol, timeframe, config,
+                                    force_reload=args.force_reload,
+                                    check_nulls=args.check_nulls)
                 loader.symbol_progress = f"[{symbol_idx}/{total_symbols}]"
 
                 # Запускаем загрузку

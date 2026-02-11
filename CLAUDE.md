@@ -166,8 +166,11 @@ python3 vma_loader.py
 python3 vma_loader.py --symbol BTCUSDT  # Specific symbol only
 python3 vma_loader.py --timeframe 1h  # Specific timeframe only
 python3 vma_loader.py --force-reload  # Full recalculation from history start
-# Note: Volume Moving Average for volume analysis
+python3 vma_loader.py --check-nulls  # Check and fill NULL values in middle of data
+python3 vma_loader.py --check-nulls --symbol ETHUSDT  # Check NULLs for specific symbol
+# Note: Volume Moving Average for volume analysis (non-cumulative)
 # 5 periods: VMA 10, 20, 50, 100, 200
+# --check-nulls: Finds NULL after natural boundary, fills with local lookback (fast)
 # Incremental loading: only new data written (unless --force-reload specified)
 
 # Load ATR (Average True Range) and NATR (Normalized ATR) indicators
@@ -265,9 +268,12 @@ python3 bollinger_bands_loader.py
 python3 bollinger_bands_loader.py --symbol BTCUSDT  # Specific symbol only
 python3 bollinger_bands_loader.py --timeframe 1h  # Specific timeframe only
 python3 bollinger_bands_loader.py --batch-days 3  # Larger batches for faster processing
-# Note: 13 configurations (11 SMA-based + 2 EMA-based)
+python3 bollinger_bands_loader.py --force-reload  # Full recalculation from history start
+python3 bollinger_bands_loader.py --check-nulls  # Check and fill NULL values in middle of data
+# Note: 13 configurations (11 SMA-based + 2 EMA-based), non-cumulative
 # Each configuration creates 6 columns: upper, middle, lower, %B, bandwidth, squeeze
 # Optimized: processes all 13 configs simultaneously with single data load (~3-4x faster)
+# --check-nulls: Finds NULL after natural boundary, fills with local lookback (fast)
 # Safe division: handles zero bandwidth/middle band gracefully (NaN → NULL in DB)
 
 # Load VWAP (Volume Weighted Average Price)
@@ -275,23 +281,31 @@ python3 vwap_loader.py
 python3 vwap_loader.py --symbol BTCUSDT  # Specific symbol only
 python3 vwap_loader.py --timeframe 1m  # Specific timeframe only
 python3 vwap_loader.py --batch-days 7  # Larger batches for faster processing
-# Note: 16 variants (1 daily + 15 rolling periods)
+python3 vwap_loader.py --force-reload  # Full recalculation from history start
+python3 vwap_loader.py --check-nulls  # Check and fill NULL values in middle of data
+# Note: 16 variants (1 daily + 15 rolling periods), non-cumulative
 # Daily VWAP resets at 00:00 UTC, rolling VWAP uses fixed windows
+# --check-nulls: Finds NULL after natural boundary, fills with local lookback (fast)
 
 # Load MFI (Money Flow Index) - volume-weighted RSI
 python3 mfi_loader.py
 python3 mfi_loader.py --symbol BTCUSDT  # Specific symbol only
 python3 mfi_loader.py --timeframe 1h  # Specific timeframe only
 python3 mfi_loader.py --batch-days 3  # Larger batches for faster processing
-# Note: 5 periods (7, 10, 14, 20, 25) - similar to RSI but with volume
+python3 mfi_loader.py --check-nulls  # Check and fill NULL values in middle of data
+# Note: 5 periods (7, 10, 14, 20, 25) - similar to RSI but with volume, non-cumulative
+# --check-nulls: Finds NULL after natural boundary, fills with local lookback (fast)
 
 # Load Stochastic Oscillator and Williams %R (momentum indicators)
 python3 stochastic_williams_loader.py
 python3 stochastic_williams_loader.py --symbol BTCUSDT  # Specific symbol only
 python3 stochastic_williams_loader.py --timeframe 1h  # Specific timeframe only
 python3 stochastic_williams_loader.py --batch-days 3  # Larger batches for faster processing
-# Note: Stochastic - 8 configurations (%K and %D lines)
-# Williams %R - 5 periods (6, 10, 14, 20, 30)
+python3 stochastic_williams_loader.py --force-reload  # Full recalculation from history start
+python3 stochastic_williams_loader.py --check-nulls  # Check and fill NULL values in middle of data
+# Note: Stochastic - 8 configurations (%K and %D lines), non-cumulative
+# Williams %R - 5 periods (6, 10, 14, 20, 30), non-cumulative
+# --check-nulls: Finds NULL after natural boundary, fills with local lookback (fast)
 
 # Load Ichimoku Cloud (Japanese trend and momentum indicator)
 python3 ichimoku_loader.py
@@ -311,14 +325,15 @@ python3 hv_loader.py
 python3 hv_loader.py --symbol BTCUSDT  # Specific symbol only
 python3 hv_loader.py --timeframe 1h  # Specific timeframe only
 python3 hv_loader.py --force-reload  # Full reload (all data)
-# Note: HV = StdDev(log returns) × √(periods_per_year) × 100%
+python3 hv_loader.py --check-nulls  # Check and fill NULL values in middle of data
+# Note: HV = StdDev(log returns) × √(periods_per_year) × 100%, non-cumulative
 # 5 periods: HV 7, 14, 30, 60, 90 (in % annualized)
 # 3 derived: hv_ratio_7_30, hv_percentile_7d, hv_percentile_90d
 # Total: 8 columns per timeframe
 # Current timeframes: 1m, 15m, 1h, 4h, 1d
 # Annualization: 1m=725×, 15m=187×, 1h=93.6×, 4h=46.8×, 1d=19.1×
 # Percentile uses 7 days and 90 days lookback windows
-# Incremental loading: only NULL records updated (unless --force-reload)
+# Default: incremental from last loaded date. --check-nulls scans for NULLs in middle of data
 
 # Load SuperTrend (trend indicator based on ATR)
 python3 supertrend_loader.py
@@ -337,17 +352,19 @@ python3 supertrend_loader.py --force-reload  # Full reload (all data)
 python3 fear_and_greed_loader_alternative.py
 python3 fear_and_greed_loader_alternative.py --timeframe 1h  # Specific timeframe only
 python3 fear_and_greed_loader_alternative.py --force-reload  # Full reload (all dates)
+python3 fear_and_greed_loader_alternative.py --check-nulls  # Check and fill NULL values in middle of data
 # Note: Daily sentiment index (0-100), applied to BTCUSDT symbol
 # Historical data available from 2018
-# Incremental loading: only NULL records are updated (unless --force-reload)
+# Default: incremental from last filled date. --check-nulls scans for NULL dates in middle of data
 
 # Load Fear and Greed Index (market sentiment from CoinMarketCap API)
 python3 fear_and_greed_coinmarketcap_loader.py
 python3 fear_and_greed_coinmarketcap_loader.py --timeframe 1h  # Specific timeframe only
 python3 fear_and_greed_coinmarketcap_loader.py --force-reload  # Full reload (all dates)
+python3 fear_and_greed_coinmarketcap_loader.py --check-nulls  # Check and fill NULL values in middle of data
 # Note: Global crypto market metrics (market cap, dominance, volumes)
 # Historical data: ~2.7 years (API limitation)
-# Incremental loading: only NULL records are updated (unless --force-reload)
+# Default: incremental from last filled date. --check-nulls scans for NULL dates in middle of data
 
 # Load Orderbook data (market depth from Bybit historical archives)
 python3 orderbook_bybit_loader.py
