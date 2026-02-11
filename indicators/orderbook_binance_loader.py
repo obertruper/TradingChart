@@ -608,13 +608,16 @@ def load_config() -> dict:
 class OrderbookBinanceLoader:
     """Загрузчик данных orderbook из публичных архивов Binance"""
 
-    def __init__(self, symbol: Optional[str] = None, force_reload: bool = False):
+    def __init__(self, symbol: Optional[str] = None, force_reload: bool = False,
+                 check_nulls: bool = False):
         """
         Args:
             symbol: Конкретный символ или None для всех из конфига
             force_reload: Начать загрузку с самой ранней даты
+            check_nulls: Найти и перезагрузить дни с NULL данными
         """
         self.force_reload = force_reload
+        self.check_nulls = check_nulls
         self.db = DatabaseConnection()
         self.session = requests.Session()
         self.session.headers.update({
@@ -741,6 +744,29 @@ class OrderbookBinanceLoader:
             psycopg2.extras.execute_batch(cur, UPSERT_SQL, rows, page_size=500)
         conn.commit()
 
+    def get_null_dates(self, symbol: str) -> List[datetime]:
+        """
+        Находит даты, в которых строки существуют но bookDepth данные = NULL.
+        Используется для --check-nulls.
+        """
+        with self.db.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"""
+                    SELECT DISTINCT DATE(timestamp) as day
+                    FROM {TABLE_NAME}
+                    WHERE symbol = %s
+                      AND bid_depth_1pct IS NULL
+                    ORDER BY day
+                """, (symbol,))
+                rows = cur.fetchall()
+
+        null_dates = []
+        for row in rows:
+            dt = datetime.combine(row[0], datetime.min.time()).replace(tzinfo=timezone.utc)
+            null_dates.append(dt)
+
+        return null_dates
+
     def run_symbol(self, symbol: str) -> Tuple[int, int, int]:
         """
         Загрузка данных для одного символа.
@@ -755,19 +781,27 @@ class OrderbookBinanceLoader:
         logger.info(f"  {symbol}")
         logger.info("─" * 80)
 
-        # 1. Определяем начальную дату
-        start_date = self.get_start_date(symbol)
+        # 1. Определяем список дат
+        if self.check_nulls:
+            null_dates = self.get_null_dates(symbol)
+            if not null_dates:
+                logger.info(f"✅ {symbol}: NULL данных не найдено")
+                return 0, 0, 0
+            logger.info(f"Найдено {len(null_dates)} дней с NULL данными "
+                        f"({null_dates[0].date()} → {null_dates[-1].date()})")
+            dates_to_process = null_dates
+        else:
+            start_date = self.get_start_date(symbol)
 
-        # 2. Строим список дат
-        today = datetime.now(timezone.utc).replace(
-            hour=0, minute=0, second=0, microsecond=0
-        )
+            today = datetime.now(timezone.utc).replace(
+                hour=0, minute=0, second=0, microsecond=0
+            )
 
-        dates_to_process = []
-        current = start_date
-        while current < today:
-            dates_to_process.append(current)
-            current += timedelta(days=1)
+            dates_to_process = []
+            current = start_date
+            while current < today:
+                dates_to_process.append(current)
+                current += timedelta(days=1)
 
         if not dates_to_process:
             logger.info(f"✅ {symbol}: все данные актуальны")
@@ -991,6 +1025,12 @@ def parse_args():
         help='Перезагрузить все данные с 2023-01-01'
     )
 
+    parser.add_argument(
+        '--check-nulls',
+        action='store_true',
+        help='Найти и перезагрузить дни с NULL данными в bookDepth колонках'
+    )
+
     return parser.parse_args()
 
 
@@ -1006,6 +1046,7 @@ def main():
         loader = OrderbookBinanceLoader(
             symbol=args.symbol,
             force_reload=args.force_reload,
+            check_nulls=args.check_nulls,
         )
         loader.run()
     except KeyboardInterrupt:

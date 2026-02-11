@@ -364,6 +364,7 @@ python3 orderbook_bybit_loader.py --force-reload          # Full reload from 202
 python3 orderbook_binance_loader.py                        # All symbols from config
 python3 orderbook_binance_loader.py --symbol BTCUSDT       # Specific symbol only
 python3 orderbook_binance_loader.py --force-reload          # Full reload from 2023-01-01
+python3 orderbook_binance_loader.py --check-nulls           # Find and reload days with NULL bookDepth data
 # Note: Separate table orderbook_binance_futures_1m (NOT in indicators tables)
 # Two data sources from Binance public archives:
 #   bookDepth (2023-01-01+): depth by % levels (±1-5%, ±0.2%), ~500KB/day ZIP
