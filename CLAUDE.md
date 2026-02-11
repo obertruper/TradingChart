@@ -298,11 +298,13 @@ python3 ichimoku_loader.py
 python3 ichimoku_loader.py --symbol BTCUSDT  # Specific symbol only
 python3 ichimoku_loader.py --timeframe 1h  # Specific timeframe only
 python3 ichimoku_loader.py --force-reload  # Full reload (all data)
+python3 ichimoku_loader.py --check-nulls  # Find and fill NULL values in middle of data
+python3 ichimoku_loader.py --check-nulls --symbol ETHUSDT  # Check NULLs for specific symbol
 # Note: 2 configurations: Crypto (9/26/52), Long (20/60/120)
 # Each creates 8 columns: tenkan, kijun, senkou_a, senkou_b, chikou, cloud_thick, price_cloud, tk_cross
 # Total: 16 columns per timeframe
 # Senkou Span stored as "effective" values (cloud that applies to current timestamp)
-# Incremental loading: only NULL records updated (ignores natural NULLs at data start)
+# Default: incremental from last loaded date. --check-nulls scans for NULLs in middle of data
 
 # Load HV (Historical Volatility) - statistical volatility measure
 python3 hv_loader.py
@@ -1287,14 +1289,14 @@ GET https://pro-api.coinmarketcap.com/v1/global-metrics/quotes/latest
     - Uses UPDATE (not INSERT) - consistent with other loaders
     - Chronological order (oldest to newest) - reliable recovery after interruption
     - `--force-reload` flag - rewrites all data from min_date
+    - `--check-nulls` flag - finds and fills NULL values in middle of data (ignores natural NULLs at data start)
+    - Default mode: incremental from last loaded date (no NULL scan)
     - Senkou Span stored as "effective" values (cloud that applies to timestamp T)
     - Derived columns: cloud_thick (%), price_cloud (-1/0/1), tk_cross (-1/0/1)
-  - **NULL Optimization** (fixed same day):
-    - **Problem**: Loader re-processed entire range on every run (found 33 "natural" NULLs at data start)
-    - **Root Cause**: First ~180 records can't have Ichimoku calculated (insufficient lookback history)
-    - **Solution**: Added `get_raw_lookback_period()` method and `effective_min_date` calculation
-    - **Logic**: Search for NULLs only from `effective_min_date` (min_date + raw_lookback), ignoring natural NULLs
-    - **Result**: Repeated runs now show "✅ Все Ichimoku данные актуальны" and complete instantly
+  - **Three run modes**:
+    - Default (no flags): incremental from `get_all_last_processed_dates()` — only new data
+    - `--check-nulls`: scans for NULL from `effective_min_date`, fills gaps (ignores natural NULLs at start)
+    - `--force-reload`: rewrites all data from min_date
   - **Files Created/Modified**:
     - `indicators/ichimoku_loader.py` (NEW)
     - `indicators/indicators_config.yaml` (added ichimoku section)

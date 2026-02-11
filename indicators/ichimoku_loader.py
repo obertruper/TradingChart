@@ -547,7 +547,8 @@ class IchimokuLoader:
 
         return df_agg
 
-    def load_timeframe(self, timeframe: str, configs: List[Dict], force_reload: bool = False):
+    def load_timeframe(self, timeframe: str, configs: List[Dict],
+                       force_reload: bool = False, check_nulls: bool = False):
         """
         Загружает Ichimoku для всех конфигураций на одном таймфрейме
 
@@ -555,6 +556,7 @@ class IchimokuLoader:
             timeframe: Таймфрейм (например, '1m')
             configs: Список конфигураций Ichimoku
             force_reload: Если True, перезаписывает все данные
+            check_nulls: Если True, ищет и заполняет NULL значения
         """
         self.logger.info(f"\n{'='*80}")
         self.logger.info(f"⏰ Таймфрейм: {timeframe}")
@@ -587,8 +589,6 @@ class IchimokuLoader:
         self.logger.info(f"📏 Максимальный lookback: {max_lookback} периодов")
 
         # Вычисляем effective_min_date - минимальную дату где Ichimoku МОЖЕТ быть рассчитан
-        # Используем RAW lookback (без множителя), т.к. нам нужен минимум для расчёта
-        # До этой даты NULL - это "естественные" пустоты (недостаточно истории)
         raw_lookback = self.get_raw_lookback_period(configs)
         timeframe_minutes = {'1m': 1, '15m': 15, '1h': 60, '4h': 240, '1d': 1440}.get(timeframe, 1)
         effective_min_date = min_date + timedelta(minutes=raw_lookback * timeframe_minutes)
@@ -600,19 +600,32 @@ class IchimokuLoader:
             start_date = min_date
             null_timestamps = None  # Пишем всё
             self.logger.info(f"🔄 Force reload: начинаем с {start_date}, записываем ВСЕ данные")
-        else:
-            # Инкрементальный режим: ищем NULL только от effective_min_date
-            # (игнорируем "естественные" NULL в начале где расчёт невозможен)
+        elif check_nulls:
+            # Режим --check-nulls: ищем NULL от effective_min_date
             null_timestamps = self.get_null_timestamps(timeframe, configs, effective_min_date, max_date)
 
             if not null_timestamps:
                 self.logger.info(f"✅ Все Ichimoku данные актуальны - нет NULL значений")
                 return
 
-            # Начинаем с самой ранней NULL даты
             start_date = min(null_timestamps)
             self.logger.info(f"📊 Найдено {len(null_timestamps):,} записей с NULL значениями")
             self.logger.info(f"📌 Самая ранняя NULL дата: {start_date}")
+        else:
+            # Инкрементальный режим: от последней загруженной даты
+            last_date = self.get_all_last_processed_dates(timeframe, configs)
+            null_timestamps = None  # Пишем всё новое
+
+            if last_date:
+                start_date = last_date
+                self.logger.info(f"📌 Последняя загруженная дата: {last_date}")
+            else:
+                start_date = min_date
+                self.logger.info(f"📌 Данных нет, начинаем с {start_date}")
+
+            if start_date >= max_date:
+                self.logger.info(f"✅ Все Ichimoku данные актуальны")
+                return
 
         # Обрабатываем данные батчами (по дням)
         current_date = start_date
@@ -760,6 +773,8 @@ def main():
     parser.add_argument('--timeframes', type=str, help='Таймфреймы через запятую (например, 1m,15m,1h)')
     parser.add_argument('--batch-days', type=int, default=1, help='Размер батча в днях (по умолчанию 1)')
     parser.add_argument('--force-reload', action='store_true', help='Перезаписать все данные')
+    parser.add_argument('--check-nulls', action='store_true',
+                       help='Найти и заполнить NULL значения в середине данных')
 
     args = parser.parse_args()
 
@@ -796,6 +811,7 @@ def main():
     logger.info(f"⏰ Таймфреймы: {timeframes}")
     logger.info(f"📦 Batch size: {args.batch_days} дней")
     logger.info(f"🔄 Force reload: {args.force_reload}")
+    logger.info(f"🔍 Check nulls: {args.check_nulls}")
     logger.info(f"⚙️  Конфигурации Ichimoku:")
     for config in ICHIMOKU_CONFIGS:
         logger.info(f"   - {config['name']}: ({config['conversion_period']}/{config['base_period']}/{config['span_period']}) - {config['description']}")
@@ -815,7 +831,9 @@ def main():
 
         # Обработка каждого таймфрейма
         for timeframe in timeframes:
-            loader.load_timeframe(timeframe, ICHIMOKU_CONFIGS, force_reload=args.force_reload)
+            loader.load_timeframe(timeframe, ICHIMOKU_CONFIGS,
+                                 force_reload=args.force_reload,
+                                 check_nulls=args.check_nulls)
 
         logger.info(f"\n{'='*80}")
         logger.info(f"✅ Символ {symbol} обработан")
