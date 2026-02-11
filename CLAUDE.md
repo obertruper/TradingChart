@@ -364,20 +364,21 @@ python3 orderbook_bybit_loader.py --force-reload          # Full reload from 202
 python3 orderbook_binance_loader.py                        # All symbols from config
 python3 orderbook_binance_loader.py --symbol BTCUSDT       # Specific symbol only
 python3 orderbook_binance_loader.py --force-reload          # Full reload from 2023-01-01
-python3 orderbook_binance_loader.py --check-nulls           # Find and reload days with NULL bookDepth data
+python3 orderbook_binance_loader.py --check-nulls           # Find and reload days with NULL bookDepth + monthly bookTicker fallback
 # Note: Separate table orderbook_binance_futures_1m (NOT in indicators tables)
 # Two data sources from Binance public archives:
 #   bookDepth (2023-01-01+): depth by % levels (±1-5%, ±0.2%), ~500KB/day ZIP
-#   bookTicker (2023-05-16 → 2024-04-30): best bid/ask ticks (~4.5M/day), 50-130MB/day ZIP
-#     Daily files: 2023-05-16 → 2024-03-30, monthly fallback: 2024-04 (+1 month)
+#   bookTicker (2023-05-16 → 2024-04-01): best bid/ask ticks (~4.5M/day), 50-130MB/day ZIP
+#     Daily files: 2023-05-16 → 2024-03-30, monthly fallback fills remaining gaps
 #     DISCONTINUED by Binance after 2024-04 (GitHub issue binance/binance-public-data#372)
 # 46 columns: 2 PK + 22 bookTicker + 22 bookDepth
-# bookTicker columns: NULL before 2023-05-16 and after 2024-04-30
-# Monthly fallback: auto-downloads monthly archives when daily files unavailable
+# bookTicker columns: NULL before 2023-05-16 and after 2024-04-01
+# Monthly bookTicker fallback: only with --check-nulls, downloads to /tmp, processes from disk
 # ±0.2% levels NULL before 2026-01-15
 # Daily batching: download ZIP to RAM → process → merge → INSERT...ON CONFLICT → COMMIT
 # Graceful shutdown: 1st Ctrl+C finishes current day, 2nd force exits
 # Multi-symbol: reads symbols from indicators_config.yaml → binance_orderbook.symbols
+# Current data: 1.6M rows (BTCUSDT), 550 MB, bookDepth 100%, bookTicker 28.5%
 # Documentation: docs/ORDERBOOK_BINANCE_REFERENCE.md (full column reference)
 
 # Check indicators status in database
@@ -485,7 +486,7 @@ cat INDICATORS_REFERENCE.md
 | indicators_bybit_futures_4h | 32 KB | - | - | 0 | 261 |
 | indicators_bybit_futures_1d | 32 KB | - | - | 0 | 261 |
 | orderbook_bybit_futures_1m | ~1.73 GB | 1.68 GB | 88 MB | ~1.1M | 60 |
-| orderbook_binance_futures_1m | 0 | - | - | 0 | 46 |
+| orderbook_binance_futures_1m | 550 MB | - | - | 1.6M | 46 |
 | eda | 48 KB | 0 | 48 KB | 0 | 22 |
 
 **Storage per row:**
@@ -609,8 +610,10 @@ cat INDICATORS_REFERENCE.md
   - bookTicker daily: `data.binance.vision/.../daily/bookTicker/{SYMBOL}/` (2023-05-16 → 2024-03-30)
   - bookTicker monthly: `data.binance.vision/.../monthly/bookTicker/{SYMBOL}/` (2023-05 → 2024-04, auto-fallback)
 - **Aggregation**: bookDepth LAST snapshot/min + bookTicker pandas groupby agg (LAST/MIN/MAX/AVG/STD)
-- **Storage**: ~0.4 KB/row, ~0.56 MB/day per symbol, ~0.20 GB/year per symbol
+- **Storage**: ~0.34 KB/row, ~0.48 MB/day per symbol, ~0.17 GB/year per symbol
+- **Current data**: BTCUSDT — 1,611,571 rows, 550 MB, bookDepth 100%, bookTicker 28.5% (459K rows)
 - **Architecture**: Separate table, daily batching with ZIP download to RAM, INSERT...ON CONFLICT DO UPDATE
+- **Monthly fallback**: Downloads monthly bookTicker to `/tmp` (disk), extracts CSV, processes chunked, cleans up. Only runs with `--check-nulls`
 - **Multi-symbol**: Reads symbols from `indicators_config.yaml` → `binance_orderbook.symbols`
 - **Documentation**: `docs/ORDERBOOK_BINANCE_REFERENCE.md` (full column reference)
 
@@ -1384,23 +1387,24 @@ GET https://pro-api.coinmarketcap.com/v1/global-metrics/quotes/latest
     - **Root Cause**: Binance silently deprecated bookTicker data ([GitHub issue #372](https://github.com/binance/binance-public-data/issues/372))
     - **Impact**: bookTicker columns NULL for all dates after 2024-03-30 (was attempting 404 downloads)
     - **Fix**: Added `BOOK_TICKER_LAST = 2024-03-30` constant, skip bookTicker download for later dates
-    - **Monthly fallback**: Added `fill_ticker_from_monthly()` — auto-downloads monthly archives for months after daily cutoff
+    - **Monthly fallback**: Added `fill_ticker_from_monthly()` — downloads monthly archives for months with NULL bookTicker
     - Monthly bookTicker available: 2023-05 → 2024-04 (12 months total, last file `BTCUSDT-bookTicker-2024-04.zip`)
-    - Recovers April 2024 bookTicker data (+1 month vs daily-only)
-    - Runs automatically after main daily loop, UPDATE only 22 bookTicker columns
+    - Recovers March 31 2024 + April 1 2024 bookTicker data (beyond daily cutoff of March 30)
+    - Runs only with `--check-nulls` flag, downloads to `/tmp` disk, UPDATE only 22 bookTicker columns
     - Skips if data already filled (idempotent)
   - **Bug Fix #3 — Monthly bookTicker OOM + aggregation bug**: Monthly ZIP files (~3-4 GB) caused OOM, and unsorted CSV data caused duplicate partial processing
     - **Root Cause 1 (OOM)**: Loading 135M rows into single pandas DataFrame exceeded VPS RAM
     - **Root Cause 2 (duplicates)**: Monthly CSV not sorted chronologically — streaming day-boundary detection processed same day multiple times with partial data
     - **Fix**: Complete rewrite of `fill_ticker_from_monthly()`:
+      - `download_to_disk()` — streams ZIP to `/tmp` with tqdm progress bar (no RAM for ZIP)
+      - `zipfile.extract()` → CSV to disk, delete ZIP
+      - `pd.read_csv(csv_path, chunksize=5_000_000)` — reads from disk with tqdm
       - `_get_null_ticker_dates()` — queries specific NULL dates from DB per month
-      - Chunked CSV reading with `pd.read_csv(chunksize=5_000_000)` + tqdm progress bar
-      - Filters chunks to only NULL dates (`chunk[chunk['day'].isin(null_dates)]`)
-      - Accumulates ALL chunks per-day in `dict {day: [chunks]}`, then processes each day once
-      - Download progress bar (`stream=True` + `Content-Length`) for large monthly files
+      - Filters chunks to only NULL dates, accumulates per-day, processes each day once
+      - `finally:` cleanup — removes ZIP and CSV even on error
     - **Fallback scope**: Searches from `BOOK_TICKER_EARLIEST` (covers all months including March 2024)
     - **Architecture**: Extracted `_aggregate_ticker_df()` from `process_book_ticker()` for reuse
-    - **RAM usage**: Only NULL-date data kept in memory (~1-2 GB peak)
+    - **RAM usage**: ~300 MB (chunks only, ZIP/CSV on disk)
   - **Added `--check-nulls` flag**: Find days with NULL bookDepth data and re-download only those days
     - Queries `WHERE bid_depth_1pct IS NULL` to find incomplete days
     - Useful after bug fixes to fill previously broken data without full reload
