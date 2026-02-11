@@ -1389,14 +1389,18 @@ GET https://pro-api.coinmarketcap.com/v1/global-metrics/quotes/latest
     - Recovers April 2024 bookTicker data (+1 month vs daily-only)
     - Runs automatically after main daily loop, UPDATE only 22 bookTicker columns
     - Skips if data already filled (idempotent)
-  - **Bug Fix #3 — Monthly bookTicker OOM crash**: Monthly ZIP files (~3-4 GB) caused OOM kill on 16GB VPS
-    - **Root Cause**: Loading 135M rows into single pandas DataFrame exceeded 16GB RAM
-    - **Additional bug**: SQL query with `timestamp > BOOK_TICKER_LAST` (2024-03-30 00:00) included March 31 timestamps, triggering unnecessary March download
-    - **Fix 1**: Added `BOOK_TICKER_MONTHLY_START = 2024-04-01` — skips March 2024 entirely
-    - **Fix 2**: Chunked CSV reading with `pd.read_csv(chunksize=5_000_000)` (~1 day of data per chunk)
-    - **Fix 3**: Per-day processing — accumulate chunks by day boundary, process complete day, UPDATE DB, free memory
-    - **Architecture**: Extracted `_aggregate_ticker_df()` from `process_book_ticker()` for reuse between daily and monthly paths
-    - **RAM usage**: ~1-2 GB peak (vs 16+ GB before), safe for 16GB VPS
+  - **Bug Fix #3 — Monthly bookTicker OOM + aggregation bug**: Monthly ZIP files (~3-4 GB) caused OOM, and unsorted CSV data caused duplicate partial processing
+    - **Root Cause 1 (OOM)**: Loading 135M rows into single pandas DataFrame exceeded VPS RAM
+    - **Root Cause 2 (duplicates)**: Monthly CSV not sorted chronologically — streaming day-boundary detection processed same day multiple times with partial data
+    - **Fix**: Complete rewrite of `fill_ticker_from_monthly()`:
+      - `_get_null_ticker_dates()` — queries specific NULL dates from DB per month
+      - Chunked CSV reading with `pd.read_csv(chunksize=5_000_000)` + tqdm progress bar
+      - Filters chunks to only NULL dates (`chunk[chunk['day'].isin(null_dates)]`)
+      - Accumulates ALL chunks per-day in `dict {day: [chunks]}`, then processes each day once
+      - Download progress bar (`stream=True` + `Content-Length`) for large monthly files
+    - **Fallback scope**: Searches from `BOOK_TICKER_EARLIEST` (covers all months including March 2024)
+    - **Architecture**: Extracted `_aggregate_ticker_df()` from `process_book_ticker()` for reuse
+    - **RAM usage**: Only NULL-date data kept in memory (~1-2 GB peak)
   - **Added `--check-nulls` flag**: Find days with NULL bookDepth data and re-download only those days
     - Queries `WHERE bid_depth_1pct IS NULL` to find incomplete days
     - Useful after bug fixes to fill previously broken data without full reload

@@ -708,21 +708,37 @@ class OrderbookBinanceLoader:
 
         return start
 
-    def download_to_ram(self, url: str) -> Optional[io.BytesIO]:
+    def download_to_ram(self, url: str, show_progress: bool = False) -> Optional[io.BytesIO]:
         """
         Скачивает ZIP в RAM и возвращает BytesIO.
         Возвращает None при 404 (нормально для отсутствующих дат).
+        show_progress: показывать tqdm прогресс-бар (для больших файлов).
         """
         last_error = None
         for attempt in range(1, RETRY_ATTEMPTS + 1):
             try:
-                response = self.session.get(url, timeout=DOWNLOAD_TIMEOUT)
+                response = self.session.get(
+                    url, timeout=DOWNLOAD_TIMEOUT,
+                    stream=show_progress,
+                )
                 if response.status_code == 404:
                     return None
                 if response.status_code == 403:
                     # Binance иногда возвращает 403 вместо 404
                     return None
                 response.raise_for_status()
+
+                if show_progress:
+                    total = int(response.headers.get('content-length', 0))
+                    buf = io.BytesIO()
+                    with tqdm(total=total, unit='B', unit_scale=True,
+                              desc='    Download', leave=False) as pbar:
+                        for chunk in response.iter_content(chunk_size=1024 * 1024):
+                            buf.write(chunk)
+                            pbar.update(len(chunk))
+                    buf.seek(0)
+                    return buf
+
                 return io.BytesIO(response.content)
             except requests.exceptions.HTTPError as e:
                 if e.response is not None and e.response.status_code in (404, 403):
@@ -950,13 +966,35 @@ class OrderbookBinanceLoader:
         conn.commit()
         return len(rows)
 
+    def _get_null_ticker_dates(self, symbol: str, month_str: str) -> set:
+        """Возвращает set дат (date) в конкретном месяце, где bookTicker = NULL."""
+        year, month = month_str.split('-')
+        month_start = datetime(int(year), int(month), 1, tzinfo=timezone.utc)
+        if int(month) == 12:
+            month_end = datetime(int(year) + 1, 1, 1, tzinfo=timezone.utc)
+        else:
+            month_end = datetime(int(year), int(month) + 1, 1, tzinfo=timezone.utc)
+
+        with self.db.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"""
+                    SELECT DISTINCT DATE(timestamp) as day
+                    FROM {TABLE_NAME}
+                    WHERE symbol = %s
+                      AND timestamp >= %s AND timestamp < %s
+                      AND bid_depth_1pct IS NOT NULL
+                      AND best_bid IS NULL
+                    ORDER BY day
+                """, (symbol, month_start, month_end))
+                return {row[0] for row in cur.fetchall()}
+
     def fill_ticker_from_monthly(self, symbol: str) -> int:
         """
         Фаза 2: Заполняет bookTicker колонки из monthly архивов.
 
-        Находит месяцы (начиная с 2024-04), где bookDepth заполнен но bookTicker = NULL.
-        Скачивает monthly ZIP, читает CSV по-дневно (чанки ~5M строк),
-        чтобы не загружать 135M строк в память целиком.
+        Находит месяцы с NULL bookTicker, скачивает monthly ZIP,
+        читает CSV чанками, фильтрует только нужные дни (NULL в БД),
+        накапливает данные per-day, затем обрабатывает и пишет в БД.
 
         Returns:
             Количество обновлённых строк
@@ -986,11 +1024,16 @@ class OrderbookBinanceLoader:
             if shutdown_requested:
                 break
 
+            # Узнаём конкретные NULL-даты для этого месяца
+            null_dates = self._get_null_ticker_dates(symbol, month_str)
+            if not null_dates:
+                continue
+
             url = BOOK_TICKER_MONTHLY_URL.format(symbol=symbol, month=month_str)
-            logger.info(f"  Скачиваем monthly bookTicker {month_str}...")
+            logger.info(f"  Скачиваем monthly bookTicker {month_str} ({len(null_dates)} дн. с NULL)...")
 
             try:
-                zip_bytes = self.download_to_ram(url)
+                zip_bytes = self.download_to_ram(url, show_progress=True)
             except Exception as e:
                 logger.warning(f"  Ошибка скачивания monthly {month_str}: {e}")
                 continue
@@ -999,10 +1042,10 @@ class OrderbookBinanceLoader:
                 logger.info(f"  Monthly bookTicker {month_str} не найден (404)")
                 continue
 
-            # Обрабатываем по-дневно через chunked reading
-            logger.info(f"  Обработка monthly bookTicker {month_str} по дням...")
+            # Читаем чанки, фильтруем только нужные дни, накапливаем per-day
+            logger.info(f"  Обработка monthly bookTicker {month_str}...")
             month_updated = 0
-            conn = psycopg2.connect(**self.db.config)
+            day_buffers = {}  # {date: [DataFrame, ...]}
 
             try:
                 with zipfile.ZipFile(zip_bytes) as zf:
@@ -1013,58 +1056,57 @@ class OrderbookBinanceLoader:
                             names=BOOK_TICKER_CSV_COLUMNS,
                             header=0,
                             dtype=BOOK_TICKER_CSV_DTYPE,
-                            chunksize=5_000_000,  # ~1 день данных
+                            chunksize=5_000_000,
                         )
 
-                        day_buffer = []  # накопитель DataFrame'ов для текущего дня
-                        current_day = None
-
-                        for chunk in reader:
-                            # Определяем день для каждой строки
+                        for chunk in tqdm(reader, desc=f'    Чтение {month_str}',
+                                          unit=' чанк', leave=False):
                             chunk['day'] = pd.to_datetime(
                                 chunk['transaction_time'], unit='ms', utc=True
                             ).dt.date
 
+                            # Оставляем только строки для NULL-дат
+                            chunk = chunk[chunk['day'].isin(null_dates)]
+                            if chunk.empty:
+                                continue
+
                             for day_val, day_group in chunk.groupby('day'):
-                                if current_day is not None and day_val != current_day:
-                                    # Предыдущий день завершён — обрабатываем
-                                    full_day = pd.concat(day_buffer, ignore_index=True)
-                                    day_buffer = []
+                                if day_val not in day_buffers:
+                                    day_buffers[day_val] = []
+                                day_buffers[day_val].append(day_group)
 
-                                    ticker_data = _aggregate_ticker_df(full_day)
-                                    del full_day
-                                    if ticker_data:
-                                        n = self._update_ticker_rows(ticker_data, symbol, conn)
-                                        month_updated += n
-                                        logger.info(f"    {current_day}: {n:,} строк")
-                                    del ticker_data
+                del zip_bytes
 
-                                current_day = day_val
-                                day_buffer.append(day_group)
+                # Обрабатываем накопленные дни по порядку
+                if day_buffers:
+                    days_count = len(day_buffers)
+                    conn = psycopg2.connect(**self.db.config)
+                    try:
+                        for day_val in sorted(day_buffers.keys()):
+                            full_day = pd.concat(day_buffers[day_val], ignore_index=True)
+                            del day_buffers[day_val]
 
-                        # Обрабатываем последний день
-                        if day_buffer:
-                            full_day = pd.concat(day_buffer, ignore_index=True)
-                            day_buffer = []
                             ticker_data = _aggregate_ticker_df(full_day)
                             del full_day
                             if ticker_data:
                                 n = self._update_ticker_rows(ticker_data, symbol, conn)
                                 month_updated += n
-                                logger.info(f"    {current_day}: {n:,} строк")
                             del ticker_data
 
-                del zip_bytes
-                total_updated += month_updated
-                logger.info(f"  ✅ {month_str}: обновлено {month_updated:,} строк")
+                        total_updated += month_updated
+                        logger.info(f"  ✅ {month_str}: обновлено {month_updated:,} строк ({days_count} дн.)")
+                    except Exception as e:
+                        logger.error(f"  Ошибка записи monthly {month_str}: {e}")
+                        if not conn.closed:
+                            conn.rollback()
+                    finally:
+                        if not conn.closed:
+                            conn.close()
+                else:
+                    logger.info(f"  {month_str}: нет данных для NULL-дат в архиве")
 
             except Exception as e:
                 logger.error(f"  Ошибка обработки monthly {month_str}: {e}")
-                if not conn.closed:
-                    conn.rollback()
-            finally:
-                if not conn.closed:
-                    conn.close()
 
         return total_updated
 
