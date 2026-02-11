@@ -108,8 +108,8 @@ BOOK_TICKER_EARLIEST = datetime(2023, 5, 16, tzinfo=timezone.utc)
 # Binance прекратил публикацию daily bookTicker после 2024-03-30
 # (GitHub issue: binance/binance-public-data#372)
 BOOK_TICKER_LAST = datetime(2024, 3, 30, tzinfo=timezone.utc)
-# Monthly архивы: 2023-05 → 2024-04 (последний). Ищем fallback начиная с апреля.
-BOOK_TICKER_MONTHLY_START = datetime(2024, 4, 1, tzinfo=timezone.utc)
+# Monthly архивы: 2023-05 → 2024-04 (последний).
+# Fallback ищет любые месяцы с NULL bookTicker начиная с BOOK_TICKER_EARLIEST.
 
 # HTTP
 DOWNLOAD_TIMEOUT = 300  # 5 минут на скачивание файла
@@ -961,7 +961,7 @@ class OrderbookBinanceLoader:
         Returns:
             Количество обновлённых строк
         """
-        # Находим месяцы с NULL bookTicker, начиная с апреля 2024
+        # Находим месяцы с NULL bookTicker (начиная с первых данных bookTicker)
         with self.db.get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(f"""
@@ -972,7 +972,7 @@ class OrderbookBinanceLoader:
                       AND bid_depth_1pct IS NOT NULL
                       AND best_bid IS NULL
                     ORDER BY month
-                """, (symbol, BOOK_TICKER_MONTHLY_START))
+                """, (symbol, BOOK_TICKER_EARLIEST))
                 months = [row[0] for row in cur.fetchall()]
 
         if not months:
