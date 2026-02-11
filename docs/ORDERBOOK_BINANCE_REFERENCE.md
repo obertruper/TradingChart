@@ -70,7 +70,7 @@
 - ~500 KB/день ZIP
 - Агрегация: берём **LAST снимок** за каждую минуту
 
-### bookTicker (2023-05-16 → 2024-03-30)
+### bookTicker (2023-05-16 → 2024-04-30)
 
 **URL:** `https://data.binance.vision/data/futures/um/daily/bookTicker/{SYMBOL}/{SYMBOL}-bookTicker-{YYYY-MM-DD}.zip`
 
@@ -92,7 +92,7 @@
 ### Процесс обработки
 
 ```
-Для каждого дня:
+Фаза 1 — Daily loop (для каждого дня):
   1. Скачать bookDepth ZIP (~500 KB) → распаковать → агрегировать
      └→ LAST snapshot за минуту → depth/notional по % уровням → imbalance/pressure
   2. Если дата в диапазоне 2023-05-16 ... 2024-03-30:
@@ -100,6 +100,12 @@
      └→ pandas groupby().agg() → best bid/ask, spread stats, activity
   3. Merge depth + ticker → 1440 строк (1 на минуту)
   4. INSERT...ON CONFLICT DO UPDATE → COMMIT
+
+Фаза 2 — Monthly bookTicker fallback:
+  1. Найти месяцы, где bookDepth есть но bookTicker = NULL (после 2024-03-30)
+  2. Скачать monthly ZIP (напр. BTCUSDT-bookTicker-2024-04.zip)
+  3. Обработать → UPDATE только 22 bookTicker колонки для существующих строк
+  4. Автоматически, при каждом запуске (пропускается если данные уже заполнены)
 ```
 
 ---
@@ -112,11 +118,11 @@
 
 | # | Источник | Группа | Кол-во | Доступно |
 |---|----------|--------|--------|----------|
-| 1 | bookTicker | Price | 6 | 2023-05-16 → 2024-03-30 |
-| 2 | bookTicker | Spread | 6 | 2023-05-16 → 2024-03-30 |
-| 3 | bookTicker | Volatility | 3 | 2023-05-16 → 2024-03-30 |
-| 4 | bookTicker | Activity | 3 | 2023-05-16 → 2024-03-30 |
-| 5 | bookTicker | Quantity Stats | 4 | 2023-05-16 → 2024-03-30 |
+| 1 | bookTicker | Price | 6 | 2023-05-16 → 2024-04-30 |
+| 2 | bookTicker | Spread | 6 | 2023-05-16 → 2024-04-30 |
+| 3 | bookTicker | Volatility | 3 | 2023-05-16 → 2024-04-30 |
+| 4 | bookTicker | Activity | 3 | 2023-05-16 → 2024-04-30 |
+| 5 | bookTicker | Quantity Stats | 4 | 2023-05-16 → 2024-04-30 |
 | 6 | bookDepth | Bid/Ask Depth | 10 | 2023-01-01 |
 | 7 | bookDepth | Notional | 2 | 2023-01-01 |
 | 8 | bookDepth | ±0.2% Levels | 2 | 2026-01-15 |
@@ -131,7 +137,7 @@
 
 **Колонки:** `best_bid`, `best_ask`, `best_bid_qty`, `best_ask_qty`, `mid_price`, `microprice`
 
-NULL до 2023-05-16 и после 2024-03-30 (Binance прекратил публикацию bookTicker).
+NULL до 2023-05-16 и после 2024-04-30 (Binance прекратил публикацию bookTicker).
 
 ### best_bid, best_ask `DECIMAL(20,8)`
 
@@ -492,14 +498,15 @@ ORDER BY c.timestamp;
 | Источник | URL | Период | Размер/день |
 |----------|-----|--------|-------------|
 | bookDepth | `data.binance.vision/.../bookDepth/` | 2023-01-01 → настоящее | ~500 KB |
-| bookTicker | `data.binance.vision/.../bookTicker/` | 2023-05-16 → 2024-03-30 | 50-130 MB |
+| bookTicker (daily) | `data.binance.vision/.../daily/bookTicker/` | 2023-05-16 → 2024-04-30 | 50-130 MB |
+| bookTicker (monthly) | `data.binance.vision/.../monthly/bookTicker/` | 2023-05 → 2024-04 | ~3-4 GB/мес |
 
 ### NULL-периоды
 
 | Колонки | NULL период | Причина |
 |---------|------------|---------|
 | Все bookTicker (22 колонки) | до 2023-05-16 | bookTicker архивы начинаются позже |
-| Все bookTicker (22 колонки) | после 2024-03-30 | Binance прекратил публикацию (GitHub issue #372) |
+| Все bookTicker (22 колонки) | после 2024-04-30 | Binance прекратил публикацию (daily + monthly) |
 | bid_depth_02pct, ask_depth_02pct | до 2026-01-15 | ±0.2% уровни добавлены позже |
 
 **Переход bookTicker — начало** (проверено на реальных данных):
@@ -516,8 +523,8 @@ ORDER BY c.timestamp;
 | Дата | Статус | Примечание |
 |------|--------|------------|
 | 2024-03-30 | Последний day-файл | `BTCUSDT-bookTicker-2024-03-30.zip` |
-| 2024-04 | Последний month-файл | `BTCUSDT-bookTicker-2024-04.zip` |
-| 2024-04-01+ | 0% | Binance прекратил публикацию без уведомления |
+| 2024-04 | Последний month-файл | `BTCUSDT-bookTicker-2024-04.zip` (загружается автоматически) |
+| 2024-05-01+ | 0% | Binance прекратил публикацию (daily + monthly) |
 
 ### Типичные значения (проверено на 200K+ строк, 2023-01-01 → 2023-05-29)
 

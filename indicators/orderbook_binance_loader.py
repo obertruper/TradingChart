@@ -100,6 +100,7 @@ DEFAULT_SYMBOL = "BTCUSDT"
 # URL шаблоны для data.binance.vision
 BOOK_DEPTH_URL = "https://data.binance.vision/data/futures/um/daily/bookDepth/{symbol}/{symbol}-bookDepth-{date}.zip"
 BOOK_TICKER_URL = "https://data.binance.vision/data/futures/um/daily/bookTicker/{symbol}/{symbol}-bookTicker-{date}.zip"
+BOOK_TICKER_MONTHLY_URL = "https://data.binance.vision/data/futures/um/monthly/bookTicker/{symbol}/{symbol}-bookTicker-{month}.zip"
 
 # Даты начала данных
 BOOK_DEPTH_EARLIEST = datetime(2023, 1, 1, tzinfo=timezone.utc)
@@ -253,6 +254,24 @@ def _build_upsert_sql() -> str:
 
 
 UPSERT_SQL = _build_upsert_sql()
+
+# bookTicker колонки (для UPDATE при monthly fallback)
+TICKER_COLUMNS = [
+    'best_bid', 'best_ask', 'best_bid_qty', 'best_ask_qty',
+    'mid_price', 'microprice',
+    'spread', 'spread_pct',
+    'spread_min', 'spread_max', 'spread_avg', 'spread_std',
+    'mid_price_range', 'mid_price_std', 'price_momentum',
+    'best_bid_changes', 'best_ask_changes', 'tick_count',
+    'best_bid_qty_avg', 'best_bid_qty_max',
+    'best_ask_qty_avg', 'best_ask_qty_max',
+]
+
+TICKER_UPDATE_SQL = f"""
+    UPDATE {TABLE_NAME}
+    SET {', '.join(f'{c} = %s' for c in TICKER_COLUMNS)}
+    WHERE timestamp = %s AND symbol = %s
+"""
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -922,6 +941,96 @@ class OrderbookBinanceLoader:
 
         return total_rows, days_processed, days_skipped
 
+    def fill_ticker_from_monthly(self, symbol: str) -> int:
+        """
+        Фаза 2: Заполняет bookTicker колонки из monthly архивов.
+
+        Находит месяцы, где bookDepth заполнен но bookTicker = NULL,
+        и дата после BOOK_TICKER_LAST (daily прекращён).
+        Скачивает monthly ZIP, обрабатывает, UPDATE только bookTicker колонки.
+
+        Returns:
+            Количество обновлённых строк
+        """
+        # Находим месяцы с NULL bookTicker после окончания daily
+        with self.db.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"""
+                    SELECT DISTINCT TO_CHAR(timestamp, 'YYYY-MM') as month
+                    FROM {TABLE_NAME}
+                    WHERE symbol = %s
+                      AND timestamp > %s
+                      AND bid_depth_1pct IS NOT NULL
+                      AND best_bid IS NULL
+                    ORDER BY month
+                """, (symbol, BOOK_TICKER_LAST))
+                months = [row[0] for row in cur.fetchall()]
+
+        if not months:
+            return 0
+
+        logger.info(f"  bookTicker monthly fallback: {len(months)} мес. ({', '.join(months)})")
+
+        total_updated = 0
+
+        for month_str in months:
+            if shutdown_requested:
+                break
+
+            url = BOOK_TICKER_MONTHLY_URL.format(symbol=symbol, month=month_str)
+            logger.info(f"  Скачиваем monthly bookTicker {month_str}...")
+
+            try:
+                zip_bytes = self.download_to_ram(url)
+            except Exception as e:
+                logger.warning(f"  Ошибка скачивания monthly {month_str}: {e}")
+                continue
+
+            if zip_bytes is None:
+                logger.info(f"  Monthly bookTicker {month_str} не найден (404)")
+                continue
+
+            # Обрабатываем (используем тот же process_book_ticker)
+            try:
+                logger.info(f"  Обработка monthly bookTicker {month_str} (может занять ~1-5 мин)...")
+                ticker_data = process_book_ticker(zip_bytes)
+            except Exception as e:
+                logger.warning(f"  Ошибка обработки monthly {month_str}: {e}")
+                continue
+            finally:
+                del zip_bytes
+
+            if not ticker_data:
+                logger.info(f"  Monthly bookTicker {month_str} пустой")
+                continue
+
+            # UPDATE только bookTicker колонки для существующих строк
+            rows_to_update = []
+            for minute_dt, metrics in ticker_data.items():
+                values = [metrics.get(col) for col in TICKER_COLUMNS]
+                values.append(minute_dt)   # WHERE timestamp = %s
+                values.append(symbol)      # WHERE symbol = %s
+                rows_to_update.append(tuple(values))
+
+            del ticker_data
+
+            conn = psycopg2.connect(**self.db.config)
+            try:
+                with conn.cursor() as cur:
+                    psycopg2.extras.execute_batch(
+                        cur, TICKER_UPDATE_SQL, rows_to_update, page_size=500
+                    )
+                conn.commit()
+                total_updated += len(rows_to_update)
+                logger.info(f"  ✅ {month_str}: обновлено {len(rows_to_update):,} строк")
+            except Exception as e:
+                conn.rollback()
+                logger.error(f"  Ошибка записи monthly {month_str}: {e}")
+            finally:
+                conn.close()
+
+        return total_updated
+
     def run(self):
         """Основной цикл загрузки для всех символов"""
         global shutdown_requested
@@ -953,6 +1062,15 @@ class OrderbookBinanceLoader:
             grand_total_skipped += skipped
             symbols_done += 1
 
+        # 3. Фаза 2: monthly bookTicker fallback
+        grand_monthly_rows = 0
+        if not shutdown_requested:
+            for symbol in self.symbols:
+                if shutdown_requested:
+                    break
+                monthly_rows = self.fill_ticker_from_monthly(symbol)
+                grand_monthly_rows += monthly_rows
+
         # Общие итоги
         logger.info("")
         logger.info("=" * 80)
@@ -965,6 +1083,8 @@ class OrderbookBinanceLoader:
         logger.info(f"Дней обработано: {grand_total_days:,}")
         logger.info(f"Дней пропущено (нет данных): {grand_total_skipped:,}")
         logger.info(f"Записано строк: {grand_total_rows:,}")
+        if grand_monthly_rows > 0:
+            logger.info(f"bookTicker из monthly: {grand_monthly_rows:,} строк обновлено")
         logger.info("=" * 80)
 
 
