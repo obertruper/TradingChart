@@ -1189,9 +1189,9 @@ class OrderbookBinanceLoader:
             grand_total_skipped += skipped
             symbols_done += 1
 
-        # 3. Фаза 2: monthly bookTicker fallback
+        # 3. Фаза 2: monthly bookTicker fallback (только с --check-nulls)
         grand_monthly_rows = 0
-        if not shutdown_requested:
+        if self.check_nulls and not shutdown_requested:
             for symbol in self.symbols:
                 if shutdown_requested:
                     break
