@@ -108,6 +108,8 @@ BOOK_TICKER_EARLIEST = datetime(2023, 5, 16, tzinfo=timezone.utc)
 # Binance прекратил публикацию daily bookTicker после 2024-03-30
 # (GitHub issue: binance/binance-public-data#372)
 BOOK_TICKER_LAST = datetime(2024, 3, 30, tzinfo=timezone.utc)
+# Monthly архивы: 2023-05 → 2024-04 (последний). Ищем fallback начиная с апреля.
+BOOK_TICKER_MONTHLY_START = datetime(2024, 4, 1, tzinfo=timezone.utc)
 
 # HTTP
 DOWNLOAD_TIMEOUT = 300  # 5 минут на скачивание файла
@@ -403,36 +405,31 @@ def process_book_depth(zip_bytes: io.BytesIO) -> Dict[datetime, dict]:
 # Обработка bookTicker
 # ═══════════════════════════════════════════════════════════════════
 
-def process_book_ticker(zip_bytes: io.BytesIO) -> Dict[datetime, dict]:
+BOOK_TICKER_CSV_COLUMNS = [
+    'update_id', 'best_bid_price', 'best_bid_qty',
+    'best_ask_price', 'best_ask_qty',
+    'transaction_time', 'event_time',
+]
+
+BOOK_TICKER_CSV_DTYPE = {
+    'update_id': np.int64,
+    'best_bid_price': np.float64,
+    'best_bid_qty': np.float64,
+    'best_ask_price': np.float64,
+    'best_ask_qty': np.float64,
+    'transaction_time': np.int64,
+    'event_time': np.int64,
+}
+
+
+def _aggregate_ticker_df(df: pd.DataFrame) -> Dict[datetime, dict]:
     """
-    Обрабатывает bookTicker ZIP и возвращает dict {minute: metrics}.
+    Агрегирует raw bookTicker DataFrame в per-minute метрики.
 
-    CSV формат: update_id, best_bid_price, best_bid_qty, best_ask_price, best_ask_qty,
-                transaction_time, event_time
-
-    Все колонки без заголовка.
-    Агрегация: LAST, MIN, MAX, AVG, STD, COUNT за минуту.
+    Общая логика для daily и monthly обработки.
+    df должен содержать колонки: best_bid_price, best_bid_qty,
+    best_ask_price, best_ask_qty, transaction_time, event_time, update_id.
     """
-    with zipfile.ZipFile(zip_bytes) as zf:
-        inner_name = zf.namelist()[0]
-        with zf.open(inner_name) as f:
-            df = pd.read_csv(
-                f,
-                names=['update_id', 'best_bid_price', 'best_bid_qty',
-                       'best_ask_price', 'best_ask_qty',
-                       'transaction_time', 'event_time'],
-                header=0,  # CSV имеет заголовок
-                dtype={
-                    'update_id': np.int64,
-                    'best_bid_price': np.float64,
-                    'best_bid_qty': np.float64,
-                    'best_ask_price': np.float64,
-                    'best_ask_qty': np.float64,
-                    'transaction_time': np.int64,
-                    'event_time': np.int64,
-                }
-            )
-
     if df.empty:
         return {}
 
@@ -453,34 +450,25 @@ def process_book_ticker(zip_bytes: io.BytesIO) -> Dict[datetime, dict]:
 
     # Агрегация по минутам
     agg = df.groupby('minute').agg(
-        # LAST значения (берём последний тик в минуте)
         best_bid=('best_bid_price', 'last'),
         best_ask=('best_ask_price', 'last'),
         best_bid_qty=('best_bid_qty', 'last'),
         best_ask_qty=('best_ask_qty', 'last'),
         mid_price=('mid_price', 'last'),
-
-        # Spread stats
         spread=('spread', 'last'),
         spread_pct=('spread_pct', 'last'),
         spread_min=('spread', 'min'),
         spread_max=('spread', 'max'),
         spread_avg=('spread', 'mean'),
         spread_std=('spread', 'std'),
-
-        # Mid price volatility
         mid_price_max=('mid_price', 'max'),
         mid_price_min=('mid_price', 'min'),
         mid_price_std=('mid_price', 'std'),
         mid_price_first=('mid_price', 'first'),
         mid_price_last=('mid_price', 'last'),
-
-        # Activity
         best_bid_changes=('bid_changed', 'sum'),
         best_ask_changes=('ask_changed', 'sum'),
         tick_count=('update_id', 'count'),
-
-        # Quantity stats
         best_bid_qty_avg=('best_bid_qty', 'mean'),
         best_bid_qty_max=('best_bid_qty', 'max'),
         best_ask_qty_avg=('best_ask_qty', 'mean'),
@@ -508,24 +496,12 @@ def process_book_ticker(zip_bytes: io.BytesIO) -> Dict[datetime, dict]:
 
     # Конвертируем в словарь
     result = {}
-    ticker_columns = [
-        'best_bid', 'best_ask', 'best_bid_qty', 'best_ask_qty',
-        'mid_price', 'microprice',
-        'spread', 'spread_pct',
-        'spread_min', 'spread_max', 'spread_avg', 'spread_std',
-        'mid_price_range', 'mid_price_std', 'price_momentum',
-        'best_bid_changes', 'best_ask_changes', 'tick_count',
-        'best_bid_qty_avg', 'best_bid_qty_max',
-        'best_ask_qty_avg', 'best_ask_qty_max',
-    ]
-
     for _, row in agg.iterrows():
         minute_dt = row['minute'].to_pydatetime()
         metrics = {}
-        for col in ticker_columns:
+        for col in TICKER_COLUMNS:
             val = row[col]
             if val is not None and not (isinstance(val, float) and np.isnan(val)):
-                # Конвертируем numpy типы в Python
                 if isinstance(val, (np.integer,)):
                     metrics[col] = int(val)
                 elif isinstance(val, (np.floating,)):
@@ -537,6 +513,24 @@ def process_book_ticker(zip_bytes: io.BytesIO) -> Dict[datetime, dict]:
         result[minute_dt] = metrics
 
     return result
+
+
+def process_book_ticker(zip_bytes: io.BytesIO) -> Dict[datetime, dict]:
+    """
+    Обрабатывает bookTicker daily ZIP и возвращает dict {minute: metrics}.
+    Для daily файлов (~4.5M строк) — загрузка целиком в память.
+    """
+    with zipfile.ZipFile(zip_bytes) as zf:
+        inner_name = zf.namelist()[0]
+        with zf.open(inner_name) as f:
+            df = pd.read_csv(
+                f,
+                names=BOOK_TICKER_CSV_COLUMNS,
+                header=0,
+                dtype=BOOK_TICKER_CSV_DTYPE,
+            )
+
+    return _aggregate_ticker_df(df)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -941,29 +935,44 @@ class OrderbookBinanceLoader:
 
         return total_rows, days_processed, days_skipped
 
+    def _update_ticker_rows(self, ticker_data: Dict[datetime, dict],
+                            symbol: str, conn) -> int:
+        """UPDATE bookTicker колонки для существующих строк."""
+        rows = []
+        for minute_dt, metrics in ticker_data.items():
+            values = [metrics.get(col) for col in TICKER_COLUMNS]
+            values.append(minute_dt)   # WHERE timestamp = %s
+            values.append(symbol)      # WHERE symbol = %s
+            rows.append(tuple(values))
+
+        with conn.cursor() as cur:
+            psycopg2.extras.execute_batch(cur, TICKER_UPDATE_SQL, rows, page_size=500)
+        conn.commit()
+        return len(rows)
+
     def fill_ticker_from_monthly(self, symbol: str) -> int:
         """
         Фаза 2: Заполняет bookTicker колонки из monthly архивов.
 
-        Находит месяцы, где bookDepth заполнен но bookTicker = NULL,
-        и дата после BOOK_TICKER_LAST (daily прекращён).
-        Скачивает monthly ZIP, обрабатывает, UPDATE только bookTicker колонки.
+        Находит месяцы (начиная с 2024-04), где bookDepth заполнен но bookTicker = NULL.
+        Скачивает monthly ZIP, читает CSV по-дневно (чанки ~5M строк),
+        чтобы не загружать 135M строк в память целиком.
 
         Returns:
             Количество обновлённых строк
         """
-        # Находим месяцы с NULL bookTicker после окончания daily
+        # Находим месяцы с NULL bookTicker, начиная с апреля 2024
         with self.db.get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(f"""
                     SELECT DISTINCT TO_CHAR(timestamp, 'YYYY-MM') as month
                     FROM {TABLE_NAME}
                     WHERE symbol = %s
-                      AND timestamp > %s
+                      AND timestamp >= %s
                       AND bid_depth_1pct IS NOT NULL
                       AND best_bid IS NULL
                     ORDER BY month
-                """, (symbol, BOOK_TICKER_LAST))
+                """, (symbol, BOOK_TICKER_MONTHLY_START))
                 months = [row[0] for row in cur.fetchall()]
 
         if not months:
@@ -990,44 +999,72 @@ class OrderbookBinanceLoader:
                 logger.info(f"  Monthly bookTicker {month_str} не найден (404)")
                 continue
 
-            # Обрабатываем (используем тот же process_book_ticker)
-            try:
-                logger.info(f"  Обработка monthly bookTicker {month_str} (может занять ~1-5 мин)...")
-                ticker_data = process_book_ticker(zip_bytes)
-            except Exception as e:
-                logger.warning(f"  Ошибка обработки monthly {month_str}: {e}")
-                continue
-            finally:
-                del zip_bytes
-
-            if not ticker_data:
-                logger.info(f"  Monthly bookTicker {month_str} пустой")
-                continue
-
-            # UPDATE только bookTicker колонки для существующих строк
-            rows_to_update = []
-            for minute_dt, metrics in ticker_data.items():
-                values = [metrics.get(col) for col in TICKER_COLUMNS]
-                values.append(minute_dt)   # WHERE timestamp = %s
-                values.append(symbol)      # WHERE symbol = %s
-                rows_to_update.append(tuple(values))
-
-            del ticker_data
-
+            # Обрабатываем по-дневно через chunked reading
+            logger.info(f"  Обработка monthly bookTicker {month_str} по дням...")
+            month_updated = 0
             conn = psycopg2.connect(**self.db.config)
+
             try:
-                with conn.cursor() as cur:
-                    psycopg2.extras.execute_batch(
-                        cur, TICKER_UPDATE_SQL, rows_to_update, page_size=500
-                    )
-                conn.commit()
-                total_updated += len(rows_to_update)
-                logger.info(f"  ✅ {month_str}: обновлено {len(rows_to_update):,} строк")
+                with zipfile.ZipFile(zip_bytes) as zf:
+                    inner_name = zf.namelist()[0]
+                    with zf.open(inner_name) as f:
+                        reader = pd.read_csv(
+                            f,
+                            names=BOOK_TICKER_CSV_COLUMNS,
+                            header=0,
+                            dtype=BOOK_TICKER_CSV_DTYPE,
+                            chunksize=5_000_000,  # ~1 день данных
+                        )
+
+                        day_buffer = []  # накопитель DataFrame'ов для текущего дня
+                        current_day = None
+
+                        for chunk in reader:
+                            # Определяем день для каждой строки
+                            chunk['day'] = pd.to_datetime(
+                                chunk['transaction_time'], unit='ms', utc=True
+                            ).dt.date
+
+                            for day_val, day_group in chunk.groupby('day'):
+                                if current_day is not None and day_val != current_day:
+                                    # Предыдущий день завершён — обрабатываем
+                                    full_day = pd.concat(day_buffer, ignore_index=True)
+                                    day_buffer = []
+
+                                    ticker_data = _aggregate_ticker_df(full_day)
+                                    del full_day
+                                    if ticker_data:
+                                        n = self._update_ticker_rows(ticker_data, symbol, conn)
+                                        month_updated += n
+                                        logger.info(f"    {current_day}: {n:,} строк")
+                                    del ticker_data
+
+                                current_day = day_val
+                                day_buffer.append(day_group)
+
+                        # Обрабатываем последний день
+                        if day_buffer:
+                            full_day = pd.concat(day_buffer, ignore_index=True)
+                            day_buffer = []
+                            ticker_data = _aggregate_ticker_df(full_day)
+                            del full_day
+                            if ticker_data:
+                                n = self._update_ticker_rows(ticker_data, symbol, conn)
+                                month_updated += n
+                                logger.info(f"    {current_day}: {n:,} строк")
+                            del ticker_data
+
+                del zip_bytes
+                total_updated += month_updated
+                logger.info(f"  ✅ {month_str}: обновлено {month_updated:,} строк")
+
             except Exception as e:
-                conn.rollback()
-                logger.error(f"  Ошибка записи monthly {month_str}: {e}")
+                logger.error(f"  Ошибка обработки monthly {month_str}: {e}")
+                if not conn.closed:
+                    conn.rollback()
             finally:
-                conn.close()
+                if not conn.closed:
+                    conn.close()
 
         return total_updated
 
