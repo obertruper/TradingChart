@@ -18,9 +18,9 @@ Orderbook Loader
 Таблица: orderbook_bybit_futures_1m (56 числовых + 2 JSONB колонок)
 
 Usage:
-    python3 orderbook_loader.py                        # Продолжить загрузку
-    python3 orderbook_loader.py --symbol BTCUSDT       # Конкретный символ
-    python3 orderbook_loader.py --force-reload          # Перезагрузить всё с 2023-01-18
+    python3 orderbook_bybit_loader.py                        # Продолжить загрузку
+    python3 orderbook_bybit_loader.py --symbol BTCUSDT       # Конкретный символ
+    python3 orderbook_bybit_loader.py --force-reload          # Перезагрузить всё с 2023-01-18
 """
 
 import sys
@@ -915,9 +915,9 @@ def parse_args():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Примеры использования:
-  python3 orderbook_loader.py                        # Продолжить загрузку BTCUSDT
-  python3 orderbook_loader.py --symbol BTCUSDT       # Конкретный символ
-  python3 orderbook_loader.py --force-reload          # Перезагрузить всё с 2023-01-18
+  python3 orderbook_bybit_loader.py                        # Продолжить загрузку BTCUSDT
+  python3 orderbook_bybit_loader.py --symbol BTCUSDT       # Конкретный символ
+  python3 orderbook_bybit_loader.py --force-reload          # Перезагрузить всё с 2023-01-18
 
 Источник: https://quote-saver.bycsi.com/orderbook/linear/
 Таблица: orderbook_bybit_futures_1m (58 колонок)

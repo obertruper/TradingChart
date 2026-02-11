@@ -348,9 +348,9 @@ python3 fear_and_greed_coinmarketcap_loader.py --force-reload  # Full reload (al
 # Incremental loading: only NULL records are updated (unless --force-reload)
 
 # Load Orderbook data (market depth from Bybit historical archives)
-python3 orderbook_loader.py
-python3 orderbook_loader.py --symbol BTCUSDT       # Specific symbol only
-python3 orderbook_loader.py --force-reload          # Full reload from 2023-01-18
+python3 orderbook_bybit_loader.py
+python3 orderbook_bybit_loader.py --symbol BTCUSDT       # Specific symbol only
+python3 orderbook_bybit_loader.py --force-reload          # Full reload from 2023-01-18
 # Note: Separate table orderbook_bybit_futures_1m (NOT in indicators tables)
 # Source: Bybit historical archives (quote-saver.bycsi.com/orderbook/linear/)
 # ~600 orderbook updates/min aggregated into 1 row (58 columns)
@@ -555,7 +555,7 @@ cat INDICATORS_REFERENCE.md
 - **Table**: `orderbook_bybit_futures_1m`
 - **Purpose**: Aggregated order book (market depth) data from Bybit futures
 - **Source**: Historical archives from `quote-saver.bycsi.com/orderbook/linear/`
-- **Script**: `indicators/orderbook_loader.py`
+- **Script**: `indicators/orderbook_bybit_loader.py`
 - **Primary Key**: (timestamp, symbol) - matches candles and indicators tables
 - **Columns** (60 total: 2 key + 56 numeric + 2 JSONB):
   - **Price** (6): best_bid, best_ask, mid_price, microprice, vwap_bid, vwap_ask
@@ -726,7 +726,7 @@ TradingChart/
 │   ├── premium_index_loader.py       # Premium Index from Bybit API (Mar 2020+)
 │   ├── fear_and_greed_loader.py       # Fear & Greed from Alternative.me API
 │   ├── fear_and_greed_coinmarketcap_loader.py  # Market metrics from CoinMarketCap API
-│   ├── orderbook_loader.py            # Orderbook data from Bybit historical archives
+│   ├── orderbook_bybit_loader.py            # Orderbook data from Bybit historical archives
 │   ├── orderbook_binance_loader.py    # Orderbook data from Binance public archives
 │   ├── database.py                    # Database operations for indicators
 │   ├── indicators_config.yaml         # Indicators configuration
