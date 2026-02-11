@@ -65,8 +65,9 @@ class CoinMarketCapFearGreedLoader:
         # Кеш для checkpoint'ов (чтобы не запрашивать повторно)
         self.checkpoints_cache = None
 
-        # Флаг принудительного пересчета (устанавливается из main())
+        # Флаги режимов (устанавливаются из main())
         self.force_reload = False
+        self.check_nulls = False
 
         self.logger.info("=" * 60)
         self.logger.info("🚀 Запуск CoinMarketCap Fear & Greed Index Loader")
@@ -409,6 +410,28 @@ class CoinMarketCapFearGreedLoader:
             cursor.close()
             conn.close()
 
+    def get_last_filled_date(self, timeframe: str) -> Optional[date]:
+        """
+        Получает последнюю дату где данные Fear & Greed CoinMarketCap заполнены.
+        """
+        table_name = f'indicators_bybit_futures_{timeframe}'
+
+        conn = self.connect_db()
+        cursor = conn.cursor()
+
+        try:
+            cursor.execute(f"""
+                SELECT DATE(MAX(timestamp))
+                FROM {table_name}
+                WHERE symbol = %s
+                  AND {self.index_column} IS NOT NULL
+            """, (self.symbol,))
+            result = cursor.fetchone()
+            return result[0] if result and result[0] else None
+        finally:
+            cursor.close()
+            conn.close()
+
     def get_null_dates(self, timeframe: str) -> Dict[date, int]:
         """
         Получает даты где есть NULL записи для Fear & Greed CoinMarketCap
@@ -561,7 +584,12 @@ class CoinMarketCapFearGreedLoader:
 
     def process_timeframe(self, timeframe: str, start_date: datetime, end_date: datetime) -> bool:
         """
-        Обработка одного таймфрейма с оптимизацией - только NULL записи
+        Обработка одного таймфрейма.
+
+        Режимы:
+          - force_reload: обновляет все записи
+          - check_nulls: сканирует NULL и заполняет пропуски
+          - default: инкрементально от последней заполненной даты
 
         Args:
             timeframe: Таймфрейм
@@ -579,34 +607,43 @@ class CoinMarketCapFearGreedLoader:
             self.logger.error("❌ Нет данных API для обработки")
             return False
 
-        # Получаем даты где есть NULL записи
-        null_dates = self.get_null_dates(timeframe)
+        if self.force_reload or self.check_nulls:
+            # Режимы force-reload и check-nulls: сканируем NULL
+            null_dates = self.get_null_dates(timeframe)
 
-        # Фильтруем только те даты, для которых есть API данные
-        dates_to_process = []
-        for dt in null_dates.keys():
-            if dt in api_data:
-                dates_to_process.append(dt)
+            dates_to_process = []
+            for dt in null_dates.keys():
+                if dt in api_data:
+                    dates_to_process.append(dt)
+            dates_to_process.sort()
 
-        # Сортируем даты
-        dates_to_process.sort()
+            total_null_dates = len(null_dates)
+            total_with_api = len(dates_to_process)
+            total_null_records = sum(null_dates.values())
 
-        # Статистика
-        total_null_dates = len(null_dates)
-        total_with_api = len(dates_to_process)
-        total_null_records = sum(null_dates.values())
+            mode_name = "force-reload" if self.force_reload else "check-nulls"
+            self.logger.info(f"🔍 Режим --{mode_name}: сканирование NULL записей")
+            self.logger.info(f"   • Дней с NULL: {total_null_dates}")
+            self.logger.info(f"   • Дней с API данными: {total_with_api}")
+            self.logger.info(f"   • Всего NULL записей: {total_null_records:,}")
+        else:
+            # Режим по умолчанию: инкрементально от последней заполненной даты
+            last_filled = self.get_last_filled_date(timeframe)
 
-        self.logger.info(f"📊 Статистика NULL записей:")
-        self.logger.info(f"   • Дней с NULL: {total_null_dates}")
-        self.logger.info(f"   • Дней с API данными: {total_with_api}")
-        self.logger.info(f"   • Всего NULL записей: {total_null_records:,}")
+            if last_filled:
+                self.logger.info(f"📅 Последняя заполненная дата: {last_filled}")
+                dates_to_process = sorted([d for d in api_data.keys() if d > last_filled])
+            else:
+                self.logger.info(f"📅 Данных нет - обрабатываем все API даты")
+                dates_to_process = sorted(api_data.keys())
+
+            self.logger.info(f"   📝 Новых дней для обработки: {len(dates_to_process)}")
 
         if not dates_to_process:
-            self.logger.info(f"✅ Таймфрейм {timeframe} полностью заполнен")
+            self.logger.info(f"✅ Таймфрейм {timeframe} актуален")
             return True
 
-        if dates_to_process:
-            self.logger.info(f"📅 Период обработки: {dates_to_process[0]} - {dates_to_process[-1]}")
+        self.logger.info(f"📅 Период обработки: {dates_to_process[0]} - {dates_to_process[-1]}")
 
         # Открываем ОДНО соединение для всех дней (оптимизация)
         conn = self.connect_db()
@@ -621,32 +658,24 @@ class CoinMarketCapFearGreedLoader:
                     value = data['value']
                     classification = data['classification']
 
-                    # Обновляем данные (только NULL записи, передаем существующее соединение)
                     count = self.update_batch(
                         timeframe, date_key, value, classification,
                         conn=conn,
-                        only_null=not self.force_reload  # При force_reload обновляем все
+                        only_null=not self.force_reload
                     )
                     updated_records += count
 
-                    # Обновляем прогресс-бар
                     pbar.set_description(f"{timeframe}: {date_key} (CMC={value}, записано={count})")
 
-                    # Batch commit каждые N дней
                     if (i + 1) % commit_batch_size == 0:
                         conn.commit()
 
                     pbar.update(1)
 
-            # Финальный commit
             conn.commit()
-
-            # Считаем пропущенные (нет в API)
-            skipped_no_api = total_null_dates - total_with_api
 
             self.logger.info(f"✅ Таймфрейм {timeframe} обработан:")
             self.logger.info(f"   • Записано: {updated_records:,} записей")
-            self.logger.info(f"   • Пропущено (нет API): {skipped_no_api} дней")
             return True
 
         except Exception as e:
@@ -752,7 +781,8 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Примеры использования:
-  python fear_and_greed_coinmarketcap_loader.py                    # Заполнить NULL записи
+  python fear_and_greed_coinmarketcap_loader.py                    # Инкрементальная загрузка (новые данные)
+  python fear_and_greed_coinmarketcap_loader.py --check-nulls      # Проверить и заполнить NULL в середине данных
   python fear_and_greed_coinmarketcap_loader.py --force-reload     # Перезаписать все данные
   python fear_and_greed_coinmarketcap_loader.py --timeframe 1h     # Только 1h таймфрейм
         """
@@ -760,6 +790,8 @@ def main():
 
     parser.add_argument('--force-reload', action='store_true',
                        help='Перезаписать все данные (игнорировать оптимизацию)')
+    parser.add_argument('--check-nulls', action='store_true',
+                       help='Проверить и заполнить NULL значения в середине данных')
     parser.add_argument('--timeframe', type=str,
                        help='Обработать только указанный таймфрейм (1m, 15m, 1h)')
 
@@ -767,6 +799,7 @@ def main():
 
     loader = CoinMarketCapFearGreedLoader()
     loader.force_reload = args.force_reload
+    loader.check_nulls = args.check_nulls
 
     # Если указан конкретный таймфрейм
     if args.timeframe:
@@ -774,6 +807,8 @@ def main():
 
     if args.force_reload:
         loader.logger.info("🔄 Режим force-reload: будут перезаписаны ВСЕ данные")
+    elif args.check_nulls:
+        loader.logger.info("🔍 Режим check-nulls: поиск и заполнение NULL значений")
 
     success = loader.run()
     sys.exit(0 if success else 1)

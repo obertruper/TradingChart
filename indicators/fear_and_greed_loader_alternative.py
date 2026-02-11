@@ -85,8 +85,9 @@ class FearAndGreedLoader:
         # Данные с API (загружаются один раз)
         self.api_data = None
 
-        # Флаг принудительного пересчета (устанавливается из main())
+        # Флаги режимов (устанавливаются из main())
         self.force_reload = False
+        self.check_nulls = False
 
     def load_config(self) -> dict:
         """Загружает конфигурацию из файла"""
@@ -201,6 +202,23 @@ class FearAndGreedLoader:
                     return None
 
         return None
+
+    def get_last_filled_date(self, timeframe: str) -> Optional[datetime.date]:
+        """
+        Получает последнюю дату где Fear & Greed данные заполнены.
+        """
+        table_name = f'indicators_bybit_futures_{timeframe}'
+
+        with self.db.get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(f"""
+                SELECT DATE(MAX(timestamp))
+                FROM {table_name}
+                WHERE symbol = %s
+                  AND fear_and_greed_index_alternative IS NOT NULL
+            """, (self.symbol,))
+            result = cur.fetchone()
+            return result[0] if result and result[0] else None
 
     def get_null_dates(self, timeframe: str) -> Dict[datetime.date, int]:
         """
@@ -383,7 +401,12 @@ class FearAndGreedLoader:
 
     def process_timeframe(self, timeframe: str, start_date: datetime, end_date: datetime) -> bool:
         """
-        Обрабатывает один таймфрейм с оптимизацией - только NULL записи
+        Обрабатывает один таймфрейм.
+
+        Режимы:
+          - force_reload: обновляет все записи
+          - check_nulls: сканирует NULL и заполняет пропуски
+          - default: инкрементально от последней заполненной даты
 
         Args:
             timeframe: Таймфрейм
@@ -395,51 +418,57 @@ class FearAndGreedLoader:
         """
         logger.info(f"\n📊 Обработка таймфрейма: {timeframe}")
 
-        # Получаем даты где есть NULL записи
-        null_dates = self.get_null_dates(timeframe)
+        if self.force_reload or self.check_nulls:
+            # Режимы force-reload и check-nulls: сканируем NULL
+            null_dates = self.get_null_dates(timeframe)
 
-        # Фильтруем только те даты, для которых есть API данные
-        dates_to_process = []
-        for date in null_dates.keys():
-            if date in self.api_data:
-                dates_to_process.append(date)
+            dates_to_process = []
+            for date in null_dates.keys():
+                if date in self.api_data:
+                    dates_to_process.append(date)
+            dates_to_process.sort()
 
-        # Сортируем даты
-        dates_to_process.sort()
+            total_null_dates = len(null_dates)
+            total_with_api = len(dates_to_process)
+            total_null_records = sum(null_dates.values())
 
-        # Статистика
-        total_null_dates = len(null_dates)
-        total_with_api = len(dates_to_process)
-        total_null_records = sum(null_dates.values())
+            mode_name = "force-reload" if self.force_reload else "check-nulls"
+            logger.info(f"🔍 Режим --{mode_name}: сканирование NULL записей")
+            logger.info(f"   • Дней с NULL: {total_null_dates}")
+            logger.info(f"   • Дней с API данными: {total_with_api}")
+            logger.info(f"   • Всего NULL записей: {total_null_records:,}")
+        else:
+            # Режим по умолчанию: инкрементально от последней заполненной даты
+            last_filled = self.get_last_filled_date(timeframe)
 
-        logger.info(f"📊 Статистика NULL записей:")
-        logger.info(f"   • Дней с NULL: {total_null_dates}")
-        logger.info(f"   • Дней с API данными: {total_with_api}")
-        logger.info(f"   • Всего NULL записей: {total_null_records:,}")
+            if last_filled:
+                logger.info(f"📅 Последняя заполненная дата: {last_filled}")
+                dates_to_process = sorted([d for d in self.api_data.keys() if d > last_filled])
+            else:
+                logger.info(f"📅 Данных нет - обрабатываем все API даты")
+                dates_to_process = sorted(self.api_data.keys())
+
+            logger.info(f"   📝 Новых дней для обработки: {len(dates_to_process)}")
 
         if not dates_to_process:
-            logger.info(f"✅ Таймфрейм {timeframe} полностью заполнен")
+            logger.info(f"✅ Таймфрейм {timeframe} актуален")
             return True
 
-        if dates_to_process:
-            logger.info(f"📅 Период обработки: {dates_to_process[0]} - {dates_to_process[-1]}")
+        logger.info(f"📅 Период обработки: {dates_to_process[0]} - {dates_to_process[-1]}")
 
-        # Обрабатываем только даты с NULL записями
         updated_total = 0
-        skipped_no_api = 0
 
         with tqdm(total=len(dates_to_process), desc=f"Загрузка {timeframe}") as pbar:
             for current_date in dates_to_process:
                 fng_data = self.api_data[current_date]
 
                 try:
-                    # Обновляем записи за день (только NULL)
                     updated = self.update_batch(
                         timeframe,
                         current_date,
                         fng_data['value'],
                         fng_data['classification'],
-                        only_null=not self.force_reload  # При force_reload обновляем все
+                        only_null=not self.force_reload
                     )
 
                     updated_total += updated
@@ -455,12 +484,8 @@ class FearAndGreedLoader:
 
                 pbar.update(1)
 
-        # Считаем пропущенные (нет в API)
-        skipped_no_api = total_null_dates - total_with_api
-
         logger.info(f"✅ Таймфрейм {timeframe} обработан:")
         logger.info(f"   • Записано: {updated_total:,} записей")
-        logger.info(f"   • Пропущено (нет API): {skipped_no_api} дней")
         return True
 
     def run(self):
@@ -534,7 +559,8 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Примеры использования:
-  python fear_and_greed_loader_alternative.py                    # Заполнить NULL записи
+  python fear_and_greed_loader_alternative.py                    # Инкрементальная загрузка (новые данные)
+  python fear_and_greed_loader_alternative.py --check-nulls      # Проверить и заполнить NULL в середине данных
   python fear_and_greed_loader_alternative.py --force-reload     # Перезаписать все данные
   python fear_and_greed_loader_alternative.py --timeframe 1h     # Только 1h таймфрейм
         """
@@ -542,6 +568,8 @@ def main():
 
     parser.add_argument('--force-reload', action='store_true',
                        help='Перезаписать все данные (игнорировать оптимизацию)')
+    parser.add_argument('--check-nulls', action='store_true',
+                       help='Проверить и заполнить NULL значения в середине данных')
     parser.add_argument('--timeframe', type=str,
                        help='Обработать только указанный таймфрейм (1m, 15m, 1h)')
 
@@ -549,6 +577,7 @@ def main():
 
     loader = FearAndGreedLoader(symbol='BTCUSDT')
     loader.force_reload = args.force_reload
+    loader.check_nulls = args.check_nulls
 
     # Если указан конкретный таймфрейм
     if args.timeframe:
@@ -556,6 +585,8 @@ def main():
 
     if args.force_reload:
         logger.info("🔄 Режим force-reload: будут перезаписаны ВСЕ данные")
+    elif args.check_nulls:
+        logger.info("🔍 Режим check-nulls: поиск и заполнение NULL значений")
 
     loader.run()
 

@@ -106,6 +106,7 @@ class HVLoader:
         self.symbol_progress = ""
         self.timeframe_minutes = self._parse_timeframes()
         self.force_reload = False
+        self.check_nulls = False
 
     def load_config(self):
         """Загружает конфигурацию из файла"""
@@ -231,6 +232,26 @@ class HVLoader:
             cur = conn.cursor()
             cur.execute(query, (self.symbol,))
             return {row[0] for row in cur.fetchall()}
+
+    def get_last_hv_timestamp(self, timeframe: str):
+        """
+        Получает последний timestamp где все HV колонки заполнены.
+        """
+        table_name = f'indicators_bybit_futures_{timeframe}'
+        not_null_conditions = ' AND '.join([f'{col} IS NOT NULL' for col in self.HV_COLUMNS])
+
+        query = f"""
+            SELECT MAX(timestamp)
+            FROM {table_name}
+            WHERE symbol = %s
+            AND ({not_null_conditions})
+        """
+
+        with self.db.get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(query, (self.symbol,))
+            result = cur.fetchone()
+            return result[0] if result and result[0] else None
 
     def calculate_hv(self, closes: np.ndarray, period: int) -> np.ndarray:
         """
@@ -616,7 +637,8 @@ class HVLoader:
         if self.force_reload:
             logger.info(f"   🔄 Режим force-reload: записываем все {total_records:,} записей")
             records_to_write = df_write
-        else:
+        elif self.check_nulls:
+            # Режим --check-nulls: сканируем NULL и заполняем пропуски
             null_timestamps = self.get_null_timestamps(timeframe)
 
             if not null_timestamps:
@@ -627,10 +649,21 @@ class HVLoader:
             records_to_write = df_write[df_write['timestamp'].isin(null_timestamps)]
             skipped_records = total_records - len(records_to_write)
 
-            logger.info(f"   📊 Статистика оптимизации:")
+            logger.info(f"   📊 Статистика оптимизации (--check-nulls):")
             logger.info(f"      • Всего рассчитано: {total_records:,} записей")
             logger.info(f"      • Нужно записать: {len(records_to_write):,} записей (HV IS NULL)")
             logger.info(f"      • Пропущено: {skipped_records:,} записей (уже заполнены)")
+        else:
+            # Режим по умолчанию: инкрементально от последней даты
+            last_ts = self.get_last_hv_timestamp(timeframe)
+
+            if last_ts:
+                records_to_write = df_write[df_write['timestamp'] > last_ts]
+                logger.info(f"   📅 Последняя дата с данными: {last_ts}")
+                logger.info(f"   📝 Новых записей для добавления: {len(records_to_write):,}")
+            else:
+                records_to_write = df_write
+                logger.info(f"   📝 Данных нет - записываем все {total_records:,} записей")
 
         if len(records_to_write) > 0:
             self.write_results_in_batches(timeframe, periods, records_to_write, batch_days)
@@ -757,9 +790,10 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Примеры использования:
-  python hv_loader.py                          # Загрузка для всех символов
+  python hv_loader.py                          # Инкрементальная загрузка (новые данные)
   python hv_loader.py --symbol BTCUSDT         # Только для BTCUSDT
   python hv_loader.py --timeframe 1h           # Только часовой таймфрейм
+  python hv_loader.py --check-nulls            # Проверить и заполнить NULL в середине данных
   python hv_loader.py --force-reload           # Полный пересчёт всех данных
         """
     )
@@ -778,6 +812,8 @@ def main():
                        help='Начальная дата в формате YYYY-MM-DD')
     parser.add_argument('--force-reload', action='store_true',
                        help='Полный пересчёт всех данных')
+    parser.add_argument('--check-nulls', action='store_true',
+                       help='Проверить и заполнить NULL значения в середине данных')
 
     args = parser.parse_args()
 
@@ -827,6 +863,7 @@ def main():
             loader = HVLoader(symbol=symbol)
             loader.symbol_progress = f"[{idx}/{total_symbols}]"
             loader.force_reload = args.force_reload
+            loader.check_nulls = args.check_nulls
             loader.run(timeframes, args.batch_days, start_date)
             logger.info(f"✅ Символ {symbol} обработан")
         except KeyboardInterrupt:
