@@ -367,9 +367,11 @@ python3 orderbook_binance_loader.py --force-reload          # Full reload from 2
 # Note: Separate table orderbook_binance_futures_1m (NOT in indicators tables)
 # Two data sources from Binance public archives:
 #   bookDepth (2023-01-01+): depth by % levels (±1-5%, ±0.2%), ~500KB/day ZIP
-#   bookTicker (2023-05-16+): best bid/ask ticks (~4.5M/day), 50-130MB/day ZIP
+#   bookTicker (2023-05-16 → 2024-03-30): best bid/ask ticks (~4.5M/day), 50-130MB/day ZIP
+#     DISCONTINUED by Binance after 2024-03-30 (GitHub issue binance/binance-public-data#372)
 # 46 columns: 2 PK + 22 bookTicker + 22 bookDepth
-# bookTicker columns NULL before 2023-05-16, ±0.2% levels NULL before 2026-01-15
+# bookTicker columns: NULL before 2023-05-16 and after 2024-03-30
+# ±0.2% levels NULL before 2026-01-15
 # Daily batching: download ZIP to RAM → process → merge → INSERT...ON CONFLICT → COMMIT
 # Graceful shutdown: 1st Ctrl+C finishes current day, 2nd force exits
 # Multi-symbol: reads symbols from indicators_config.yaml → binance_orderbook.symbols
@@ -583,7 +585,7 @@ cat INDICATORS_REFERENCE.md
 - **Script**: `indicators/orderbook_binance_loader.py`
 - **Primary Key**: (timestamp, symbol) - matches candles and indicators tables
 - **Columns** (46 total: 2 key + 22 bookTicker + 22 bookDepth):
-  - **bookTicker columns** (22, NULL before 2023-05-16):
+  - **bookTicker columns** (22, NULL before 2023-05-16 and after 2024-03-30):
     - **Price** (6): best_bid, best_ask, best_bid_qty, best_ask_qty, mid_price, microprice
     - **Spread** (6): spread, spread_pct, spread_min, spread_max, spread_avg, spread_std
     - **Volatility** (3): mid_price_range, mid_price_std, price_momentum
@@ -601,7 +603,7 @@ cat INDICATORS_REFERENCE.md
 - **Indexes**: (symbol, timestamp), (timestamp)
 - **Data Sources**:
   - bookDepth: `data.binance.vision/data/futures/um/daily/bookDepth/{SYMBOL}/` (2023-01-01+, ~500KB/day)
-  - bookTicker: `data.binance.vision/data/futures/um/daily/bookTicker/{SYMBOL}/` (2023-05-16+, 50-130MB/day)
+  - bookTicker: `data.binance.vision/data/futures/um/daily/bookTicker/{SYMBOL}/` (2023-05-16 → 2024-03-30, DISCONTINUED)
 - **Aggregation**: bookDepth LAST snapshot/min + bookTicker pandas groupby agg (LAST/MIN/MAX/AVG/STD)
 - **Storage**: ~0.4 KB/row, ~0.56 MB/day per symbol, ~0.20 GB/year per symbol
 - **Architecture**: Separate table, daily batching with ZIP download to RAM, INSERT...ON CONFLICT DO UPDATE
@@ -1368,6 +1370,18 @@ GET https://pro-api.coinmarketcap.com/v1/global-metrics/quotes/latest
   - **Performance Estimate**: bookDepth-only days ~1-2s/day, both sources ~15-90s/day
   - **Files Created**: `indicators/orderbook_binance_loader.py`
   - **Files Modified**: `indicators/indicators_config.yaml`, `indicators/start_all_loaders.py`
+- **Binance Orderbook Loader Bug Fixes** (2026-02-11):
+  - **Bug Fix #1 — bookDepth CSV format change**: Binance changed `percentage` column from integer (`"1"`) to decimal (`"1.00"`) on 2026-01-14
+    - **Root Cause**: String comparison `pct_abs == '1'` didn't match `'1.00'` — all metrics empty
+    - **Impact**: 38,178 rows (2026-01-14 onwards) had NULL in all bookDepth columns
+    - **Fix**: Normalize string before comparison: `pct_abs.rstrip('0').rstrip('.')` — `"1.00"` → `"1"`, `"0.20"` → `"0.2"`
+    - **Recovery**: Re-run loader to fill NULL rows
+  - **Bug Fix #2 — bookTicker discontinued**: Binance stopped publishing daily bookTicker after 2024-03-30
+    - **Root Cause**: Binance silently deprecated bookTicker data ([GitHub issue #372](https://github.com/binance/binance-public-data/issues/372))
+    - **Impact**: bookTicker columns NULL for all dates after 2024-03-30 (was attempting 404 downloads)
+    - **Fix**: Added `BOOK_TICKER_LAST = 2024-03-30` constant, skip bookTicker download for later dates
+    - **Status**: Permanent limitation, no alternative data source from Binance
+  - **Files Modified**: `indicators/orderbook_binance_loader.py`, `docs/ORDERBOOK_BINANCE_REFERENCE.md`
 
 ### Security Notes
 - Database passwords are stored in `.env` file (not in repository)

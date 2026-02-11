@@ -70,7 +70,7 @@
 - ~500 KB/день ZIP
 - Агрегация: берём **LAST снимок** за каждую минуту
 
-### bookTicker (с 2023-05-16)
+### bookTicker (2023-05-16 → 2024-03-30)
 
 **URL:** `https://data.binance.vision/data/futures/um/daily/bookTicker/{SYMBOL}/{SYMBOL}-bookTicker-{YYYY-MM-DD}.zip`
 
@@ -83,13 +83,19 @@
 - 50-130 MB/день ZIP
 - Агрегация: pandas `groupby('minute').agg()` — LAST, MIN, MAX, AVG, STD, COUNT
 
+> **ВНИМАНИЕ:** Binance прекратил публикацию daily bookTicker после **2024-03-30**.
+> Последний daily файл: `BTCUSDT-bookTicker-2024-03-30.zip`.
+> Последний monthly файл: `BTCUSDT-bookTicker-2024-04.zip`.
+> Подтверждено: [GitHub issue binance/binance-public-data#372](https://github.com/binance/binance-public-data/issues/372) (без ответа от Binance).
+> bookTicker никогда не был официально документирован как тип данных.
+
 ### Процесс обработки
 
 ```
 Для каждого дня:
   1. Скачать bookDepth ZIP (~500 KB) → распаковать → агрегировать
      └→ LAST snapshot за минуту → depth/notional по % уровням → imbalance/pressure
-  2. Если дата >= 2023-05-16:
+  2. Если дата в диапазоне 2023-05-16 ... 2024-03-30:
      Скачать bookTicker ZIP (50-130 MB) → распаковать → агрегировать
      └→ pandas groupby().agg() → best bid/ask, spread stats, activity
   3. Merge depth + ticker → 1440 строк (1 на минуту)
@@ -104,13 +110,13 @@
 **Колонок:** 46 (2 ключевых + 22 bookTicker + 22 bookDepth)
 **Primary Key:** `(timestamp, symbol)`
 
-| # | Источник | Группа | Кол-во | Доступно с |
-|---|----------|--------|--------|------------|
-| 1 | bookTicker | Price | 6 | 2023-05-16 |
-| 2 | bookTicker | Spread | 6 | 2023-05-16 |
-| 3 | bookTicker | Volatility | 3 | 2023-05-16 |
-| 4 | bookTicker | Activity | 3 | 2023-05-16 |
-| 5 | bookTicker | Quantity Stats | 4 | 2023-05-16 |
+| # | Источник | Группа | Кол-во | Доступно |
+|---|----------|--------|--------|----------|
+| 1 | bookTicker | Price | 6 | 2023-05-16 → 2024-03-30 |
+| 2 | bookTicker | Spread | 6 | 2023-05-16 → 2024-03-30 |
+| 3 | bookTicker | Volatility | 3 | 2023-05-16 → 2024-03-30 |
+| 4 | bookTicker | Activity | 3 | 2023-05-16 → 2024-03-30 |
+| 5 | bookTicker | Quantity Stats | 4 | 2023-05-16 → 2024-03-30 |
 | 6 | bookDepth | Bid/Ask Depth | 10 | 2023-01-01 |
 | 7 | bookDepth | Notional | 2 | 2023-01-01 |
 | 8 | bookDepth | ±0.2% Levels | 2 | 2026-01-15 |
@@ -125,7 +131,7 @@
 
 **Колонки:** `best_bid`, `best_ask`, `best_bid_qty`, `best_ask_qty`, `mid_price`, `microprice`
 
-NULL до 2023-05-16 (bookTicker недоступен).
+NULL до 2023-05-16 и после 2024-03-30 (Binance прекратил публикацию bookTicker).
 
 ### best_bid, best_ask `DECIMAL(20,8)`
 
@@ -475,19 +481,20 @@ ORDER BY c.timestamp;
 
 ### Источники данных
 
-| Источник | URL | Доступен с | Размер/день |
-|----------|-----|-----------|-------------|
-| bookDepth | `data.binance.vision/.../bookDepth/` | 2023-01-01 | ~500 KB |
-| bookTicker | `data.binance.vision/.../bookTicker/` | 2023-05-16 | 50-130 MB |
+| Источник | URL | Период | Размер/день |
+|----------|-----|--------|-------------|
+| bookDepth | `data.binance.vision/.../bookDepth/` | 2023-01-01 → настоящее | ~500 KB |
+| bookTicker | `data.binance.vision/.../bookTicker/` | 2023-05-16 → 2024-03-30 | 50-130 MB |
 
 ### NULL-периоды
 
-| Колонки | NULL до | Причина |
-|---------|---------|---------|
-| Все bookTicker (22 колонки) | 2023-05-16 | bookTicker архивы начинаются позже |
-| bid_depth_02pct, ask_depth_02pct | 2026-01-15 | ±0.2% уровни добавлены позже |
+| Колонки | NULL период | Причина |
+|---------|------------|---------|
+| Все bookTicker (22 колонки) | до 2023-05-16 | bookTicker архивы начинаются позже |
+| Все bookTicker (22 колонки) | после 2024-03-30 | Binance прекратил публикацию (GitHub issue #372) |
+| bid_depth_02pct, ask_depth_02pct | до 2026-01-15 | ±0.2% уровни добавлены позже |
 
-**Переход bookTicker** (проверено на реальных данных):
+**Переход bookTicker — начало** (проверено на реальных данных):
 
 | Дата | bookTicker заполнен | Примечание |
 |------|---------------------|------------|
@@ -495,6 +502,14 @@ ORDER BY c.timestamp;
 | 2023-05-16 | 42% | Данные начинаются с 11:49 UTC |
 | 2023-05-17 | 62% | Неполный день |
 | 2023-05-18+ | 100% | Полные данные |
+
+**Прекращение bookTicker:**
+
+| Дата | Статус | Примечание |
+|------|--------|------------|
+| 2024-03-30 | Последний day-файл | `BTCUSDT-bookTicker-2024-03-30.zip` |
+| 2024-04 | Последний month-файл | `BTCUSDT-bookTicker-2024-04.zip` |
+| 2024-04-01+ | 0% | Binance прекратил публикацию без уведомления |
 
 ### Типичные значения (проверено на 200K+ строк, 2023-01-01 → 2023-05-29)
 
@@ -534,3 +549,38 @@ orderbook_bybit_futures_1m    orderbook_binance_futures_1m
 ```
 
 Все таблицы имеют **одинаковый Primary Key**: `(timestamp, symbol)` — можно JOIN без проблем.
+
+---
+
+## Известные проблемы и исправления
+
+### 1. bookTicker прекращён после 2024-03-30
+
+**Проблема:** Binance прекратил публикацию daily bookTicker архивов после 2024-03-30. bookTicker никогда не был официально документирован в [binance/binance-public-data](https://github.com/binance/binance-public-data).
+
+**GitHub issue:** [binance/binance-public-data#372](https://github.com/binance/binance-public-data/issues/372) (без ответа от Binance).
+
+**Влияние:** 22 bookTicker колонки = NULL для всех дат после 2024-03-30. bookDepth данные (22 колонки) продолжают публиковаться и загружаться корректно.
+
+**Статус:** Исправлено в коде — загрузчик не пытается скачивать bookTicker после 2024-03-30 (экономит время на 404 запросы).
+
+### 2. Формат bookDepth CSV изменился 2026-01-14
+
+**Проблема:** 14 января 2026 Binance изменил формат колонки `percentage` в bookDepth CSV с целых чисел на десятичные:
+- До: `-5`, `-1`, `1`, `5`
+- После: `-5.00`, `-1.00`, `1.00`, `5.00`
+
+Код сравнивал строки напрямую (`== '1'`), что не совпадало с `'1.00'`. Все метрики оставались пустыми.
+
+**Влияние:** 38,178 строк (с 2026-01-14) имели NULL во всех bookDepth колонках.
+
+**Исправление:** Нормализация строки процента перед сравнением: `pct_abs.rstrip('0').rstrip('.')` — `"1.00"` → `"1"`, `"0.20"` → `"0.2"`.
+
+**Статус:** Исправлено. Требуется перезапуск загрузки для заполнения NULL данных.
+
+### 3. Пропущенные дни
+
+3 дня полностью отсутствуют в архивах Binance (нет bookDepth файлов):
+- 2023-02-08, 2023-02-09, 2024-04-18
+
+Несколько дней имеют неполные данные (1-5 строк вместо ~1440). Это нормально для архивов Binance.

@@ -11,10 +11,11 @@ Orderbook Binance Loader
    - ~2800 снимков/день (~30 сек интервал), 10-12 строк/снимок
    - ~500 KB/день ZIP
 
-2. bookTicker (2023-05-16 → настоящее):
+2. bookTicker (2023-05-16 → 2024-03-30):
    - URL: https://data.binance.vision/data/futures/um/daily/bookTicker/{SYMBOL}/{SYMBOL}-bookTicker-{YYYY-MM-DD}.zip
    - CSV: update_id, best_bid_price, best_bid_qty, best_ask_price, best_ask_qty, transaction_time, event_time
    - ~4.5M тиков/день, 50-130 MB/день ZIP
+   - ВНИМАНИЕ: Binance прекратил публикацию после 2024-03-30 (GitHub issue #372)
 
 Алгоритм:
 1. Определяем последнюю запись в БД (MAX timestamp)
@@ -103,6 +104,9 @@ BOOK_TICKER_URL = "https://data.binance.vision/data/futures/um/daily/bookTicker/
 # Даты начала данных
 BOOK_DEPTH_EARLIEST = datetime(2023, 1, 1, tzinfo=timezone.utc)
 BOOK_TICKER_EARLIEST = datetime(2023, 5, 16, tzinfo=timezone.utc)
+# Binance прекратил публикацию daily bookTicker после 2024-03-30
+# (GitHub issue: binance/binance-public-data#372)
+BOOK_TICKER_LAST = datetime(2024, 3, 30, tzinfo=timezone.utc)
 
 # HTTP
 DOWNLOAD_TIMEOUT = 300  # 5 минут на скачивание файла
@@ -311,6 +315,9 @@ def process_book_depth(zip_bytes: io.BytesIO) -> Dict[datetime, dict]:
             else:
                 side = 'ask'
                 pct_abs = pct
+
+            # Нормализуем строку процента: "1.00" → "1", "0.20" → "0.2"
+            pct_abs = pct_abs.rstrip('0').rstrip('.')
 
             # Маппинг на колонки
             if pct_abs == '0.2':
@@ -822,7 +829,7 @@ class OrderbookBinanceLoader:
 
                 # === bookTicker ===
                 ticker_data = None
-                if file_date >= BOOK_TICKER_EARLIEST:
+                if BOOK_TICKER_EARLIEST <= file_date <= BOOK_TICKER_LAST:
                     ticker_url = BOOK_TICKER_URL.format(symbol=symbol, date=date_str)
                     try:
                         ticker_zip = self.download_to_ram(ticker_url)
