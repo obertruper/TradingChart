@@ -708,37 +708,22 @@ class OrderbookBinanceLoader:
 
         return start
 
-    def download_to_ram(self, url: str, show_progress: bool = False) -> Optional[io.BytesIO]:
+    def download_to_ram(self, url: str) -> Optional[io.BytesIO]:
         """
         Скачивает ZIP в RAM и возвращает BytesIO.
         Возвращает None при 404 (нормально для отсутствующих дат).
-        show_progress: показывать tqdm прогресс-бар (для больших файлов).
+        Для больших файлов используйте download_to_disk().
         """
         last_error = None
         for attempt in range(1, RETRY_ATTEMPTS + 1):
             try:
-                response = self.session.get(
-                    url, timeout=DOWNLOAD_TIMEOUT,
-                    stream=show_progress,
-                )
+                response = self.session.get(url, timeout=DOWNLOAD_TIMEOUT)
                 if response.status_code == 404:
                     return None
                 if response.status_code == 403:
                     # Binance иногда возвращает 403 вместо 404
                     return None
                 response.raise_for_status()
-
-                if show_progress:
-                    total = int(response.headers.get('content-length', 0))
-                    buf = io.BytesIO()
-                    with tqdm(total=total, unit='B', unit_scale=True,
-                              desc='    Download', leave=False) as pbar:
-                        for chunk in response.iter_content(chunk_size=1024 * 1024):
-                            buf.write(chunk)
-                            pbar.update(len(chunk))
-                    buf.seek(0)
-                    return buf
-
                 return io.BytesIO(response.content)
             except requests.exceptions.HTTPError as e:
                 if e.response is not None and e.response.status_code in (404, 403):
@@ -761,6 +746,54 @@ class OrderbookBinanceLoader:
                     )
                     time.sleep(delay)
 
+        logger.error(f"Все {RETRY_ATTEMPTS} попыток провалились для {url}: {last_error}")
+        raise last_error
+
+    def download_to_disk(self, url: str, filepath: str) -> bool:
+        """
+        Скачивает файл на диск с прогресс-баром.
+        Возвращает True при успехе, False при 404/403.
+        """
+        last_error = None
+        for attempt in range(1, RETRY_ATTEMPTS + 1):
+            try:
+                response = self.session.get(url, timeout=DOWNLOAD_TIMEOUT, stream=True)
+                if response.status_code in (404, 403):
+                    return False
+                response.raise_for_status()
+
+                total = int(response.headers.get('content-length', 0))
+                with open(filepath, 'wb') as f:
+                    with tqdm(total=total, unit='B', unit_scale=True,
+                              desc='    Download', leave=False) as pbar:
+                        for chunk in response.iter_content(chunk_size=1024 * 1024):
+                            f.write(chunk)
+                            pbar.update(len(chunk))
+                return True
+            except requests.exceptions.HTTPError as e:
+                if e.response is not None and e.response.status_code in (404, 403):
+                    return False
+                last_error = e
+                if attempt < RETRY_ATTEMPTS:
+                    delay = RETRY_DELAY * attempt
+                    logger.warning(
+                        f"Ошибка загрузки (попытка {attempt}/{RETRY_ATTEMPTS}): {e}. "
+                        f"Повтор через {delay}с..."
+                    )
+                    time.sleep(delay)
+            except Exception as e:
+                last_error = e
+                if attempt < RETRY_ATTEMPTS:
+                    delay = RETRY_DELAY * attempt
+                    logger.warning(
+                        f"Ошибка загрузки (попытка {attempt}/{RETRY_ATTEMPTS}): {e}. "
+                        f"Повтор через {delay}с..."
+                    )
+                    time.sleep(delay)
+
+        # Удаляем частично скачанный файл
+        if os.path.exists(filepath):
+            os.remove(filepath)
         logger.error(f"Все {RETRY_ATTEMPTS} попыток провалились для {url}: {last_error}")
         raise last_error
 
@@ -1030,52 +1063,61 @@ class OrderbookBinanceLoader:
                 continue
 
             url = BOOK_TICKER_MONTHLY_URL.format(symbol=symbol, month=month_str)
+            zip_path = f"/tmp/binance_bookTicker_{symbol}_{month_str}.zip"
+            csv_path = None
+
             logger.info(f"  Скачиваем monthly bookTicker {month_str} ({len(null_dates)} дн. с NULL)...")
 
             try:
-                zip_bytes = self.download_to_ram(url, show_progress=True)
+                found = self.download_to_disk(url, zip_path)
             except Exception as e:
                 logger.warning(f"  Ошибка скачивания monthly {month_str}: {e}")
                 continue
 
-            if zip_bytes is None:
+            if not found:
                 logger.info(f"  Monthly bookTicker {month_str} не найден (404)")
                 continue
 
-            # Читаем чанки, фильтруем только нужные дни, накапливаем per-day
-            logger.info(f"  Обработка monthly bookTicker {month_str}...")
-            month_updated = 0
-            day_buffers = {}  # {date: [DataFrame, ...]}
-
             try:
-                with zipfile.ZipFile(zip_bytes) as zf:
+                # Распаковываем CSV на диск, удаляем ZIP
+                with zipfile.ZipFile(zip_path) as zf:
                     inner_name = zf.namelist()[0]
-                    with zf.open(inner_name) as f:
-                        reader = pd.read_csv(
-                            f,
-                            names=BOOK_TICKER_CSV_COLUMNS,
-                            header=0,
-                            dtype=BOOK_TICKER_CSV_DTYPE,
-                            chunksize=5_000_000,
-                        )
+                    zf.extract(inner_name, '/tmp')
+                    csv_path = os.path.join('/tmp', inner_name)
+                os.remove(zip_path)
+                zip_path = None
 
-                        for chunk in tqdm(reader, desc=f'    Чтение {month_str}',
-                                          unit=' чанк', leave=False):
-                            chunk['day'] = pd.to_datetime(
-                                chunk['transaction_time'], unit='ms', utc=True
-                            ).dt.date
+                csv_size_mb = os.path.getsize(csv_path) / (1024 * 1024)
+                logger.info(f"  Распаковано: {csv_size_mb:.0f} MB → {csv_path}")
 
-                            # Оставляем только строки для NULL-дат
-                            chunk = chunk[chunk['day'].isin(null_dates)]
-                            if chunk.empty:
-                                continue
+                # Читаем чанки с диска, фильтруем только нужные дни
+                logger.info(f"  Обработка monthly bookTicker {month_str}...")
+                month_updated = 0
+                day_buffers = {}  # {date: [DataFrame, ...]}
 
-                            for day_val, day_group in chunk.groupby('day'):
-                                if day_val not in day_buffers:
-                                    day_buffers[day_val] = []
-                                day_buffers[day_val].append(day_group)
+                reader = pd.read_csv(
+                    csv_path,
+                    names=BOOK_TICKER_CSV_COLUMNS,
+                    header=0,
+                    dtype=BOOK_TICKER_CSV_DTYPE,
+                    chunksize=5_000_000,
+                )
 
-                del zip_bytes
+                for chunk in tqdm(reader, desc=f'    Чтение {month_str}',
+                                  unit=' чанк', leave=False):
+                    chunk['day'] = pd.to_datetime(
+                        chunk['transaction_time'], unit='ms', utc=True
+                    ).dt.date
+
+                    # Оставляем только строки для NULL-дат
+                    chunk = chunk[chunk['day'].isin(null_dates)]
+                    if chunk.empty:
+                        continue
+
+                    for day_val, day_group in chunk.groupby('day'):
+                        if day_val not in day_buffers:
+                            day_buffers[day_val] = []
+                        day_buffers[day_val].append(day_group)
 
                 # Обрабатываем накопленные дни по порядку
                 if day_buffers:
@@ -1107,6 +1149,12 @@ class OrderbookBinanceLoader:
 
             except Exception as e:
                 logger.error(f"  Ошибка обработки monthly {month_str}: {e}")
+            finally:
+                # Очистка временных файлов
+                if zip_path and os.path.exists(zip_path):
+                    os.remove(zip_path)
+                if csv_path and os.path.exists(csv_path):
+                    os.remove(csv_path)
 
         return total_updated
 
