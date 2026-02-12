@@ -400,6 +400,22 @@ python3 orderbook_binance_loader.py --check-nulls           # Find and reload da
 # Current data: 1.6M rows (BTCUSDT), 550 MB, bookDepth 100%, bookTicker 28.5%
 # Documentation: docs/ORDERBOOK_BINANCE_REFERENCE.md (full column reference)
 
+# Load DVOL (Deribit Volatility Index) - crypto VIX, forward-looking IV
+python3 options_dvol_loader.py                        # BTC, incremental
+python3 options_dvol_loader.py --currency ETH         # ETH
+python3 options_dvol_loader.py --force-reload         # Full reload from 2021-03-24
+# Note: Separate table options_deribit_dvol_1h (NOT in indicators tables)
+# Source: Deribit public API (no auth required), endpoint: public/get_volatility_index_data
+# DVOL = expected 30-day annualized volatility (%), analogous to VIX
+# Currencies: BTC, ETH (Deribit = ~90% of crypto options market)
+# Resolution: 1h candles (OHLC)
+# Historical data: from 2021-03-24 (~5 years, ~43K records per currency)
+# Daily batching: 1 day = 24 records per API request, commit after each day
+# Incremental: MAX(timestamp) + 1h → now (1 API request for daily updates)
+# Graceful shutdown: 1st Ctrl+C finishes current day, 2nd force exits
+# Future: 1m resolution available (~6 months rolling window from Deribit)
+# Documentation: docs/OPTIONS_RESEARCH.md
+
 # Check indicators status in database
 python3 check_indicators_status.py
 python3 check_atr_status.py  # ATR-specific status
@@ -506,6 +522,7 @@ cat INDICATORS_REFERENCE.md
 | indicators_bybit_futures_1d | 32 KB | - | - | 0 | 261 |
 | orderbook_bybit_futures_1m | ~1.73 GB | 1.68 GB | 88 MB | ~1.1M | 60 |
 | orderbook_binance_futures_1m | 550 MB | - | - | 1.6M | 46 |
+| options_deribit_dvol_1h | ~2 MB | - | - | ~86K | 6 |
 | eda | 48 KB | 0 | 48 KB | 0 | 22 |
 
 **Storage per row:**
@@ -636,6 +653,23 @@ cat INDICATORS_REFERENCE.md
 - **Multi-symbol**: Reads symbols from `indicators_config.yaml` → `binance_orderbook.symbols`
 - **Documentation**: `docs/ORDERBOOK_BINANCE_REFERENCE.md` (full column reference)
 
+#### Options Tables
+- **Table**: `options_deribit_dvol_1h`
+- **Purpose**: DVOL (Deribit Volatility Index) — crypto equivalent of VIX, forward-looking implied volatility
+- **Source**: Deribit public API (`public/get_volatility_index_data`)
+- **Script**: `indicators/options_dvol_loader.py`
+- **Primary Key**: (timestamp, currency)
+- **Columns** (6 total):
+  - timestamp (TIMESTAMPTZ): Candle timestamp in UTC (1h intervals)
+  - currency (VARCHAR 10): BTC, ETH
+  - open, high, low, close (DECIMAL 10,4): DVOL OHLC in annualized % (e.g., 65.36 = 65.36% expected annual volatility)
+- **Indexes**: (currency, timestamp)
+- **Data Availability**: 2021-03-24 (DVOL launch) — current date
+- **Currencies**: BTC, ETH (processed separately)
+- **Storage**: ~2 MB total (~86K rows for both currencies)
+- **Architecture**: Raw OHLC candles only, derived metrics calculated separately
+- **Documentation**: `docs/OPTIONS_RESEARCH.md`
+
 #### Backtest Tables
 - **Table**: `backtest_ml`
 - **Purpose**: Storage for ML backtesting results
@@ -754,6 +788,7 @@ TradingChart/
 │   ├── fear_and_greed_coinmarketcap_loader.py  # Market metrics from CoinMarketCap API
 │   ├── orderbook_bybit_loader.py            # Orderbook data from Bybit historical archives
 │   ├── orderbook_binance_loader.py    # Orderbook data from Binance public archives
+│   ├── options_dvol_loader.py         # DVOL (Deribit Volatility Index) loader
 │   ├── database.py                    # Database operations for indicators
 │   ├── indicators_config.yaml         # Indicators configuration
 │   ├── check_indicators_status.py     # Check indicators in DB
