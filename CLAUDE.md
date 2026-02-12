@@ -401,19 +401,22 @@ python3 orderbook_binance_loader.py --check-nulls           # Find and reload da
 # Documentation: docs/ORDERBOOK_BINANCE_REFERENCE.md (full column reference)
 
 # Load DVOL (Deribit Volatility Index) - crypto VIX, forward-looking IV
-python3 options_dvol_loader.py                        # BTC, incremental
-python3 options_dvol_loader.py --currency ETH         # ETH
-python3 options_dvol_loader.py --force-reload         # Full reload from 2021-03-24
-# Note: Separate table options_deribit_dvol_1h (NOT in indicators tables)
+python3 options_dvol_loader.py                        # BTC, 1m + 1h (both timeframes)
+python3 options_dvol_loader.py --currency ETH         # ETH, 1m + 1h
+python3 options_dvol_loader.py --timeframe 1h         # BTC, only 1h
+python3 options_dvol_loader.py --timeframe 1m         # BTC, only 1m
+python3 options_dvol_loader.py --force-reload         # Full reload (1h: from 2021-03-24, 1m: last 180 days)
+python3 options_dvol_loader.py --currency BTCUSDT --timeframe 1m  # Currency aliases supported
+# Note: Separate tables options_deribit_dvol_1m, options_deribit_dvol_1h (NOT in indicators tables)
 # Source: Deribit public API (no auth required), endpoint: public/get_volatility_index_data
 # DVOL = expected 30-day annualized volatility (%), analogous to VIX
-# Currencies: BTC, ETH (Deribit = ~90% of crypto options market)
-# Resolution: 1h candles (OHLC)
-# Historical data: from 2021-03-24 (~5 years, ~43K records per currency)
-# Daily batching: 1 day = 24 records per API request, commit after each day
-# Incremental: MAX(timestamp) + 1h → now (1 API request for daily updates)
+# Currencies: BTC, ETH, BTCUSDT, ETHUSDT (aliases normalized to BTC/ETH)
+# Timeframes: 1m, 1h (default: both sequentially)
+# 1h data: from 2021-03-24 (~5 years, ~43K records per currency)
+# 1m data: rolling window ~186 days from Deribit (run every 2 weeks to accumulate history)
+# Daily batching: 1 day per chunk (1h=24 records, 1m=1440 records with pagination)
+# Incremental: MAX(timestamp) + interval → now
 # Graceful shutdown: 1st Ctrl+C finishes current day, 2nd force exits
-# Future: 1m resolution available (~6 months rolling window from Deribit)
 # Documentation: docs/OPTIONS_RESEARCH.md
 
 # Check indicators status in database
@@ -523,6 +526,7 @@ cat INDICATORS_REFERENCE.md
 | orderbook_bybit_futures_1m | ~1.73 GB | 1.68 GB | 88 MB | ~1.1M | 60 |
 | orderbook_binance_futures_1m | 550 MB | - | - | 1.6M | 46 |
 | options_deribit_dvol_1h | ~2 MB | - | - | ~86K | 6 |
+| options_deribit_dvol_1m | ~30 MB | - | - | ~536K | 6 |
 | eda | 48 KB | 0 | 48 KB | 0 | 22 |
 
 **Storage per row:**
@@ -654,19 +658,21 @@ cat INDICATORS_REFERENCE.md
 - **Documentation**: `docs/ORDERBOOK_BINANCE_REFERENCE.md` (full column reference)
 
 #### Options Tables
-- **Table**: `options_deribit_dvol_1h`
+- **Tables**: `options_deribit_dvol_1h`, `options_deribit_dvol_1m`
 - **Purpose**: DVOL (Deribit Volatility Index) — crypto equivalent of VIX, forward-looking implied volatility
 - **Source**: Deribit public API (`public/get_volatility_index_data`)
 - **Script**: `indicators/options_dvol_loader.py`
 - **Primary Key**: (timestamp, currency)
-- **Columns** (6 total):
-  - timestamp (TIMESTAMPTZ): Candle timestamp in UTC (1h intervals)
+- **Columns** (6 total per table):
+  - timestamp (TIMESTAMPTZ): Candle timestamp in UTC
   - currency (VARCHAR 10): BTC, ETH
-  - open, high, low, close (DECIMAL 10,4): DVOL OHLC in annualized % (e.g., 65.36 = 65.36% expected annual volatility)
+  - open, high, low, close (DECIMAL 20,8): DVOL OHLC in annualized % (e.g., 65.36 = 65.36% expected annual volatility)
 - **Indexes**: (currency, timestamp)
-- **Data Availability**: 2021-03-24 (DVOL launch) — current date
-- **Currencies**: BTC, ETH (processed separately)
-- **Storage**: ~2 MB total (~86K rows for both currencies)
+- **Data Availability**:
+  - 1h: 2021-03-24 (DVOL launch) — current date (~43K records/currency)
+  - 1m: rolling window ~186 days from Deribit (~259K records/currency), accumulates over time
+- **Currencies**: BTC, ETH (aliases BTCUSDT/ETHUSDT supported)
+- **Storage**: 1h ~2 MB (~86K rows), 1m ~30 MB (~536K rows, growing)
 - **Architecture**: Raw OHLC candles only, derived metrics calculated separately
 - **Documentation**: `docs/OPTIONS_RESEARCH.md`
 

@@ -249,31 +249,39 @@ Implied Volatility — это "обратная задача" из модели 
 
 ## 7. Архитектура таблиц БД
 
-### Таблица: options_deribit_dvol
+### Таблицы: options_deribit_dvol_1h, options_deribit_dvol_1m
 
-Хранение DVOL (Implied Volatility Index). Аналог нашей таблицы indicators, но для опционных данных.
+Хранение raw DVOL OHLC свечей. Расчётные метрики — в отдельном скрипте (Этап 3).
 
 ```sql
-CREATE TABLE options_deribit_dvol (
+-- 1h таблица (✅ создана, заполнена)
+CREATE TABLE options_deribit_dvol_1h (
     timestamp       TIMESTAMPTZ NOT NULL,
     currency        VARCHAR(10) NOT NULL,    -- BTC, ETH
     open            DECIMAL(20, 8),
     high            DECIMAL(20, 8),
     low             DECIMAL(20, 8),
     close           DECIMAL(20, 8),
-    -- Расчётные метрики
-    dvol_sma_7      DECIMAL(20, 8),          -- SMA(close, 7)
-    dvol_change_24h DECIMAL(20, 8),          -- close - close[24h ago]
-    dvol_percentile_90d DECIMAL(10, 4),      -- Percentile за 90 дней
     PRIMARY KEY (timestamp, currency)
 );
+CREATE INDEX idx_dvol_1h_currency_timestamp ON options_deribit_dvol_1h (currency, timestamp);
 
-CREATE INDEX idx_dvol_currency_timestamp ON options_deribit_dvol (currency, timestamp);
+-- 1m таблица (✅ создана)
+CREATE TABLE options_deribit_dvol_1m (
+    timestamp       TIMESTAMPTZ NOT NULL,
+    currency        VARCHAR(10) NOT NULL,    -- BTC, ETH
+    open            DECIMAL(20, 8),
+    high            DECIMAL(20, 8),
+    low             DECIMAL(20, 8),
+    close           DECIMAL(20, 8),
+    PRIMARY KEY (timestamp, currency)
+);
+CREATE INDEX idx_dvol_1m_currency_timestamp ON options_deribit_dvol_1m (currency, timestamp);
 ```
 
-**Объём данных (оценка):**
-- 5 лет × 365 дней × 24 часа × 2 валюты = ~87,600 записей (1h)
-- ~10 MB
+**Объём данных:**
+- 1h: ~87,600 записей (5 лет × 365 × 24 × 2 валюты), ~2 MB
+- 1m: ~536K записей при первом запуске (180 дней × 1440 мин × 2 валюты), растёт ~40K/2 недели, ~30 MB
 
 ### Таблица: options_bybit_hv
 
@@ -413,57 +421,71 @@ CREATE INDEX idx_aggregated_currency ON options_aggregated (currency, timestamp)
 
 ## 8. План реализации
 
-и### Этап 1: DVOL raw свечи 1h (историческая загрузка)
+### Этап 1: DVOL raw свечи 1h (историческая загрузка)
 
 **Приоритет:** Высший
 **Сложность:** Низкая (1 лоадер, 1 таблица)
-**Статус:** В работе
+**Статус:** ✅ Завершён (2026-02-12)
 
 Загрузка raw OHLC свечей DVOL с резолюцией 1h. Аналог нашей таблицы `candles_bybit_futures_1m` — только чистые данные из API, без расчётных метрик.
 
 | Шаг | Действие | Статус |
 |-----|----------|--------|
-| 1.1 | Создать таблицу `options_deribit_dvol` (raw OHLC) | |
-| 1.2 | Создать `options_dvol_loader.py` — загрузка 1h DVOL свечей | |
-| 1.3 | Загрузить историю BTC DVOL (2021-03-24 → сегодня, ~42,864 записи) | |
-| 1.4 | Загрузить историю ETH DVOL (~42,864 записи) | |
+| 1.1 | Создать таблицу `options_deribit_dvol_1h` (raw OHLC) | ✅ |
+| 1.2 | Создать `options_dvol_loader.py` — загрузка 1h DVOL свечей | ✅ |
+| 1.3 | Загрузить историю BTC DVOL (2021-03-24 → сегодня, 42,874 записи) | ✅ |
+| 1.4 | Загрузить историю ETH DVOL (42,874 записи) | ✅ |
 | 1.5 | Добавить в cron на VPS для автообновления | |
 
-**Таблица:** `options_deribit_dvol` — 6 колонок (timestamp, currency, open, high, low, close)
+**Таблица:** `options_deribit_dvol_1h` — 6 колонок (timestamp, currency, open, high, low, close)
 **Инкрементальная загрузка:** MAX(timestamp) + 1h → now (Подход B)
 **Пагинация:** API возвращает max 1000 записей от новых к старым, поле `continuation` для следующей страницы
 
-**API:**
-```
-GET https://www.deribit.com/api/v2/public/get_volatility_index_data
-    ?currency=BTC
-    &start_timestamp=1616544000000   (2021-03-24 00:00 UTC)
-    &end_timestamp=<now_ms>
-    &resolution=3600                  (1h свечи)
-```
+**Результаты верификации (2026-02-12):**
 
-**Данные из API (пример):**
-```
-timestamp            open    high    low     close
-2024-03-01 00:00     65.54   65.54   65.26   65.36    ← annualized IV в %
-2024-03-01 01:00     65.36   65.36   64.53   64.53
-```
+| Метрика | BTC | ETH |
+|---------|-----|-----|
+| Записей | 42,874 | 42,874 |
+| Покрытие | 100% | 100% |
+| Пропуски | 0 | 0 |
+| NULL | 0 | 0 |
+| OHLC ошибки | 0 | 0 |
+| DVOL диапазон | 31.41–167.83% | 30.12–206.44% |
+| Spot-check vs API | 4/4 совпали | — |
 
 ### Этап 2: DVOL raw свечи 1m (расширение)
 
 **Приоритет:** Средний
 **Сложность:** Низкая (доработка существующего лоадера)
 **Зависимости:** Этап 1
+**Статус:** В работе (2026-02-12)
 
-Добавление режима `--resolution 1m` в `options_dvol_loader.py`. 1m данные доступны только за последние ~6 месяцев (скользящее окно Deribit), поэтому важно запустить сбор как можно раньше — данные будут накапливаться.
+Добавлен флаг `--timeframe 1m|1h` в `options_dvol_loader.py`. 1m данные доступны только за последние ~186 дней (скользящее окно Deribit), поэтому важно запустить регулярный сбор — данные будут накапливаться.
 
 | Шаг | Действие | Статус |
 |-----|----------|--------|
-| 2.1 | Добавить `--resolution` флаг в `options_dvol_loader.py` | |
-| 2.2 | Загрузить доступные 1m данные (~6 месяцев назад, ~268K записей/валюту) | |
-| 2.3 | Настроить cron для регулярного сбора 1m (данные исчезают через ~6 мес) | |
+| 2.1 | Добавить `--timeframe` флаг в `options_dvol_loader.py` | ✅ |
+| 2.2 | Создать таблицу `options_deribit_dvol_1m` | ✅ |
+| 2.3 | Загрузить доступные 1m данные BTC (~180 дней, ~259K записей) | |
+| 2.4 | Загрузить доступные 1m данные ETH (~259K записей) | |
+| 2.5 | Настроить cron для регулярного сбора 1m (каждые 2 недели) | |
 
-**Ограничение API:** 1m данные доступны только за последние ~186 дней. Старые данные удаляются Deribit. После запуска сбора — история будет накапливаться.
+**Ограничение API:** 1m данные доступны только за последние ~186 дней. Старые данные удаляются Deribit. Консервативный порог: 180 дней.
+
+**Использование:**
+```bash
+python3 options_dvol_loader.py                          # BTC, 1m + 1h (оба)
+python3 options_dvol_loader.py --timeframe 1m           # только 1m
+python3 options_dvol_loader.py --timeframe 1h           # только 1h
+python3 options_dvol_loader.py --currency ETH --timeframe 1m
+```
+
+**Схема накопления 1m данных:**
+```
+Запуск 1 (сейчас):    ~259K записей (180 дней × 1440 мин/день)
+Каждые 2 недели:      +~20K новых записей (14 дней × 1440 мин)
+Через год:            ~619K записей (180 дней начальных + 12 мес накопленных)
+```
 
 ### Этап 3: Расчёт метрик из DVOL свечей
 

@@ -6,24 +6,26 @@ Options DVOL Loader — Deribit Volatility Index (DVOL)
 DVOL — криптоаналог VIX, показывает ожидаемую 30-дневную волатильность.
 
 Источник: Deribit public API (аутентификация не требуется)
-Таблица: options_deribit_dvol_1h
+Таблицы: options_deribit_dvol_1m, options_deribit_dvol_1h
 Валюты: BTC, ETH
-Резолюция: 1h (3600)
-История: с 2021-03-24 (запуск DVOL)
-Батчинг: 1 день = 24 записи, коммит после каждого дня
+Резолюции: 1m (60), 1h (3600)
+История: 1h — с 2021-03-24 (запуск DVOL), 1m — скользящее окно ~186 дней
+Батчинг: 1 день на чанк, коммит после каждого дня
 
 Использование:
-    python3 options_dvol_loader.py                        # BTC, инкрементально
-    python3 options_dvol_loader.py --currency ETH         # ETH
+    python3 options_dvol_loader.py                        # BTC, 1m + 1h
+    python3 options_dvol_loader.py --currency ETH         # ETH, 1m + 1h
+    python3 options_dvol_loader.py --timeframe 1h         # BTC, только 1h
+    python3 options_dvol_loader.py --timeframe 1m         # BTC, только 1m
     python3 options_dvol_loader.py --force-reload         # Полная перезагрузка
-    python3 options_dvol_loader.py --currency BTC --force-reload
+    python3 options_dvol_loader.py --currency BTCUSDT --timeframe 1m
 """
 
 import requests
 import psycopg2
 import psycopg2.extras
 from datetime import datetime, timezone, timedelta
-from typing import Optional, List, Tuple
+from typing import Optional, List
 import logging
 import argparse
 import signal
@@ -38,16 +40,33 @@ from indicators.database import DatabaseConnection
 # ─── Константы ───────────────────────────────────────────────────────────────
 
 DERIBIT_API_URL = "https://www.deribit.com/api/v2/public/get_volatility_index_data"
-TABLE_NAME = "options_deribit_dvol_1h"
+
+# Конфигурация таймфреймов
+TIMEFRAME_CONFIG = {
+    '1m': {
+        'table': 'options_deribit_dvol_1m',
+        'resolution': '60',
+        'interval': timedelta(minutes=1),
+    },
+    '1h': {
+        'table': 'options_deribit_dvol_1h',
+        'resolution': '3600',
+        'interval': timedelta(hours=1),
+    },
+}
+
+ALL_TIMEFRAMES = ['1m', '1h']
 
 # Дата запуска DVOL на Deribit (проверено через API)
-DVOL_EARLIEST = {
+DVOL_EARLIEST_1H = {
     'BTC': datetime(2021, 3, 24, 0, 0, tzinfo=timezone.utc),
     'ETH': datetime(2021, 3, 24, 0, 0, tzinfo=timezone.utc),
 }
 
-RESOLUTION_1H = "3600"
-CHUNK_DAYS = 1           # 1 день × 24h = 24 записи, надёжный коммит после каждого дня
+# 1m данные доступны только за последние ~186 дней (скользящее окно Deribit)
+DVOL_1M_WINDOW_DAYS = 180  # консервативно от 186
+
+CHUNK_DAYS = 1
 RETRY_ATTEMPTS = 3
 RETRY_DELAY = 5
 REQUEST_TIMEOUT = 30
@@ -102,15 +121,43 @@ logger = setup_logging()
 class OptionsDvolLoader:
     """Загрузчик DVOL свечей с Deribit API"""
 
-    def __init__(self, currency: str = 'BTC', force_reload: bool = False):
+    # Нормализация: BTCUSDT/ETHUSDT → BTC/ETH
+    CURRENCY_ALIASES = {
+        'BTCUSDT': 'BTC', 'ETHUSDT': 'ETH',
+        'BTC': 'BTC', 'ETH': 'ETH',
+    }
+
+    def __init__(self, currency: str = 'BTC', timeframe: str = '1h',
+                 force_reload: bool = False):
         self.db = DatabaseConnection()
-        self.currency = currency.upper()
+        raw = currency.upper()
+        self.currency = self.CURRENCY_ALIASES.get(raw, raw)
+        self.timeframe = timeframe
         self.force_reload = force_reload
         self.session = requests.Session()
         self.session.headers.update({'User-Agent': 'TradingChart/1.0'})
 
-        if self.currency not in DVOL_EARLIEST:
-            raise ValueError(f"Неподдерживаемая валюта: {self.currency}. Доступны: {list(DVOL_EARLIEST.keys())}")
+        if self.currency not in DVOL_EARLIEST_1H:
+            raise ValueError(f"Неподдерживаемая валюта: {self.currency}. "
+                             f"Доступны: {list(DVOL_EARLIEST_1H.keys())}")
+
+        if self.timeframe not in TIMEFRAME_CONFIG:
+            raise ValueError(f"Неподдерживаемый таймфрейм: {self.timeframe}. "
+                             f"Доступны: {list(TIMEFRAME_CONFIG.keys())}")
+
+        cfg = TIMEFRAME_CONFIG[self.timeframe]
+        self.table_name = cfg['table']
+        self.resolution = cfg['resolution']
+        self.interval = cfg['interval']
+
+    def _get_earliest_date(self) -> datetime:
+        """Определяет самую раннюю доступную дату для текущего таймфрейма"""
+        if self.timeframe == '1m':
+            # 1m данные — скользящее окно от текущей даты
+            return (datetime.now(timezone.utc) - timedelta(days=DVOL_1M_WINDOW_DAYS)
+                    ).replace(minute=0, second=0, microsecond=0)
+        else:
+            return DVOL_EARLIEST_1H[self.currency]
 
     def ensure_table(self):
         """Проверяет существование таблицы"""
@@ -123,16 +170,16 @@ class OptionsDvolLoader:
                         WHERE table_schema = 'public'
                         AND table_name = %s
                     );
-                """, (TABLE_NAME,))
+                """, (self.table_name,))
                 exists = cur.fetchone()[0]
 
                 if not exists:
                     raise RuntimeError(
-                        f"Таблица {TABLE_NAME} не существует. "
+                        f"Таблица {self.table_name} не существует. "
                         f"Создайте её вручную на VPS через sudo -u postgres psql"
                     )
 
-                logger.info(f"Таблица {TABLE_NAME} OK")
+                logger.info(f"Таблица {self.table_name} OK")
             finally:
                 cur.close()
 
@@ -143,7 +190,7 @@ class OptionsDvolLoader:
             try:
                 cur.execute(f"""
                     SELECT MAX(timestamp)
-                    FROM {TABLE_NAME}
+                    FROM {self.table_name}
                     WHERE currency = %s
                 """, (self.currency,))
                 result = cur.fetchone()
@@ -158,7 +205,7 @@ class OptionsDvolLoader:
             try:
                 cur.execute(f"""
                     SELECT COUNT(*)
-                    FROM {TABLE_NAME}
+                    FROM {self.table_name}
                     WHERE currency = %s
                 """, (self.currency,))
                 return cur.fetchone()[0]
@@ -168,8 +215,8 @@ class OptionsDvolLoader:
     def fetch_chunk(self, start_ms: int, end_ms: int) -> List[list]:
         """
         Загружает один чанк данных из API.
-        API возвращает max 1000 записей. Для чанка в 40 дней (960 1h записей)
-        всегда укладываемся в 1 запрос.
+        API возвращает max 1000 записей. Для 1m чанка в 1 день (1440 записей)
+        потребуется пагинация (2 запроса).
 
         Returns:
             Список [timestamp_ms, open, high, low, close] отсортированный по timestamp
@@ -182,7 +229,7 @@ class OptionsDvolLoader:
                 'currency': self.currency,
                 'start_timestamp': start_ms,
                 'end_timestamp': current_end,
-                'resolution': RESOLUTION_1H,
+                'resolution': self.resolution,
             }
 
             for attempt in range(RETRY_ATTEMPTS):
@@ -239,7 +286,7 @@ class OptionsDvolLoader:
             cur = conn.cursor()
             try:
                 query = f"""
-                    INSERT INTO {TABLE_NAME} (timestamp, currency, open, high, low, close)
+                    INSERT INTO {self.table_name} (timestamp, currency, open, high, low, close)
                     VALUES (%s, %s, %s, %s, %s, %s)
                     ON CONFLICT (timestamp, currency) DO UPDATE SET
                         open = EXCLUDED.open,
@@ -277,14 +324,14 @@ class OptionsDvolLoader:
 
         start_time = datetime.now()
         logger.info(f"{'='*60}")
-        logger.info(f"OPTIONS DVOL LOADER — {self.currency}")
+        logger.info(f"OPTIONS DVOL LOADER — {self.currency} {self.timeframe}")
         logger.info(f"{'='*60}")
 
-        # 1. Создаём таблицу
+        # 1. Проверяем таблицу
         self.ensure_table()
 
         # 2. Определяем start_date
-        earliest = DVOL_EARLIEST[self.currency]
+        earliest = self._get_earliest_date()
 
         if self.force_reload:
             start_date = earliest
@@ -292,7 +339,7 @@ class OptionsDvolLoader:
         else:
             last_ts = self.get_last_timestamp()
             if last_ts:
-                start_date = last_ts + timedelta(hours=1)
+                start_date = last_ts + self.interval
                 logger.info(f"Последняя запись: {last_ts}")
                 logger.info(f"Продолжаем с: {start_date}")
             else:
@@ -300,7 +347,10 @@ class OptionsDvolLoader:
                 logger.info(f"Таблица пуста, загрузка с: {start_date}")
 
         # 3. Определяем end_date
-        end_date = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+        if self.timeframe == '1m':
+            end_date = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+        else:
+            end_date = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
 
         if start_date >= end_date:
             count = self.get_record_count()
@@ -316,9 +366,10 @@ class OptionsDvolLoader:
         while chunk_start < end_date:
             chunk_end = min(chunk_start + timedelta(days=CHUNK_DAYS), end_date)
             chunks.append((chunk_start, chunk_end))
-            chunk_start = chunk_end + timedelta(hours=1)
+            chunk_start = chunk_end + self.interval
 
-        logger.info(f"Период: {start_date.strftime('%Y-%m-%d %H:%M')} — {end_date.strftime('%Y-%m-%d %H:%M')}")
+        logger.info(f"Период: {start_date.strftime('%Y-%m-%d %H:%M')} — "
+                     f"{end_date.strftime('%Y-%m-%d %H:%M')}")
         logger.info(f"Всего дней: {total_days}, чанков: {len(chunks)}")
 
         # 5. Загружаем чанки с прогресс-баром
@@ -326,14 +377,16 @@ class OptionsDvolLoader:
 
         with tqdm(
             total=len(chunks),
-            desc=f"DVOL {self.currency} 1h",
+            desc=f"DVOL {self.currency} {self.timeframe}",
             unit="day",
-            bar_format='{desc}: {percentage:3.0f}%|{bar:30}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}] {postfix}'
+            bar_format='{desc}: {percentage:3.0f}%|{bar:30}| '
+                       '{n_fmt}/{total_fmt} [{elapsed}<{remaining}] {postfix}'
         ) as pbar:
 
             for chunk_start, chunk_end in chunks:
                 if shutdown_requested:
-                    logger.info(f"Остановка по запросу. Сохранено: {total_saved:,} записей")
+                    logger.info(f"Остановка по запросу. Сохранено: "
+                                f"{total_saved:,} записей")
                     break
 
                 # Конвертируем в ms для API
@@ -357,7 +410,7 @@ class OptionsDvolLoader:
         # 6. Итог
         final_count = self.get_record_count()
         logger.info(f"Загружено новых: {total_saved:,}")
-        logger.info(f"Всего в БД ({self.currency}): {final_count:,}")
+        logger.info(f"Всего в БД ({self.currency} {self.timeframe}): {final_count:,}")
         self._log_finish(start_time)
 
     def _log_finish(self, start_time: datetime):
@@ -375,7 +428,8 @@ class OptionsDvolLoader:
             time_str = f"{seconds}с"
 
         logger.info(f"{'='*60}")
-        logger.info(f"OPTIONS DVOL LOADER — Завершено за {time_str}")
+        logger.info(f"OPTIONS DVOL LOADER — {self.currency} {self.timeframe} "
+                     f"— Завершено за {time_str}")
         logger.info(f"{'='*60}")
 
 
@@ -388,12 +442,16 @@ def parse_args():
     )
     parser.add_argument(
         '--currency', type=str, default='BTC',
-        choices=['BTC', 'ETH'],
-        help='Валюта (по умолчанию: BTC)'
+        help='Валюта: BTC, ETH, BTCUSDT, ETHUSDT (по умолчанию: BTC)'
+    )
+    parser.add_argument(
+        '--timeframe', type=str, default=None,
+        choices=['1m', '1h'],
+        help='Таймфрейм: 1m, 1h (по умолчанию: оба)'
     )
     parser.add_argument(
         '--force-reload', action='store_true',
-        help='Полная перезагрузка с 2021-03-24'
+        help='Полная перезагрузка (1h: с 2021-03-24, 1m: за последние 180 дней)'
     )
     return parser.parse_args()
 
@@ -401,15 +459,24 @@ def parse_args():
 def main():
     args = parse_args()
 
+    timeframes = [args.timeframe] if args.timeframe else ALL_TIMEFRAMES
+
     logger.info(f"Валюта: {args.currency}")
+    logger.info(f"Таймфреймы: {', '.join(timeframes)}")
     if args.force_reload:
         logger.info("Режим: FORCE RELOAD")
 
-    loader = OptionsDvolLoader(
-        currency=args.currency,
-        force_reload=args.force_reload
-    )
-    loader.run()
+    for tf in timeframes:
+        if shutdown_requested:
+            logger.info("Остановка по запросу пользователя")
+            break
+
+        loader = OptionsDvolLoader(
+            currency=args.currency,
+            timeframe=tf,
+            force_reload=args.force_reload
+        )
+        loader.run()
 
 
 if __name__ == "__main__":
