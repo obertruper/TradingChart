@@ -1470,6 +1470,17 @@ GET https://pro-api.coinmarketcap.com/v1/global-metrics/quotes/latest
     - Useful after bug fixes to fill previously broken data without full reload
   - **Renamed `orderbook_loader.py` → `orderbook_bybit_loader.py`**: For naming consistency with `orderbook_binance_loader.py`
   - **Files Modified**: `indicators/orderbook_binance_loader.py`, `indicators/orderbook_bybit_loader.py`, `indicators/start_all_loaders.py`, `docs/ORDERBOOK_BINANCE_REFERENCE.md`, `docs/ORDERBOOK_REFERENCE.md`
+- **Options DVOL Loader** (2026-02-12):
+  - **New Feature**: `options_dvol_loader.py` — loads Deribit Volatility Index (DVOL) OHLC candles
+  - **Timeframes**: 1h (from 2021-03-24, full history) and 1m (rolling ~186-day window from Deribit)
+  - **Tables**: `options_deribit_dvol_1h` (42,874 rows/currency), `options_deribit_dvol_1m` (259K rows/currency)
+  - **Currencies**: BTC, ETH (aliases BTCUSDT/ETHUSDT supported)
+  - **CLI**: `--timeframe 1m|1h` (default: both), `--currency`, `--force-reload`
+  - **1m accumulation**: Run every 2 weeks to capture data before it expires from Deribit's rolling window
+  - **Verification**: 100% coverage for 1h, 99.97% for 1m (86 gaps = Deribit API outage), 0 NULL, 0 OHLC errors
+  - **Orchestrator**: Added to `start_all_loaders.py` and `indicators_config.yaml`
+  - **Files Created**: `indicators/options_dvol_loader.py`
+  - **Files Modified**: `indicators/start_all_loaders.py`, `indicators/indicators_config.yaml`, `docs/OPTIONS_RESEARCH.md`, `CLAUDE.md`
 
 ### Security Notes
 - Database passwords are stored in `.env` file (not in repository)
