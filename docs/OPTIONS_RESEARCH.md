@@ -839,11 +839,66 @@ BTC-27MAR26-100000-C:
 
 | Шаг | Действие | Статус |
 |-----|----------|--------|
-| 4.1 | Создать таблицу `options_deribit_raw` | |
+| 4.1 | Создать таблицу `options_deribit_raw` | ✅ |
 | 4.2 | Создать `options_deribit_raw_ws_collector.py` (WebSocket daemon) | ✅ |
 | 4.3 | Тестирование (локально: dry-run) | ✅ |
 | 4.4 | Тестирование (реальная запись в БД) | |
-| 4.5 | Деплой на VPS + systemd service | |
+| 4.5 | Деплой на VPS (tmux + wrapper + cron @reboot) | |
+
+#### Деплой на VPS: tmux + wrapper + cron @reboot
+
+Выбран подход **tmux + wrapper script** вместо systemd/Docker. Причины:
+- Живая консоль: `tmux attach` показывает однострочные статусы в реальном времени
+- Auto-restart: wrapper script перезапускает Python при падении (через 10 секунд)
+- Auto-start: cron `@reboot` создаёт tmux сессию при перезагрузке сервера
+- Масштабируемость: при 5+ daemon'ов — отдельные tmux окна в одной сессии
+
+**Файлы:**
+```
+data_collectors/deribit/options/
+├── options_deribit_raw_ws_collector.py   # Основной WebSocket collector
+├── run_ws_collector.sh                   # Wrapper script (auto-restart)
+└── logs/                                 # Лог-файлы (автосоздание)
+```
+
+**Схема работы:**
+```
+Сервер перезагрузился
+  └── cron @reboot
+      └── tmux new-session -d -s data_collector_options_raw_deribit
+          └── run_ws_collector.sh (while true)
+              └── options_deribit_raw_ws_collector.py
+                  ├── WebSocket → буфер → снапшот на :59 секунде → БД
+                  ├── Упал → wrapper ждёт 10с → перезапуск
+                  └── tmux attach → живая консоль
+```
+
+**Установка на VPS:**
+```bash
+# 1. Обновить код
+cd /root/TradingCharts && git pull origin main
+
+# 2. Сделать wrapper исполняемым
+chmod +x data_collectors/deribit/options/run_ws_collector.sh
+
+# 3. Добавить в cron (автозапуск при reboot)
+crontab -e
+# Добавить строку:
+@reboot /usr/bin/tmux new-session -d -s data_collector_options_raw_deribit '/root/TradingCharts/data_collectors/deribit/options/run_ws_collector.sh'
+
+# 4. Запустить сейчас (без перезагрузки)
+tmux new-session -d -s data_collector_options_raw_deribit '/root/TradingCharts/data_collectors/deribit/options/run_ws_collector.sh'
+
+# 5. Проверить
+tmux attach -t data_collector_options_raw_deribit
+# Ctrl+B, D — отключиться (скрипт продолжает работать)
+```
+
+**Мониторинг:**
+```bash
+tmux attach -t data_collector_options_raw_deribit   # живая консоль
+tmux ls                                              # список всех сессий
+```
 
 ### Этап 5: Агрегированные метрики из онлайн-данных
 
