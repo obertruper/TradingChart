@@ -394,6 +394,8 @@ CREATE INDEX idx_dvol_1m_currency_timestamp ON options_deribit_dvol_1m (currency
 Снапшоты всех активных опционов каждые 15 минут. Источник: WebSocket `ticker.{instrument}.100ms`.
 Содержит **все данные** включая IV, Greeks, OI, Volume — достаточно для расчёта всех 15 метрик аналитика.
 
+**Привязка к таймфреймам:** Timestamp = начало периода (Bybit standard). Снапшот берётся на 59-й секунде последней минуты периода (end-of-bar), что обеспечивает консистентность с close ценой свечи.
+
 ```sql
 CREATE TABLE options_deribit_raw (
     timestamp           TIMESTAMPTZ NOT NULL,
@@ -418,10 +420,17 @@ CREATE TABLE options_deribit_raw (
     volume_24h          DECIMAL(20, 8),
     volume_usd_24h      DECIMAL(20, 2),
     -- Цены
-    mark_price          DECIMAL(20, 10),
+    mark_price          DECIMAL(20, 10),          -- Расчётная цена опциона
+    last_price          DECIMAL(20, 10),          -- Цена последней сделки
     best_bid_price      DECIMAL(20, 10),
     best_ask_price      DECIMAL(20, 10),
-    underlying_price    DECIMAL(20, 2),           -- Цена базового актива (BTC/ETH)
+    best_bid_amount     DECIMAL(20, 8),           -- Объём лучшего bid
+    best_ask_amount     DECIMAL(20, 8),           -- Объём лучшего ask
+    underlying_price    DECIMAL(20, 2),           -- Цена фьючерса (BTC/ETH)
+    index_price         DECIMAL(20, 2),           -- Индексная цена (среднее с 5 бирж)
+    settlement_price    DECIMAL(20, 10),          -- Цена settlement
+    high_24h            DECIMAL(20, 10),          -- Максимум 24h
+    low_24h             DECIMAL(20, 10),          -- Минимум 24h
     -- Метаданные
     interest_rate       DECIMAL(10, 6),
     PRIMARY KEY (timestamp, instrument_name)
@@ -432,9 +441,11 @@ CREATE INDEX idx_raw_timestamp ON options_deribit_raw (timestamp);
 CREATE INDEX idx_raw_expiration ON options_deribit_raw (expiration);
 ```
 
+**Колонки:** 29 (2 PK + 4 parsed + 3 IV + 5 Greeks + 3 Volume/OI + 10 Prices + 1 Meta + 1 settlement)
+
 **Объём данных (оценка):**
-- ~1,582 контрактов × 96 снапшотов/день × 365 дней = ~55M записей/год
-- ~11 GB/год (22 колонки × ~210 байт/строка)
+- ~1,482 контрактов × 96 снапшотов/день × 365 дней = ~52M записей/год
+- ~11 GB/год (29 колонок × ~210 байт/строка)
 - При 47 GB свободно — хватит на 4+ года
 
 **Примечание:** Таблицы `options_deribit_instruments` и `options_deribit_trades` из предыдущей версии плана **не нужны** — вся необходимая информация (strike, expiration, type, OI, volume) уже содержится в `options_deribit_raw`. При необходимости trades можно добавить позже отдельной таблицей.
@@ -634,6 +645,7 @@ options_deribit_dvol_1h: timestamp, currency, open, high, low, close, dvol_sma_2
 **Сложность:** Средняя (1 daemon-скрипт, 1 таблица)
 **Данных:** Накапливается с момента запуска
 **Оценка хранения:** ~55M записей/год, ~11 GB/год
+**Статус:** В процессе (скрипт создан, тестируется)
 
 #### Почему только онлайн?
 
@@ -643,28 +655,150 @@ options_deribit_dvol_1h: timestamp, currency, open, high, low, close, dvol_sma_2
 
 #### Реализация: WebSocket daemon
 
-**Один скрипт** `options_deribit_ws_collector.py` — подключается к WebSocket, подписывается на все контракты, каждые 15 минут записывает снапшот в БД.
+**Скрипт:** `data_collectors/deribit/options/options_deribit_raw_ws_collector.py`
+
+Размещён в `data_collectors/` (не в `indicators/`), потому что это 24/7 daemon с WebSocket-подключением и автоматическим reconnect — принципиально отличается от batch-loaders. Требует systemd/Docker для auto-restart.
 
 ```
 Deribit WebSocket: wss://www.deribit.com/ws/api/v2
   │
   ├── Подписка: ticker.{instrument}.100ms для всех BTC+ETH опционов
-  │   (подтверждение: 1582 каналов за 0.13s)
+  │   (подтверждение: 1482 каналов за 0.3s)
   │
-  ├── Push-обновления: ~4400 сообщений/сек
-  │   (каждое содержит: IV, Greeks, OI, Volume, цены — 23 поля)
+  ├── Push-обновления: ~400-700 сообщений/сек
+  │   (каждое содержит: IV, Greeks, OI, Volume, цены — 29 полей)
   │
-  └── Буфер → каждые 15 мин: snapshot всех контрактов → INSERT в БД
-      └── ~1582 строки за 0.4 секунды (100% покрытие, 100% Greeks)
+  └── Буфер → снапшот на 59-й секунде каждого периода → INSERT в БД
+      └── ~1482 строки за 0.3 секунды (100% покрытие, 100% Greeks)
 ```
 
-**Преимущества WebSocket vs REST polling:**
-- **Консистентность:** все данные в одном снапшоте (~0.4s vs ~160s для REST)
+**Запуск:**
+```bash
+# Продакшн
+python3 data_collectors/deribit/options/options_deribit_raw_ws_collector.py
+
+# Тестирование (без записи в БД)
+python3 data_collectors/deribit/options/options_deribit_raw_ws_collector.py --dry-run
+
+# Другой интервал
+python3 data_collectors/deribit/options/options_deribit_raw_ws_collector.py --interval 5
+
+# Один снапшот и выход
+python3 data_collectors/deribit/options/options_deribit_raw_ws_collector.py --single-snapshot --dry-run
+```
+
+#### Привязка снапшотов к таймфреймам свечей
+
+Снапшоты привязаны к **wall clock**, а не ко времени запуска скрипта. Это обеспечивает консистентность с данными свечей для ML.
+
+**Подход:** Снапшот берётся на **59-й секунде последней минуты периода** (end-of-bar snapshot). Timestamp в БД = начало периода (Bybit standard).
+
+```
+Пример для interval=15m:
+  14:00:00 — начало периода
+  14:14:59 — берём снапшот буфера (мгновенно, ~микросекунды)
+  14:14:59 → сохраняем с timestamp = 14:00:00
+  14:15:00...14:29:59 — следующий период
+  14:29:59 → сохраняем с timestamp = 14:15:00
+```
+
+Для других интервалов:
+
+| Интервал | Снапшот в | Timestamp в БД |
+|----------|-----------|----------------|
+| 1m | XX:XX:59 | XX:XX:00 |
+| 5m | XX:04:59, XX:09:59, ... | XX:00, XX:05, ... |
+| 15m | XX:14:59, XX:29:59, XX:44:59, XX:59:59 | XX:00, XX:15, XX:30, XX:45 |
+| 1h | XX:59:59 | XX:00 |
+
+**Почему end-of-bar:** IV и Greeks в момент close свечи совпадают с close ценой — данные консистентны для ML. Так работают Bloomberg, CBOE, Deribit собственные агрегации.
+
+#### Консольный мониторинг
+
+Каждые 60 секунд выводится однострочный статус:
+
+```
+09:58:54 2026-02-13 | BTC $96,647 IV:53.3% Contr:724 | ETH $2,681 IV:65.3% Contr:758 | Exp:22h01m(62ct) | 396/s | ▸snap:1m04s | Up:1m | saved:0 | rc:0
+```
+
+| Поле | Описание |
+|------|----------|
+| `09:58:54 2026-02-13` | Текущее время UTC |
+| `BTC $96,647 IV:53.3%` | Index price (средневзвешенная с 5 бирж) и ATM Implied Volatility |
+| `Contr:724` | Количество активных контрактов |
+| `Exp:22h01m(62ct)` | Countdown до ближайшей экспирации и количество истекающих контрактов |
+| `396/s` | Входящие WebSocket-сообщения в секунду |
+| `▸snap:1m04s` | Countdown до следующего снапшота |
+| `Up:1m` | Uptime процесса |
+| `saved:0` | Количество записанных снапшотов |
+| `rc:0` | Количество reconnects |
+
+При снапшоте:
+```
+>>> [DRY RUN] 09:59:59 SNAPSHOT period:09:45 2026-02-13 | 1484 rows (BTC:726 ETH:758) | saved:1
+```
+
+При reconnect:
+```
+!!! RECONNECT 11:52:38 2026-02-13 | Error: connection closed | Retry in 5s | rc:1
+```
+
+#### Пояснение ключевых метрик в консоли
+
+**Index Price (BTC $96,647):** Индексная цена Deribit — средневзвешенная с 5 спотовых бирж (Coinbase, Bitstamp, Gemini, Kraken, LMAX). Deribit — чисто деривативная биржа (нет спот-торговли), поэтому использует внешний индекс для расчёта опционных премий и settlement. Отличие от Bybit futures ~$10-50 (0.01-0.07%).
+
+**ATM IV (53.3%):** Implied Volatility "at-the-money" — подразумеваемая волатильность опциона с ближайшим к текущей цене страйком и ближайшей экспирацией. Означает, что рынок ожидает колебания BTC ±53.3% за год. IV извлекается обратным путём из цены опционов через формулу Black-Scholes — это forward-looking метрика (что рынок ОЖИДАЕТ), в отличие от HV (что БЫЛО).
+
+| Уровень IV BTC | Интерпретация |
+|----------------|---------------|
+| 20-30% | Очень спокойный рынок (редко) |
+| 40-50% | Нормальный |
+| 50-60% | Умеренно повышенный |
+| 70-80% | Высокий страх |
+| 100%+ | Паника (крах FTX, COVID) |
+
+#### Экспирация контрактов
+
+Все контракты на Deribit экспирируются в **08:00 UTC**. Типы экспираций:
+
+| Тип | Расписание | Контрактов |
+|-----|-----------|------------|
+| Daily | Каждый день (ближайшие 4 дня) | 18-28 |
+| Weekly | Каждую пятницу | 30-82 |
+| Monthly | Последняя пятница месяца | 62-124 |
+| Quarterly | Последняя пятница квартала | 68-88 |
+
+Daemon отслеживает экспирации и автоматически переподписывается:
+- Раз в час: REST `get_book_summary_by_currency` → обновляет список инструментов
+- Новые контракты → подписка через WebSocket
+- Истёкшие контракты → отписка + удаление из буфера
+
+#### Автоматический reconnect
+
+Exponential backoff при потере WebSocket-соединения:
+
+```
+Попытка 1: 5 секунд
+Попытка 2: 10 секунд
+Попытка 3: 20 секунд
+...
+Максимум: 300 секунд (5 минут)
+При успешном подключении: сброс на 5 секунд
+```
+
+При каждом reconnect: полная переинициализация (загрузка инструментов → подключение → подписка → сбор данных).
+
+Встроенный heartbeat: `ping_interval=30s`, `ping_timeout=10s` — автоматическое определение "мёртвого" соединения.
+
+#### Преимущества WebSocket vs REST polling
+
+- **Консистентность:** все данные в одном снапшоте (~0.3s vs ~160s для REST)
 - **Полнота:** Greeks включены (REST book_summary не содержит Greeks)
 - **Нагрузка:** 0 API вызовов (push от биржи)
 - **Один скрипт** вместо трёх (instruments + ticker + trades)
 
-**Что получаем за один снапшот (пример контракта):**
+#### Что получаем за один снапшот (29 колонок на контракт)
+
 ```
 BTC-27MAR26-100000-C:
   mark_iv:    52.81%           ← IV конкретного страйка
@@ -677,34 +811,39 @@ BTC-27MAR26-100000-C:
   rho:         1.542           ← чувствительность к ставке
   open_interest: 4931.1 BTC    ← открытые позиции
   volume_24h:  151.2 BTC       ← объём торгов
+  volume_usd:  13351.58        ← объём в USD
   mark_price:  0.0013          ← цена опциона (BTC)
-  underlying:  $68,017         ← цена BTC
+  last_price:  0.0012          ← последняя сделка
+  best_bid:    0.0012          ← лучший bid
+  best_ask:    0.0014          ← лучший ask
+  bid_amount:  50.0            ← объём bid
+  ask_amount:  30.0            ← объём ask
+  underlying:  $68,017         ← цена фьючерса BTC
+  index_price: $67,950         ← индексная цена (5 бирж)
+  settlement:  0.00139         ← цена settlement
+  high_24h:    0.0015          ← максимум 24h
+  low_24h:     0.0010          ← минимум 24h
+  interest_rate: 0.0           ← процентная ставка
 ```
 
-**Данные хранятся в одной таблице `options_deribit_raw`** (22 колонки, schema в секции 7).
-
-#### Обработка подписок при изменении контрактов
-
-Контракты появляются/истекают. Daemon переподписывается при:
-- Экспирации (каждую пятницу 08:00 UTC) — удаляем истёкшие из подписки
-- Появлении новых контрактов — добавляем в подписку
-- Проверка: раз в час через REST `get_instruments`
+**Данные хранятся в таблице `options_deribit_raw`** (29 колонок, schema в секции 7).
 
 #### Объём данных
 
 | Период | Строк | Размер |
 |--------|-------|--------|
-| 1 снапшот (15 мин) | ~1,582 | ~324 KB |
-| 1 день | ~152K | ~24 MB |
-| 1 месяц | ~4.6M | ~730 MB |
-| 1 год | ~55M | ~11 GB |
+| 1 снапшот (15 мин) | ~1,482 | ~324 KB |
+| 1 день | ~142K | ~24 MB |
+| 1 месяц | ~4.3M | ~730 MB |
+| 1 год | ~52M | ~11 GB |
 
 | Шаг | Действие | Статус |
 |-----|----------|--------|
 | 4.1 | Создать таблицу `options_deribit_raw` | |
-| 4.2 | Создать `options_deribit_ws_collector.py` (WebSocket daemon) | |
-| 4.3 | Тестирование (локально + VPS) | |
-| 4.4 | Настроить systemd service на VPS | |
+| 4.2 | Создать `options_deribit_raw_ws_collector.py` (WebSocket daemon) | ✅ |
+| 4.3 | Тестирование (локально: dry-run) | ✅ |
+| 4.4 | Тестирование (реальная запись в БД) | |
+| 4.5 | Деплой на VPS + systemd service | |
 
 ### Этап 5: Агрегированные метрики из онлайн-данных
 
