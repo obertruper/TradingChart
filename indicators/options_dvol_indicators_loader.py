@@ -639,7 +639,8 @@ class DvolIndicatorsLoader:
 
         # 5. Итого
         elapsed = time.time() - start_time
-        logger.info(f"Завершено за {elapsed:.1f} сек")
+        minutes, seconds = divmod(int(elapsed), 60)
+        logger.info(f"Завершено за {minutes}m {seconds}s")
         logger.info("=" * 60)
 
 
