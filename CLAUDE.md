@@ -431,6 +431,7 @@ python3 options_dvol_indicators_loader.py --force-reload               # Full re
 # 8 groups: trend, momentum, levels, iv_hv, cross, rsi, bollinger, macd
 # Incremental: each group checks its own last filled timestamp
 # Daily batching: UPSERT only the group's columns, commit per day
+# Documentation: docs/DVOL_REFERENCE.md (full reference for all DVOL tables and indicators)
 
 # Check indicators status in database
 python3 check_indicators_status.py
@@ -710,6 +711,7 @@ cat INDICATORS_REFERENCE.md
 - **Architecture**: Per-group — each group tracked and written independently via group-specific UPSERT
 - **CLI flags**: `--currency BTC/ETH`, `--group <name>`, `--force-reload`
 - **Groups**: trend, momentum, levels, iv_hv, cross, rsi, bollinger, macd
+- **Documentation**: `docs/DVOL_REFERENCE.md` (full reference with SQL examples and signal interpretation)
 
 #### Backtest Tables
 - **Table**: `backtest_ml`
@@ -840,7 +842,9 @@ TradingChart/
 ├── docs/
 │   ├── ORDERBOOK_REFERENCE.md         # Bybit orderbook columns reference (for analysts)
 │   ├── ORDERBOOK_BINANCE_REFERENCE.md # Binance orderbook columns reference (for analysts)
-│   └── ORDERBOOK_PLANNING.md          # Orderbook technical architecture
+│   ├── ORDERBOOK_PLANNING.md          # Orderbook technical architecture
+│   ├── DVOL_REFERENCE.md              # DVOL tables, indicators, SQL examples
+│   └── OPTIONS_RESEARCH.md            # Options data collection research and plan
 ├── bybit_futures_check_start_date_by_symbol/
 │   ├── check_symbols_launch.py        # Symbol launch date checker
 │   └── symbols_launch_dates.json      # Symbol metadata
@@ -1528,6 +1532,7 @@ GET https://pro-api.coinmarketcap.com/v1/global-metrics/quotes/latest
   - **Orchestrator**: Added `options_dvol_indicators` to `start_all_loaders.py` and `indicators_config.yaml`
   - **Files Created**: `indicators/options_dvol_indicators_loader.py`
   - **Files Modified**: `indicators/start_all_loaders.py`, `indicators/indicators_config.yaml`, `CLAUDE.md`
+  - **Documentation**: Created `docs/DVOL_REFERENCE.md` — full reference for all 4 DVOL/options tables, 22 indicators with descriptions, SQL examples, and signal interpretation guide
 
 ### Security Notes
 - Database passwords are stored in `.env` file (not in repository)
