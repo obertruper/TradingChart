@@ -519,47 +519,52 @@ class OptionsAggregatedLoader:
         }
 
     def _calc_positioning(self, snapshot, **kwargs):
-        """Группа 7: Gamma Flip Level — цена где net GEX = 0"""
+        """Группа 7: Gamma Flip Level — цена где net GEX меняет знак по страйкам"""
         calls = snapshot[snapshot['option_type'] == 'call']
         puts = snapshot[snapshot['option_type'] == 'put']
+        underlying = snapshot['underlying_price'].iloc[0]
 
         strikes = sorted(snapshot['strike'].unique())
         if len(strikes) < 2:
             return {'gamma_flip_level': None}
 
-        call_gamma = calls.set_index('strike')['gamma'].mul(
-            calls.set_index('strike')['open_interest']
+        # GEX вклад каждого страйка: (gamma_call × OI_call - gamma_put × OI_put) × K² × 0.01
+        call_gex = calls.groupby('strike').apply(
+            lambda x: (x['gamma'] * x['open_interest']).sum(), include_groups=False
         )
-        put_gamma = puts.set_index('strike')['gamma'].mul(
-            puts.set_index('strike')['open_interest']
+        put_gex = puts.groupby('strike').apply(
+            lambda x: (x['gamma'] * x['open_interest']).sum(), include_groups=False
         )
 
-        # Агрегируем gamma × OI по страйкам
-        call_gex_by_strike = call_gamma.groupby(level=0).sum()
-        put_gex_by_strike = put_gamma.groupby(level=0).sum()
+        # Ищем смену знака net GEX ближайшую к текущей цене
+        sign_changes = []
+        prev_net = None
+        prev_strike = None
 
-        prev_net_gex = None
-        prev_price = None
+        for k in strikes:
+            cg = call_gex.get(k, 0.0)
+            pg = put_gex.get(k, 0.0)
+            net = (cg - pg) * k * k * 0.01
 
-        for test_price in strikes:
-            # GEX при данном уровне цены
-            gex_c = (call_gex_by_strike * test_price * test_price * 0.01).sum()
-            gex_p = (put_gex_by_strike * test_price * test_price * 0.01).sum()
-            net_gex = float(gex_c - gex_p)
-
-            if prev_net_gex is not None and prev_net_gex * net_gex < 0:
-                # Смена знака — линейная интерполяция
-                denom = abs(net_gex - prev_net_gex)
+            if prev_net is not None and prev_net * net < 0:
+                # Линейная интерполяция точки пересечения нуля
+                denom = abs(net - prev_net)
                 if denom < 1e-20:
-                    return {'gamma_flip_level': float(test_price)}
-                w = abs(prev_net_gex) / denom
-                flip = prev_price + w * (test_price - prev_price)
-                return {'gamma_flip_level': float(flip)}
+                    flip = float(k)
+                else:
+                    w = abs(prev_net) / denom
+                    flip = prev_strike + w * (k - prev_strike)
+                sign_changes.append(flip)
 
-            prev_net_gex = net_gex
-            prev_price = test_price
+            prev_net = net
+            prev_strike = k
 
-        return {'gamma_flip_level': None}
+        if not sign_changes:
+            return {'gamma_flip_level': None}
+
+        # Берём ближайшую к текущей цене смену знака
+        closest = min(sign_changes, key=lambda x: abs(x - underlying))
+        return {'gamma_flip_level': float(closest)}
 
     # =========================================================================
     # БД операции
