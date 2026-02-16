@@ -24,9 +24,14 @@ Options DVOL Indicators Loader (Per-Group Architecture)
   8. MACD (3):      dvol_macd_line_12_26, dvol_macd_signal_12_26_9, dvol_macd_hist_12_26_9
 
 Запуск:
-    python3 options_dvol_indicators_loader.py
-    python3 options_dvol_indicators_loader.py --force-reload
-    python3 options_dvol_indicators_loader.py --currency BTC
+    python3 options_dvol_indicators_loader.py                          # Все группы, BTC + ETH
+    python3 options_dvol_indicators_loader.py --currency BTC           # Только BTC
+    python3 options_dvol_indicators_loader.py --group rsi              # Только группа RSI
+    python3 options_dvol_indicators_loader.py --group macd --currency ETH  # MACD только для ETH
+    python3 options_dvol_indicators_loader.py --force-reload           # Полная перезагрузка всех групп
+
+Доступные группы (--group):
+    trend, momentum, levels, iv_hv, cross, rsi, bollinger, macd
 
 Автор: Trading System
 Дата: 2026-02-16
@@ -150,10 +155,14 @@ class DvolIndicatorsLoader:
     3. Запись в БД батчами по 1 день, только колонки этой группы
     """
 
-    def __init__(self, force_reload: bool = False, currency: str = None):
+    # Допустимые имена групп для --group флага
+    GROUP_NAMES = ['trend', 'momentum', 'levels', 'iv_hv', 'cross', 'rsi', 'bollinger', 'macd']
+
+    def __init__(self, force_reload: bool = False, currency: str = None, group: str = None):
         self.db = DatabaseConnection()
         self.force_reload = force_reload
         self.currencies = [currency] if currency else CURRENCIES
+        self.group_filter = group
         self.indicator_groups = self._define_groups()
 
     # -------------------------------------------------------------------------
@@ -166,50 +175,64 @@ class DvolIndicatorsLoader:
         Каждая группа обрабатывается и записывается отдельно.
         Добавление нового индикатора = новый элемент в этом списке.
         """
-        return [
+        groups = [
             {
+                'key': 'trend',
                 'name': 'Trend',
                 'columns': ['dvol_sma_24', 'dvol_sma_168', 'dvol_ema_12', 'dvol_ema_26'],
                 'calculate': self._calc_trend,
             },
             {
+                'key': 'momentum',
                 'name': 'Momentum',
                 'columns': ['dvol_change_24h', 'dvol_change_pct_24h', 'dvol_roc_24h'],
                 'calculate': self._calc_momentum,
             },
             {
+                'key': 'levels',
                 'name': 'Levels',
                 'columns': ['dvol_percentile_30d', 'dvol_percentile_90d', 'dvol_zscore_30d'],
                 'calculate': self._calc_levels,
             },
             {
+                'key': 'iv_hv',
                 'name': 'IV vs HV',
                 'columns': ['iv_hv_spread_30', 'iv_hv_ratio_30'],
                 'calculate': self._calc_iv_hv,
                 'needs_hv': True,
             },
             {
+                'key': 'cross',
                 'name': 'BTC/ETH Cross',
                 'columns': ['dvol_btc_eth_spread', 'dvol_btc_eth_ratio', 'dvol_btc_eth_corr_24h'],
                 'calculate': self._calc_cross_currency,
                 'cross_currency': True,
             },
             {
+                'key': 'rsi',
                 'name': 'RSI',
                 'columns': ['dvol_rsi_14'],
                 'calculate': self._calc_rsi,
             },
             {
+                'key': 'bollinger',
                 'name': 'Bollinger Bands',
                 'columns': ['dvol_bb_upper_20_2', 'dvol_bb_lower_20_2', 'dvol_bb_pct_b_20_2'],
                 'calculate': self._calc_bollinger,
             },
             {
+                'key': 'macd',
                 'name': 'MACD',
                 'columns': ['dvol_macd_line_12_26', 'dvol_macd_signal_12_26_9', 'dvol_macd_hist_12_26_9'],
                 'calculate': self._calc_macd,
             },
         ]
+
+        # Фильтрация по --group
+        if self.group_filter:
+            groups = [g for g in groups if g['key'] == self.group_filter]
+
+        return groups
 
     # -------------------------------------------------------------------------
     # Функции расчёта для каждой группы
@@ -539,6 +562,8 @@ class DvolIndicatorsLoader:
         logger.info("=" * 60)
         logger.info(f"Валюты: {self.currencies}")
         logger.info(f"Force reload: {self.force_reload}")
+        if self.group_filter:
+            logger.info(f"Группа: {self.group_filter}")
         logger.info(f"Таблица: {TABLE_NAME}")
         logger.info(f"Групп индикаторов: {len(self.indicator_groups)}")
         logger.info("")
@@ -626,6 +651,9 @@ def parse_args():
                         help='Пересчитать и перезаписать все данные')
     parser.add_argument('--currency', type=str, choices=['BTC', 'ETH'],
                         help='Обработать только одну валюту')
+    parser.add_argument('--group', type=str,
+                        choices=DvolIndicatorsLoader.GROUP_NAMES,
+                        help='Обработать только одну группу индикаторов')
     return parser.parse_args()
 
 
@@ -635,6 +663,7 @@ def main():
     loader = DvolIndicatorsLoader(
         force_reload=args.force_reload,
         currency=args.currency,
+        group=args.group,
     )
     loader.run()
 

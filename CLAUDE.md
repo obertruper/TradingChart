@@ -419,6 +419,19 @@ python3 options_dvol_loader.py --currency BTCUSDT --timeframe 1m  # Currency ali
 # Graceful shutdown: 1st Ctrl+C finishes current day, 2nd force exits
 # Documentation: docs/OPTIONS_RESEARCH.md
 
+# Load DVOL Indicators (technical indicators calculated from DVOL candles)
+python3 options_dvol_indicators_loader.py                              # All groups, BTC + ETH
+python3 options_dvol_indicators_loader.py --currency BTC               # Only BTC
+python3 options_dvol_indicators_loader.py --group rsi                  # Only RSI group
+python3 options_dvol_indicators_loader.py --group macd --currency ETH  # MACD only for ETH
+python3 options_dvol_indicators_loader.py --force-reload               # Full reload all groups
+# Note: Separate table options_deribit_dvol_indicators_1h (22 indicator columns)
+# Source: options_deribit_dvol_1h (DVOL close) + indicators_bybit_futures_1h (HV_30)
+# Per-group architecture: each group tracked and written independently
+# 8 groups: trend, momentum, levels, iv_hv, cross, rsi, bollinger, macd
+# Incremental: each group checks its own last filled timestamp
+# Daily batching: UPSERT only the group's columns, commit per day
+
 # Check indicators status in database
 python3 check_indicators_status.py
 python3 check_atr_status.py  # ATR-specific status
@@ -676,6 +689,28 @@ cat INDICATORS_REFERENCE.md
 - **Architecture**: Raw OHLC candles only, derived metrics calculated separately
 - **Documentation**: `docs/OPTIONS_RESEARCH.md`
 
+#### Options DVOL Indicators Table
+- **Table**: `options_deribit_dvol_indicators_1h`
+- **Purpose**: Technical indicators and metrics calculated from DVOL candles
+- **Source**: `options_deribit_dvol_1h` (DVOL close) + `indicators_bybit_futures_1h` (HV_30)
+- **Script**: `indicators/options_dvol_indicators_loader.py`
+- **Primary Key**: (timestamp, currency)
+- **Columns** (24 total: 2 PK + 22 indicators):
+  - timestamp (TIMESTAMPTZ), currency (VARCHAR 10)
+  - **Trend** (4): dvol_sma_24, dvol_sma_168, dvol_ema_12, dvol_ema_26
+  - **Momentum** (3): dvol_change_24h, dvol_change_pct_24h, dvol_roc_24h
+  - **Levels** (3): dvol_percentile_30d, dvol_percentile_90d, dvol_zscore_30d
+  - **IV vs HV** (2): iv_hv_spread_30, iv_hv_ratio_30
+  - **BTC/ETH Cross** (3): dvol_btc_eth_spread, dvol_btc_eth_ratio, dvol_btc_eth_corr_24h
+  - **RSI** (1): dvol_rsi_14
+  - **Bollinger** (3): dvol_bb_upper_20_2, dvol_bb_lower_20_2, dvol_bb_pct_b_20_2
+  - **MACD** (3): dvol_macd_line_12_26, dvol_macd_signal_12_26_9, dvol_macd_hist_12_26_9
+- **All indicator columns**: DECIMAL(10, 4)
+- **Indexes**: (currency, timestamp), (timestamp)
+- **Architecture**: Per-group — each group tracked and written independently via group-specific UPSERT
+- **CLI flags**: `--currency BTC/ETH`, `--group <name>`, `--force-reload`
+- **Groups**: trend, momentum, levels, iv_hv, cross, rsi, bollinger, macd
+
 #### Backtest Tables
 - **Table**: `backtest_ml`
 - **Purpose**: Storage for ML backtesting results
@@ -795,6 +830,7 @@ TradingChart/
 │   ├── orderbook_bybit_loader.py            # Orderbook data from Bybit historical archives
 │   ├── orderbook_binance_loader.py    # Orderbook data from Binance public archives
 │   ├── options_dvol_loader.py         # DVOL (Deribit Volatility Index) loader
+│   ├── options_dvol_indicators_loader.py  # DVOL indicators (22 cols, 8 groups, per-group arch)
 │   ├── database.py                    # Database operations for indicators
 │   ├── indicators_config.yaml         # Indicators configuration
 │   ├── check_indicators_status.py     # Check indicators in DB
@@ -1481,6 +1517,17 @@ GET https://pro-api.coinmarketcap.com/v1/global-metrics/quotes/latest
   - **Orchestrator**: Added to `start_all_loaders.py` and `indicators_config.yaml`
   - **Files Created**: `indicators/options_dvol_loader.py`
   - **Files Modified**: `indicators/start_all_loaders.py`, `indicators/indicators_config.yaml`, `docs/OPTIONS_RESEARCH.md`, `CLAUDE.md`
+- **Options DVOL Indicators Loader** (2026-02-16):
+  - **New Feature**: `options_dvol_indicators_loader.py` — calculates 22 technical indicators from DVOL candles
+  - **Table**: `options_deribit_dvol_indicators_1h` (22 indicator columns, DECIMAL(10,4))
+  - **Per-group architecture**: 8 groups processed independently, each checks its own last filled timestamp
+  - **Groups**: Trend (4 col), Momentum (3), Levels (3), IV vs HV (2), BTC/ETH Cross (3), RSI (1), Bollinger (3), MACD (3)
+  - **CLI**: `--group <name>` (process single group), `--currency BTC|ETH`, `--force-reload`
+  - **Cross-currency**: BTC/ETH spread, ratio, correlation written to both currency rows
+  - **IV vs HV**: Joins DVOL close with HV_30 from `indicators_bybit_futures_1h`
+  - **Orchestrator**: Added `options_dvol_indicators` to `start_all_loaders.py` and `indicators_config.yaml`
+  - **Files Created**: `indicators/options_dvol_indicators_loader.py`
+  - **Files Modified**: `indicators/start_all_loaders.py`, `indicators/indicators_config.yaml`, `CLAUDE.md`
 
 ### Security Notes
 - Database passwords are stored in `.env` file (not in repository)
