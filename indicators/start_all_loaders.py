@@ -70,6 +70,7 @@ LOADER_MAPPING = {
     'binance_orderbook': 'orderbook_binance_loader.py',
     'options_dvol': 'options_dvol_loader.py',
     'options_dvol_indicators': 'options_dvol_indicators_loader.py',
+    'options_aggregated': 'options_aggregated_loader.py',
 
     # Специальные случаи (не стандартное название файла)
     'fear_and_greed': 'fear_and_greed_loader_alternative.py',

@@ -433,6 +433,21 @@ python3 options_dvol_indicators_loader.py --force-reload               # Full re
 # Daily batching: UPSERT only the group's columns, commit per day
 # Documentation: docs/DVOL_REFERENCE.md (full reference for all DVOL tables and indicators)
 
+# Load Options Aggregated Metrics (from raw options snapshots)
+python3 options_aggregated_loader.py                                # All groups, BTC + ETH
+python3 options_aggregated_loader.py --currency BTC                 # Only BTC
+python3 options_aggregated_loader.py --group iv                     # Only IV Metrics group
+python3 options_aggregated_loader.py --group maxpain --currency ETH # Max Pain for ETH only
+python3 options_aggregated_loader.py --force-reload                 # Full reload all data
+# Note: Separate table options_deribit_aggregated_15m (24 indicator columns in 7 groups)
+# Source: options_deribit_raw (15-min snapshots of ~1500 option contracts)
+# Per-group architecture: each group tracked and written independently
+# 7 groups: volume, iv, maxpain, greeks, expiry, liquidity, positioning
+# Incremental: each group checks its own last filled timestamp
+# Daily batching: UPSERT only the group's columns, commit per day
+# Key metrics: Put/Call Ratio, IV ATM 30d (VIX-style), IV Skew, Max Pain, GEX, Gamma Flip Level
+# Documentation: docs/DVOL_REFERENCE.md
+
 # Check indicators status in database
 python3 check_indicators_status.py
 python3 check_atr_status.py  # ATR-specific status
@@ -713,6 +728,28 @@ cat INDICATORS_REFERENCE.md
 - **Groups**: trend, momentum, levels, iv_hv, cross, rsi, bollinger, macd
 - **Documentation**: `docs/DVOL_REFERENCE.md` (full reference with SQL examples and signal interpretation)
 
+#### Options Aggregated Metrics Table
+- **Table**: `options_deribit_aggregated_15m`
+- **Purpose**: Aggregated options metrics calculated from raw snapshots (15-min intervals)
+- **Source**: `options_deribit_raw` (all active option contracts every 15 min)
+- **Script**: `indicators/options_aggregated_loader.py`
+- **Primary Key**: (timestamp, currency)
+- **Columns** (26 total: 2 PK + 24 metrics):
+  - timestamp (TIMESTAMPTZ), currency (VARCHAR 10)
+  - **Volume/OI** (5): put_call_ratio_volume, put_call_ratio_oi, total_volume_24h, total_open_interest, oi_change_pct_24h
+  - **IV Metrics** (6): iv_atm_30d, iv_25d_put_30d, iv_25d_call_30d, iv_skew_25d_30d, iv_smile_steepness_30d, iv_term_structure_7d_30d
+  - **Max Pain** (4): max_pain_nearest, max_pain_nearest_distance_pct, max_pain_monthly, max_pain_monthly_distance_pct
+  - **Greeks Exposure** (4): gex, net_delta, net_gamma, vega_exposure
+  - **Expiration** (2): days_to_expiry_nearest, notional_expiring_7d
+  - **Liquidity** (2): bid_ask_spread_avg_atm, max_oi_strike
+  - **Positioning** (1): gamma_flip_level
+- **Indexes**: (currency, timestamp), (timestamp)
+- **Architecture**: Per-group — each group tracked and written independently via group-specific UPSERT
+- **CLI flags**: `--currency BTC/ETH`, `--group <name>`, `--force-reload`
+- **Groups**: volume, iv, maxpain, greeks, expiry, liquidity, positioning
+- **Key algorithms**: VIX-style 30d constant maturity interpolation, 25-delta IV interpolation, Max Pain iteration, GEX dealer convention, Gamma Flip Level with linear interpolation
+- **Documentation**: `docs/DVOL_REFERENCE.md`
+
 #### Backtest Tables
 - **Table**: `backtest_ml`
 - **Purpose**: Storage for ML backtesting results
@@ -833,6 +870,7 @@ TradingChart/
 │   ├── orderbook_binance_loader.py    # Orderbook data from Binance public archives
 │   ├── options_dvol_loader.py         # DVOL (Deribit Volatility Index) loader
 │   ├── options_dvol_indicators_loader.py  # DVOL indicators (22 cols, 8 groups, per-group arch)
+│   ├── options_aggregated_loader.py   # Options aggregated metrics (24 cols, 7 groups from raw)
 │   ├── database.py                    # Database operations for indicators
 │   ├── indicators_config.yaml         # Indicators configuration
 │   ├── check_indicators_status.py     # Check indicators in DB
@@ -1533,6 +1571,17 @@ GET https://pro-api.coinmarketcap.com/v1/global-metrics/quotes/latest
   - **Files Created**: `indicators/options_dvol_indicators_loader.py`
   - **Files Modified**: `indicators/start_all_loaders.py`, `indicators/indicators_config.yaml`, `CLAUDE.md`
   - **Documentation**: Created `docs/DVOL_REFERENCE.md` — full reference for all 4 DVOL/options tables, 22 indicators with descriptions, SQL examples, and signal interpretation guide
+- **Options Aggregated Metrics Loader** (2026-02-16):
+  - **New Feature**: `options_aggregated_loader.py` — calculates 24 aggregated metrics from raw options snapshots
+  - **Table**: `options_deribit_aggregated_15m` (24 metric columns, 7 groups)
+  - **Source**: `options_deribit_raw` (15-min snapshots of ~1500 option contracts)
+  - **Per-group architecture**: 7 groups processed independently, each checks its own last filled timestamp
+  - **Groups**: Volume/OI (5 col), IV Metrics (6), Max Pain (4), Greeks Exposure (4), Expiration (2), Liquidity (2), Positioning (1)
+  - **Key algorithms**: VIX-style 30d interpolation (IV ATM), 25-delta IV interpolation, Max Pain calculation, GEX (dealer convention), Gamma Flip Level (zero-crossing interpolation)
+  - **CLI**: `--group <name>` (process single group), `--currency BTC|ETH`, `--force-reload`
+  - **Orchestrator**: Added `options_aggregated` to `start_all_loaders.py` and `indicators_config.yaml`
+  - **Files Created**: `indicators/options_aggregated_loader.py`
+  - **Files Modified**: `indicators/start_all_loaders.py`, `indicators/indicators_config.yaml`, `CLAUDE.md`
 
 ### Security Notes
 - Database passwords are stored in `.env` file (not in repository)
