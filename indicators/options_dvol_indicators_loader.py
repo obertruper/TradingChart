@@ -367,13 +367,15 @@ class DvolIndicatorsLoader:
     # -------------------------------------------------------------------------
 
     def ensure_table(self):
-        """Создаёт таблицу и индексы если не существуют"""
-        with self.db.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(CREATE_TABLE_SQL)
-                for idx_sql in CREATE_INDEXES_SQL:
-                    cur.execute(idx_sql)
-                conn.commit()
+        """Проверяет что таблица существует"""
+        check_sql = """
+            SELECT 1 FROM information_schema.tables
+            WHERE table_name = %s LIMIT 1
+        """
+        result = self.db.execute_query(check_sql, (TABLE_NAME,))
+        if not result:
+            logger.error(f"Таблица {TABLE_NAME} не существует. Создайте вручную через sudo -u postgres psql.")
+            sys.exit(1)
         logger.info(f"Таблица {TABLE_NAME} готова")
 
     def get_group_last_timestamp(self, currency: str, columns: list):
