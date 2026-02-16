@@ -467,36 +467,55 @@ CREATE INDEX idx_raw_expiration ON options_deribit_raw (expiration);
 
 **Примечание:** Таблицы `options_deribit_instruments` и `options_deribit_trades` из предыдущей версии плана **не нужны** — вся необходимая информация (strike, expiration, type, OI, volume) уже содержится в `options_deribit_raw`. При необходимости trades можно добавить позже отдельной таблицей.
 
-### Таблица: options_aggregated (Этап 5, расчётная)
+### Таблица: options_deribit_aggregated_15m (Этап 5, расчётная) ✅
 
-Агрегированные метрики, рассчитанные из собранных данных. Одна строка на timestamp.
+Агрегированные метрики, рассчитанные из raw снапшотов. Одна строка на timestamp × currency.
 
 ```sql
-CREATE TABLE options_aggregated (
-    timestamp               TIMESTAMPTZ NOT NULL,
-    currency                VARCHAR(10) NOT NULL,    -- BTC, ETH
-    -- Put/Call Ratio
-    put_call_ratio_volume   DECIMAL(10, 4),
-    put_call_ratio_oi       DECIMAL(10, 4),
-    -- IV метрики
-    iv_atm                  DECIMAL(10, 4),          -- ATM Implied Volatility
-    iv_skew_25d             DECIMAL(10, 4),          -- 25-delta skew
-    iv_term_structure       DECIMAL(10, 4),          -- 7d IV - 30d IV
-    -- Max Pain
-    max_pain                DECIMAL(20, 2),
-    max_pain_distance_pct   DECIMAL(10, 4),
-    -- Gamma Exposure
-    gex                     DECIMAL(30, 4),
-    net_gamma_exposure      DECIMAL(30, 4),
-    -- Large trades
-    large_trade_flow        DECIMAL(20, 8),          -- Net buy-sell >1 BTC
-    -- Expiration
-    notional_expiring_7d    DECIMAL(30, 2),          -- USD value expiring in 7 days
+CREATE TABLE options_deribit_aggregated_15m (
+    timestamp                     TIMESTAMPTZ NOT NULL,
+    currency                      VARCHAR(10) NOT NULL,
+    -- Group 1: Volume/OI (5)
+    put_call_ratio_volume         DECIMAL(12, 4),
+    put_call_ratio_oi             DECIMAL(12, 4),
+    total_volume_24h              DECIMAL(20, 4),
+    total_open_interest           DECIMAL(20, 4),
+    oi_change_pct_24h             DECIMAL(12, 4),
+    -- Group 2: IV Metrics (6)
+    iv_atm_30d                    DECIMAL(12, 4),
+    iv_25d_put_30d                DECIMAL(12, 4),
+    iv_25d_call_30d               DECIMAL(12, 4),
+    iv_skew_25d_30d               DECIMAL(12, 4),
+    iv_smile_steepness_30d        DECIMAL(12, 4),
+    iv_term_structure_7d_30d      DECIMAL(12, 4),
+    -- Group 3: Max Pain (4)
+    max_pain_nearest              DECIMAL(20, 2),
+    max_pain_nearest_distance_pct DECIMAL(12, 4),
+    max_pain_monthly              DECIMAL(20, 2),
+    max_pain_monthly_distance_pct DECIMAL(12, 4),
+    -- Group 4: Greeks Exposure (4)
+    gex                           DECIMAL(30, 4),
+    net_delta                     DECIMAL(30, 4),
+    net_gamma                     DECIMAL(30, 4),
+    vega_exposure                 DECIMAL(30, 4),
+    -- Group 5: Expiration (2)
+    days_to_expiry_nearest        DECIMAL(8, 2),
+    notional_expiring_7d          DECIMAL(30, 2),
+    -- Group 6: Liquidity (2)
+    bid_ask_spread_avg_atm        DECIMAL(20, 10),
+    max_oi_strike                 DECIMAL(20, 2),
+    -- Group 7: Positioning (1)
+    gamma_flip_level              DECIMAL(20, 2),
     PRIMARY KEY (timestamp, currency)
 );
 
-CREATE INDEX idx_aggregated_currency ON options_aggregated (currency, timestamp);
+CREATE INDEX idx_aggregated_currency_timestamp ON options_deribit_aggregated_15m (currency, timestamp);
+CREATE INDEX idx_aggregated_timestamp ON options_deribit_aggregated_15m (timestamp);
 ```
+
+**Колонки:** 24 метрики + 2 PK = 26 колонок, 7 групп.
+**Скрипт:** `indicators/options_aggregated_loader.py`
+**Документация:** `docs/DVOL_REFERENCE.md` (секция 5.5)
 
 ---
 
