@@ -549,6 +549,32 @@ ORDER BY date DESC
 LIMIT 30;
 ```
 
+### Полная картина: DVOL + агрегированные метрики + цена BTC
+```sql
+SELECT
+    a.timestamp,
+    c.close AS btc_price,
+    d.close AS dvol,
+    i.iv_hv_ratio_30,
+    a.put_call_ratio_volume AS pcr,
+    a.iv_atm_30d,
+    a.iv_skew_25d_30d AS skew,
+    a.max_pain_nearest,
+    a.gex,
+    a.gamma_flip_level,
+    CASE WHEN a.gex > 0 THEN 'stable' ELSE 'volatile' END AS regime
+FROM options_deribit_aggregated_15m a
+LEFT JOIN options_deribit_dvol_1h d
+    ON d.timestamp = date_trunc('hour', a.timestamp) AND d.currency = a.currency
+LEFT JOIN options_deribit_dvol_indicators_1h i
+    ON i.timestamp = date_trunc('hour', a.timestamp) AND i.currency = a.currency
+LEFT JOIN candles_bybit_futures_1m c
+    ON c.timestamp = a.timestamp AND c.symbol = 'BTCUSDT'
+WHERE a.currency = 'BTC'
+ORDER BY a.timestamp DESC
+LIMIT 10;
+```
+
 ### DVOL + цена BTC: корреляция волатильности и цены
 ```sql
 SELECT
@@ -584,3 +610,20 @@ LIMIT 24;
 | Декорреляция | `btc_eth_corr < 0.3` | Специфическое событие для одного актива |
 | Тренд вверх | `ema_12 > ema_26` | Волатильность растёт |
 | Тренд вниз | `ema_12 < ema_26` | Волатильность снижается |
+
+### Шпаргалка: агрегированные метрики (`options_deribit_aggregated_15m`)
+
+| Сигнал | Условие | Интерпретация |
+|--------|---------|---------------|
+| Страх (puts) | `put_call_ratio_volume > 1.0` | Больше покупают путов — хеджирование от падения |
+| Жадность (calls) | `put_call_ratio_volume < 0.7` | Больше покупают коллов — бычий сентимент |
+| IV Skew — страх падения | `iv_skew_25d_30d > 5` | Путы дороже коллов — рынок боится падения |
+| IV Skew — инверсия | `iv_skew_25d_30d < -5` | Коллы дороже — необычно, возможен разворот |
+| Term Structure — стресс | `iv_term_structure_7d_30d > 5` | Краткосрочная IV выше долгосрочной (инверсия) |
+| Max Pain — магнит | `max_pain_nearest_distance_pct > 5%` | Цена далеко от магнита, вероятен возврат |
+| GEX стабилизация | `gex > 0` | Дилеры стабилизируют рынок (pin risk) |
+| GEX усиление | `gex < 0` | Дилеры усиливают движения (breakout risk) |
+| Выше Gamma Flip | `price > gamma_flip_level` | Стабильный режим рынка |
+| Ниже Gamma Flip | `price < gamma_flip_level` | Нестабильный, возможны резкие движения |
+| Рост OI | `oi_change_pct_24h > 5%` | Приток нового капитала в опционы |
+| Падение OI | `oi_change_pct_24h < -5%` | Массовое закрытие позиций |
