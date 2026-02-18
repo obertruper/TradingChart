@@ -673,9 +673,8 @@ class MACDLoader:
                 last_date = self.get_last_macd_date(timeframe, config)
 
                 if last_date:
-                    # Начинаем с дня после последнего
-                    start_date = last_date + timedelta(days=1)
-                    start_date = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
+                    # Начинаем с начала дня последних данных (перезапись частичного дня)
+                    start_date = last_date.replace(hour=0, minute=0, second=0, microsecond=0)
                     logger.info(f"📅 Последняя дата MACD {config['name']}: {last_date}")
                     logger.info(f"▶️  Продолжаем с: {start_date}")
                 else:

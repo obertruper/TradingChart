@@ -622,8 +622,8 @@ class StochasticLoader:
                 last_date = self.get_last_stochastic_date(timeframe, config)
 
                 if last_date:
-                    start_date = last_date + timedelta(days=1)
-                    start_date = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
+                    # Начинаем с начала дня последних данных (перезапись частичного дня)
+                    start_date = last_date.replace(hour=0, minute=0, second=0, microsecond=0)
                     logger.info(f"📅 Последняя дата Stochastic {config['name']}: {last_date}")
                     logger.info(f"▶️  Продолжаем с: {start_date}")
                 else:
@@ -1249,8 +1249,8 @@ class WilliamsRLoader:
                 last_date = self.get_last_williams_r_date(timeframe, period)
 
                 if last_date:
-                    start_date = last_date + timedelta(days=1)
-                    start_date = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
+                    # Начинаем с начала дня последних данных (перезапись частичного дня)
+                    start_date = last_date.replace(hour=0, minute=0, second=0, microsecond=0)
                     logger.info(f"📅 Последняя дата Williams %R period={period}: {last_date}")
                     logger.info(f"▶️  Продолжаем с: {start_date}")
                 else:

@@ -465,9 +465,9 @@ class ADXLoader:
             last_date = self.get_last_processed_date(timeframe, period)
 
             if last_date:
-                # Start from next day after last processed
-                start_date = max(start_date, last_date + timedelta(days=1))
-                self.logger.info(f"Resuming from {start_date.date()} (last: {last_date.date()})")
+                # Start from beginning of day with last data (re-process partial day)
+                start_date = max(start_date, last_date.replace(hour=0, minute=0, second=0, microsecond=0))
+                self.logger.info(f"Resuming from {start_date.date()} (last: {last_date})")
 
             if start_date >= end_date:
                 self.logger.info(f"ADX_{period} {timeframe} already up to date")
