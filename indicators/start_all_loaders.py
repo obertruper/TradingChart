@@ -29,6 +29,7 @@ import os
 import yaml
 import logging
 import time
+import argparse
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
@@ -79,6 +80,13 @@ LOADER_MAPPING = {
     # Stochastic + Williams (один файл для обоих)
     'stochastic': 'stochastic_williams_loader.py',
     'williams_r': 'stochastic_williams_loader.py',
+}
+
+# Загрузчики, поддерживающие флаг --check-nulls
+LOADERS_WITH_CHECK_NULLS = {
+    'sma', 'ema', 'rsi', 'vma', 'atr', 'adx', 'macd', 'bollinger_bands', 'vwap', 'mfi',
+    'stochastic', 'williams_r', 'premium_index', 'ichimoku', 'hv', 'supertrend',
+    'fear_and_greed', 'coinmarketcap_fear_and_greed', 'binance_orderbook',
 }
 
 
@@ -253,6 +261,12 @@ def run_loader(indicator_name: str, script_name: str, extra_args: List[str],
 
 def main():
     """Основная функция"""
+    # Парсим аргументы командной строки
+    parser = argparse.ArgumentParser(description='Orchestrator: последовательный запуск всех indicator loaders')
+    parser.add_argument('--check-nulls', action='store_true',
+                       help='Передать --check-nulls каждому загрузчику (заполнение NULL в середине данных)')
+    args = parser.parse_args()
+
     # Настраиваем логирование
     logger, log_file = setup_logging()
 
@@ -263,6 +277,8 @@ def main():
 
     logger.info(f"Дата запуска: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     logger.info(f"Лог файл: {log_file}")
+    if args.check_nulls:
+        logger.info(f"🔍 Режим CHECK NULLS: будет передан --check-nulls поддерживающим загрузчикам")
     logger.info("")
 
     # Загружаем конфигурацию
@@ -306,6 +322,8 @@ def main():
 
     # Получаем аргументы для stochastic+williams
     stochastic_williams_args = get_stochastic_williams_args(config)
+    if args.check_nulls:
+        stochastic_williams_args += ['--check-nulls']
 
     # Запускаем loader'ы последовательно
     results = []
@@ -367,10 +385,14 @@ def main():
                 logger.error(f"Добавьте mapping в LOADER_MAPPING")
                 break
 
+            extra_args = []
+            if args.check_nulls and indicator_name in LOADERS_WITH_CHECK_NULLS:
+                extra_args.append('--check-nulls')
+
             success, duration = run_loader(
                 indicator_name,
                 script_name,
-                [],
+                extra_args,
                 logger,
                 idx,
                 enabled_count

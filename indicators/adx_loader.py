@@ -79,6 +79,11 @@ class ADXLoader:
     6. Wilder smoothing of DX → ADX
     """
 
+    # Минуты на единицу таймфрейма (для расчёта natural boundary)
+    TIMEFRAME_MINUTES = {
+        '1m': 1, '15m': 15, '1h': 60, '4h': 240, '1d': 1440
+    }
+
     def __init__(
         self,
         symbol: str = 'BTCUSDT',
@@ -86,7 +91,8 @@ class ADXLoader:
         lookback_multiplier: int = LOOKBACK_MULTIPLIER,
         start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None,
-        force_reload: bool = False
+        force_reload: bool = False,
+        check_nulls: bool = False
     ):
         """
         Initialize ADX Loader
@@ -98,6 +104,7 @@ class ADXLoader:
             start_date: Custom start date (optional)
             end_date: Custom end date (optional)
             force_reload: Force reload even if data exists (default: False)
+            check_nulls: Check and fill NULL values in middle of data (default: False)
         """
         self.symbol = symbol
         self.symbol_progress = ""  # Будет установлено из main() для отображения прогресса
@@ -106,6 +113,7 @@ class ADXLoader:
         self.custom_start_date = start_date
         self.custom_end_date = end_date
         self.force_reload = force_reload
+        self.check_nulls = check_nulls
         self.db = DatabaseConnection()
         self.logger = setup_logging(symbol)
 
@@ -119,6 +127,8 @@ class ADXLoader:
             self.logger.info(f"Custom end date: {end_date.date()}")
         if force_reload:
             self.logger.info("Force reload mode: ENABLED")
+        if check_nulls:
+            self.logger.info("Check nulls mode: ENABLED")
 
     def get_column_names(self, period: int) -> Dict[str, str]:
         """
@@ -235,6 +245,55 @@ class ADXLoader:
                     raise ValueError(f"No data found for {self.symbol}")
 
                 return result[0], result[1]
+
+    def get_null_timestamps_for_period(self, timeframe: str, period: int) -> set:
+        """
+        Находит timestamps где ADX/+DI/-DI IS NULL (исключая natural boundary).
+
+        ADX использует двойное сглаживание Wilder:
+        - Первое сглаживание TR/+DM/-DM: period записей
+        - DX из +DI/-DI: сразу после первого сглаживания
+        - Второе сглаживание DX → ADX: ещё period записей
+        - Natural boundary = period * 2
+
+        Args:
+            timeframe: Таймфрейм (1m, 15m, 1h, 4h, 1d)
+            period: Период ADX
+
+        Returns:
+            set of timestamps с NULL значениями
+        """
+        table_name = f'indicators_bybit_futures_{timeframe}'
+        columns = self.get_column_names(period)
+        adx_col = columns['adx']
+        plus_di_col = columns['plus_di']
+        minus_di_col = columns['minus_di']
+
+        # Natural boundary: двойное сглаживание = period * 2
+        minutes = self.TIMEFRAME_MINUTES[timeframe]
+        boundary_periods = period * 2
+
+        with self.db.get_connection() as conn:
+            with conn.cursor() as cur:
+                # Минимальная дата данных
+                cur.execute(f"""
+                    SELECT MIN(timestamp) FROM {table_name}
+                    WHERE symbol = %s
+                """, (self.symbol,))
+                min_date = cur.fetchone()[0]
+                if not min_date:
+                    return set()
+
+                boundary = min_date + timedelta(minutes=boundary_periods * minutes)
+
+                # Ищем NULL после boundary
+                cur.execute(f"""
+                    SELECT timestamp FROM {table_name}
+                    WHERE symbol = %s AND timestamp >= %s
+                      AND ({adx_col} IS NULL OR {plus_di_col} IS NULL OR {minus_di_col} IS NULL)
+                """, (self.symbol, boundary))
+
+                return {row[0] for row in cur.fetchall()}
 
     def calculate_true_range(
         self,
@@ -442,7 +501,8 @@ class ADXLoader:
         period: int,
         timeframe: str,
         start_date: datetime,
-        end_date: datetime
+        end_date: datetime,
+        null_timestamps: Optional[set] = None
     ):
         """
         Load ADX data for a specific period and timeframe
@@ -452,6 +512,7 @@ class ADXLoader:
             timeframe: Timeframe (1m, 15m, 1h)
             start_date: Start date for processing
             end_date: End date for processing
+            null_timestamps: Set of timestamps to fill (check_nulls mode)
         """
         self.logger.info(f"\n{'='*80}")
         self.logger.info(f"Loading ADX_{period} for {timeframe}")
@@ -460,8 +521,8 @@ class ADXLoader:
         # Ensure columns exist
         self.ensure_columns_exist(timeframe, period)
 
-        # Get last processed date (skip checkpoint if force reload)
-        if not self.force_reload:
+        # Get last processed date (skip checkpoint if force reload or check_nulls)
+        if not self.force_reload and null_timestamps is None:
             last_date = self.get_last_processed_date(timeframe, period)
 
             if last_date:
@@ -472,7 +533,7 @@ class ADXLoader:
             if start_date >= end_date:
                 self.logger.info(f"ADX_{period} {timeframe} already up to date")
                 return
-        else:
+        elif self.force_reload:
             self.logger.info(f"Force reload: Skipping checkpoint, will reload all data in range")
 
         # Calculate lookback period
@@ -484,7 +545,8 @@ class ADXLoader:
 
         columns = self.get_column_names(period)
 
-        with tqdm(total=total_days, desc=f"{self.symbol} {self.symbol_progress} ADX-{period} {timeframe.upper()}", unit="day",
+        mode_label = " CHECK-NULLS" if null_timestamps is not None else ""
+        with tqdm(total=total_days, desc=f"{self.symbol} {self.symbol_progress} ADX-{period} {timeframe.upper()}{mode_label}", unit="day",
                  ncols=100, bar_format='{desc}: {percentage:3.0f}%|{bar:20}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]') as pbar:
             while current_date < end_date:
                 batch_end = min(current_date + timedelta(days=self.batch_days), end_date)
@@ -542,6 +604,10 @@ class ADXLoader:
                     (df_agg['timestamp'] >= current_date) &
                     (df_agg['timestamp'] < batch_end)
                 ].copy()
+
+                # check_nulls: дополнительная фильтрация — только NULL timestamps
+                if null_timestamps is not None and not df_batch.empty:
+                    df_batch = df_batch[df_batch['timestamp'].isin(null_timestamps)].copy()
 
                 # Update database
                 if not df_batch.empty:
@@ -624,7 +690,19 @@ class ADXLoader:
         # Process each period sequentially (short to long)
         for period in sorted(periods):
             try:
-                self.load_period(period, timeframe, start_date, end_date)
+                null_timestamps = None
+
+                if self.check_nulls:
+                    # Режим check_nulls: находим NULL timestamps для периода
+                    null_timestamps = self.get_null_timestamps_for_period(timeframe, period)
+
+                    if not null_timestamps:
+                        self.logger.info(f"✅ ADX-{period} {timeframe}: нет NULL значений")
+                        continue
+
+                    self.logger.info(f"🔍 ADX-{period} {timeframe}: найдено {len(null_timestamps):,} NULL записей")
+
+                self.load_period(period, timeframe, start_date, end_date, null_timestamps=null_timestamps)
             except Exception as e:
                 self.logger.error(f"Error loading ADX_{period} {timeframe}: {e}", exc_info=True)
                 continue
@@ -688,7 +766,7 @@ def main():
     parser.add_argument(
         '--timeframe',
         type=str,
-        choices=['1m', '15m', '1h', 'all'],
+        choices=['1m', '15m', '1h', '4h', '1d', 'all'],
         default='all',
         help='Timeframe to process (default: all)'
     )
@@ -718,6 +796,11 @@ def main():
         '--force-reload',
         action='store_true',
         help='Force reload even if data exists (ignores checkpoint)'
+    )
+    parser.add_argument(
+        '--check-nulls',
+        action='store_true',
+        help='Check and fill NULL values in middle of data (excludes natural boundary)'
     )
 
     args = parser.parse_args()
@@ -773,7 +856,8 @@ def main():
                 batch_days=args.batch_days,
                 start_date=start_date,
                 end_date=end_date,
-                force_reload=args.force_reload
+                force_reload=args.force_reload,
+                check_nulls=args.check_nulls
             )
             loader.symbol_progress = f"[{idx}/{total_symbols}] "
 

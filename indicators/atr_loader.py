@@ -69,22 +69,26 @@ logger = setup_logging()
 class ATRLoader:
     """Загрузчик ATR (Average True Range) для разных таймфреймов"""
 
-    def __init__(self, symbol: str = 'BTCUSDT', force_reload: bool = False):
+    def __init__(self, symbol: str = 'BTCUSDT', force_reload: bool = False, check_nulls: bool = False):
         """
         Инициализация загрузчика
 
         Args:
             symbol: Торговая пара
             force_reload: Пересчитать все данные с начала (по умолчанию False)
+            check_nulls: Проверить и заполнить NULL значения в середине данных
         """
         self.db = DatabaseConnection()
         self.symbol = symbol
         self.config = self.load_config()
         self.symbol_progress = ""  # Будет установлено из main() для отображения прогресса
         self.force_reload = force_reload
+        self.check_nulls = check_nulls
 
         if force_reload:
             logger.info("⚠️  Режим FORCE RELOAD: пересчет всех данных с начала")
+        if check_nulls:
+            logger.info("🔍 Режим CHECK NULLS: поиск и заполнение NULL значений")
 
         # Динамический мапинг таймфреймов на минуты
         self.timeframe_minutes = self._parse_timeframes()
@@ -258,6 +262,48 @@ class ATRLoader:
 
                 result = cur.fetchone()
                 return result[0] if result[0] else None
+            finally:
+                cur.close()
+
+    def get_null_timestamps_for_period(self, timeframe: str, period: int) -> set:
+        """
+        Находит timestamps с NULL значениями ATR или NATR для конкретного периода.
+        Исключает естественные NULL в начале данных (недостаточно данных для Wilder smoothing).
+
+        Args:
+            timeframe: Таймфрейм
+            period: Период ATR
+
+        Returns:
+            set: Множество timestamps с NULL
+        """
+        table_name = self.get_table_name(timeframe)
+        atr_col = f'atr_{period}'
+        natr_col = f'natr_{period}'
+        minutes = self.timeframe_minutes[timeframe]
+
+        with self.db.get_connection() as conn:
+            cur = conn.cursor()
+            try:
+                cur.execute(f"""
+                    SELECT MIN(timestamp) FROM {table_name}
+                    WHERE symbol = %s
+                """, (self.symbol,))
+                min_date = cur.fetchone()[0]
+                if not min_date:
+                    return set()
+
+                # Natural boundary: period records needed for first ATR value
+                boundary = min_date + timedelta(minutes=period * minutes)
+
+                cur.execute(f"""
+                    SELECT timestamp FROM {table_name}
+                    WHERE symbol = %s
+                      AND timestamp >= %s
+                      AND ({atr_col} IS NULL OR {natr_col} IS NULL)
+                """, (self.symbol, boundary))
+
+                return {row[0] for row in cur.fetchall()}
             finally:
                 cur.close()
 
@@ -828,12 +874,22 @@ class ATRLoader:
 
             # Находим последнюю дату с данными для этого периода
             last_date = self.get_last_atr_date(timeframe, period)
+            null_timestamps = None  # None = обычная логика, set() = только NULL timestamps
 
             if self.force_reload:
                 # Режим force_reload - начинаем с самого начала
                 start_date = min_date
                 logger.info(f"🔄 Режим FORCE RELOAD: начинаем с начала данных")
                 logger.info(f"📅 Начальная дата: {start_date}")
+            elif self.check_nulls:
+                null_ts = self.get_null_timestamps_for_period(timeframe, period)
+                if not null_ts:
+                    logger.info(f"  ✅ ATR_{period}: все данные актуальны — пропускаем")
+                    continue
+                null_timestamps = null_ts
+                start_date = min_date  # Wilder smoothing требует полную цепочку
+                logger.info(f"🔍 ATR_{period}: найдено {len(null_ts)} NULL записей")
+                logger.info(f"🔄 Загрузка с начала истории для корректности Wilder smoothing")
             elif last_date:
                 # Важно: для Wilder smoothing нужна вся история, но записывать будем только новые данные
                 # Начинаем загрузку с начала истории для корректности цепочки
@@ -846,8 +902,8 @@ class ATRLoader:
                 start_date = min_date
                 logger.info(f"🆕 ATR_{period} пуст, начинаем с начала: {start_date}")
 
-            # Если уже все обработано
-            if last_date and last_date >= max_date:
+            # Если уже все обработано (не для check_nulls — там null_timestamps уже проверены)
+            if null_timestamps is None and last_date and last_date >= max_date:
                 logger.info(f"✅ ATR_{period} уже актуален (до {max_date})")
                 continue
 
@@ -904,6 +960,10 @@ class ATRLoader:
                 # force_reload - перезаписываем ВСЕ данные
                 df_to_update = df.copy()
                 logger.info(f"Режим FORCE RELOAD: перезапись всех {len(df_to_update):,} записей")
+            elif null_timestamps is not None:
+                # check_nulls - только NULL timestamps
+                df_to_update = df[df['timestamp'].isin(null_timestamps)].copy()
+                logger.info(f"Режим CHECK NULLS: запись {len(df_to_update):,} из {len(null_timestamps)} NULL записей")
             elif last_date:
                 # Инкрементальная загрузка - только новые данные
                 df_to_update = df[df['timestamp'] > last_date].copy()
@@ -1188,6 +1248,8 @@ def main():
                        help='Пересчитать все данные с начала (ATR + NATR)')
     parser.add_argument('--backfill-natr', action='store_true',
                        help='Быстрое заполнение NATR на основе существующих ATR данных')
+    parser.add_argument('--check-nulls', action='store_true',
+                       help='Проверить и заполнить NULL значения в середине данных (полный пересчёт Wilder chain)')
 
     args = parser.parse_args()
 
@@ -1218,7 +1280,7 @@ def main():
         logger.info(f"{'='*80}\n")
 
         try:
-            loader = ATRLoader(symbol=symbol, force_reload=args.force_reload)
+            loader = ATRLoader(symbol=symbol, force_reload=args.force_reload, check_nulls=args.check_nulls)
             loader.symbol_progress = f"[{idx}/{total_symbols}]"
 
             if args.backfill_natr:

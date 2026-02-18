@@ -192,6 +192,13 @@ python3 adx_loader.py
 python3 adx_loader.py --period 14  # Specific period only
 python3 adx_loader.py --timeframe 1h  # Specific timeframe only
 python3 adx_loader.py --batch-days 3  # Larger batches for faster processing
+python3 adx_loader.py --force-reload  # Full recalculation from history start
+python3 adx_loader.py --check-nulls  # Check and fill NULL values in middle of data
+python3 adx_loader.py --check-nulls --symbol BTCUSDT  # Check NULLs for specific symbol
+# Note: ADX uses double Wilder smoothing (cumulative), 8 periods: 7, 10, 14, 20, 21, 25, 30, 50
+# Each period creates 3 columns: adx_{period}, adx_{period}_plus_di, adx_{period}_minus_di
+# --check-nulls: Finds NULL after natural boundary (period×2), fills with recalculation
+# Natural boundary = period × 2 (first Wilder smoothing + second DX→ADX smoothing)
 
 # Load Long/Short Ratio (market sentiment from Bybit API)
 python3 long_short_ratio_loader.py
