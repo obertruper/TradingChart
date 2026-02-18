@@ -260,8 +260,12 @@ python3 macd_loader.py
 python3 macd_loader.py --symbol BTCUSDT  # Specific symbol only
 python3 macd_loader.py --timeframe 1h  # Specific timeframe only
 python3 macd_loader.py --batch-days 3  # Larger batches for faster processing
+python3 macd_loader.py --force-reload  # Full recalculation from history start
+python3 macd_loader.py --check-nulls  # Check and fill NULL values in middle of data
+python3 macd_loader.py --check-nulls --symbol BTCUSDT  # Check NULLs for specific symbol
 # Note: 8 configurations (classic, crypto, aggressive, balanced, scalping, swing, longterm, ultralong)
 # Each configuration creates 3 columns: line, signal, histogram
+# --check-nulls: Finds NULL after natural boundary (slow+signal periods), fills with recalculation
 
 # Load Bollinger Bands (volatility indicator)
 python3 bollinger_bands_loader.py
