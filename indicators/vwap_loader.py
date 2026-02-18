@@ -18,6 +18,7 @@ Usage:
     python3 vwap_loader.py --batch-days 7                     # Изменить размер батча
 """
 
+import gc
 import sys
 import logging
 import argparse
@@ -467,7 +468,7 @@ class VWAPLoader:
             df: DataFrame с рассчитанными VWAP значениями
             batch_start: Начало батча (для фильтрации)
             batch_end: Конец батча (для фильтрации)
-            columns: Список колонок для сохранения (например, ['vwap_daily'] или ['vwap_100'])
+            columns: Список колонок для сохранения (например, ['vwap_daily', 'vwap_10', ...])
         """
 
         # Фильтруем только батч (без lookback)
@@ -476,34 +477,36 @@ class VWAPLoader:
         if df_batch.empty:
             return
 
-        # Подготавливаем данные для UPDATE
-        update_data = []
-        for timestamp, row in df_batch.iterrows():
-            # В режиме check-nulls записываем только NULL timestamps
-            if self._null_timestamps is not None and timestamp not in self._null_timestamps:
-                continue
-            for col in columns:
-                if col in row and pd.notna(row[col]):
-                    update_data.append({
-                        'timestamp': timestamp,
-                        'symbol': self.symbol,
-                        'column': col,
-                        'value': float(row[col])
-                    })
-
-        if not update_data:
-            return
-
-        # Bulk UPDATE
+        # Один UPDATE на строку со всеми колонками (вместо N UPDATE'ов по одной колонке)
         with self.db.get_connection() as conn:
             with conn.cursor() as cur:
-                for data in update_data:
+                rows_updated = 0
+
+                for timestamp, row in df_batch.iterrows():
+                    # В режиме check-nulls записываем только NULL timestamps
+                    if self._null_timestamps is not None and timestamp not in self._null_timestamps:
+                        continue
+
+                    # Собираем все non-NULL значения для одного UPDATE
+                    set_parts = []
+                    values = []
+                    for col in columns:
+                        if col in row and pd.notna(row[col]):
+                            set_parts.append(f"{col} = %s")
+                            values.append(float(row[col]))
+
+                    if not set_parts:
+                        continue
+
+                    # Один UPDATE на строку вместо 16 отдельных
                     sql = f"""
                         UPDATE {self.indicators_table}
-                        SET {data['column']} = %s
+                        SET {', '.join(set_parts)}
                         WHERE timestamp = %s AND symbol = %s
                     """
-                    cur.execute(sql, (data['value'], data['timestamp'], data['symbol']))
+                    values.extend([timestamp, self.symbol])
+                    cur.execute(sql, values)
+                    rows_updated += 1
 
                 conn.commit()
 
@@ -586,74 +589,51 @@ class VWAPLoader:
         logger.info(f"📊 Всего дней: {total_days}, батчей: {total_batches}")
         logger.info("")
 
-        # Определяем общее количество этапов
-        total_indicators = (1 if self.daily_enabled else 0) + len(self.rolling_periods)
-
-        # 4. Daily VWAP
+        # 4. Собираем список всех VWAP колонок
+        all_columns = []
         if self.daily_enabled:
-            logger.info(f"[1/{total_indicators}] Daily VWAP")
+            all_columns.append('vwap_daily')
+        for period in self.rolling_periods:
+            all_columns.append(f'vwap_{period}')
 
-            current_date = start_date
-            batch_num = 0
+        total_indicators = len(all_columns)
+        logger.info(f"📊 Расчёт {total_indicators} VWAP вариантов за один проход")
 
-            pbar = tqdm(
-                total=total_batches,
-                desc=f"{self.symbol} {self.symbol_progress} VWAP-daily {self.timeframe.upper()}",
-                unit="батч"
-            )
+        # 5. Единый цикл по батчам — загрузка данных ОДИН РАЗ, расчёт ВСЕХ вариантов
+        current_date = start_date
 
-            while current_date < end_date:
-                batch_end = min(current_date + timedelta(days=self.batch_days), end_date)
+        pbar = tqdm(
+            total=total_batches,
+            desc=f"{self.symbol} {self.symbol_progress} VWAP ({total_indicators} var) {self.timeframe.upper()}",
+            unit="батч"
+        )
 
-                # Загружаем данные с lookback
-                df = self.load_candles_with_lookback(current_date, batch_end)
+        while current_date < end_date:
+            batch_end = min(current_date + timedelta(days=self.batch_days), end_date)
 
-                if not df.empty:
-                    # Рассчитываем Daily VWAP
+            # Загружаем данные ОДИН РАЗ с максимальным lookback
+            df = self.load_candles_with_lookback(current_date, batch_end)
+
+            if not df.empty:
+                # Рассчитываем Daily VWAP
+                if self.daily_enabled:
                     df['vwap_daily'] = self.calculate_daily_vwap(df)
 
-                    # Записываем в БД (только батч, без lookback)
-                    self.save_to_db(df, current_date, batch_end, ['vwap_daily'])
-
-                batch_num += 1
-                pbar.update(1)
-                current_date = batch_end
-
-            pbar.close()
-
-        # 5. Rolling VWAP (все периоды)
-        for idx, period in enumerate(self.rolling_periods):
-            indicator_num = (1 if self.daily_enabled else 0) + idx + 1
-            logger.info(f"[{indicator_num}/{total_indicators}] Rolling VWAP (period={period})")
-
-            current_date = start_date
-            batch_num = 0
-
-            pbar = tqdm(
-                total=total_batches,
-                desc=f"{self.symbol} {self.symbol_progress} VWAP-{period} {self.timeframe.upper()}",
-                unit="батч"
-            )
-
-            while current_date < end_date:
-                batch_end = min(current_date + timedelta(days=self.batch_days), end_date)
-
-                # Загружаем данные с lookback
-                df = self.load_candles_with_lookback(current_date, batch_end)
-
-                if not df.empty:
-                    # Рассчитываем Rolling VWAP для этого периода
+                # Рассчитываем ВСЕ Rolling VWAP на одном DataFrame
+                for period in self.rolling_periods:
                     col_name = f'vwap_{period}'
                     df[col_name] = self.calculate_rolling_vwap(df, period)
 
-                    # Записываем в БД
-                    self.save_to_db(df, current_date, batch_end, [col_name])
+                # Записываем ВСЕ колонки одним вызовом (1 UPDATE на строку)
+                self.save_to_db(df, current_date, batch_end, all_columns)
 
-                batch_num += 1
-                pbar.update(1)
-                current_date = batch_end
+            # Явное освобождение памяти батча
+            del df
 
-            pbar.close()
+            pbar.update(1)
+            current_date = batch_end
+
+        pbar.close()
 
         logger.info(f"✅ {self.symbol} завершен")
         logger.info("")
@@ -830,6 +810,9 @@ def main():
             except Exception as e:
                 logger.error(f"❌ Ошибка обработки {symbol} на {timeframe}: {e}", exc_info=True)
                 continue
+
+        # Освобождение памяти между символами
+        gc.collect()
 
     logger.info("")
     logger.info("=" * 80)

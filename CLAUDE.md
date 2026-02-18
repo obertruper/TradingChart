@@ -1582,6 +1582,17 @@ GET https://pro-api.coinmarketcap.com/v1/global-metrics/quotes/latest
   - **Orchestrator**: Added `options_aggregated` to `start_all_loaders.py` and `indicators_config.yaml`
   - **Files Created**: `indicators/options_aggregated_loader.py`
   - **Files Modified**: `indicators/start_all_loaders.py`, `indicators/indicators_config.yaml`, `CLAUDE.md`
+- **VWAP Loader Memory Optimization (OOM Fix)** (2026-02-18):
+  - **Problem**: VWAP loader consumed 27 GB RAM on VPS (16 GB), killed by OOM Killer
+  - **Root Cause**: 16 VWAP variants loaded data separately — 16 × 2000 = 32,000 `pd.read_sql_query()` calls per symbol per timeframe, causing massive CPython memory fragmentation
+  - **Fix — Single-Pass Architecture**: Load data ONCE per batch, calculate ALL 16 VWAP variants on same DataFrame
+  - **Fix — Batch UPDATE**: One UPDATE per row setting all 16 columns (was 16 separate UPDATEs per row)
+  - **Fix — Memory cleanup**: Explicit `del df` per batch + `gc.collect()` between symbols
+  - **Impact**:
+    - DB queries: 32,000 → 2,000 per symbol per timeframe (16× reduction)
+    - SQL UPDATEs: 16 per row → 1 per row (16× reduction)
+    - Peak RAM: ~27 GB → ~hundreds of MB
+  - **File Modified**: `indicators/vwap_loader.py`
 
 ### Security Notes
 - Database passwords are stored in `.env` file (not in repository)
