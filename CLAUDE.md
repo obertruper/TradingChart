@@ -118,8 +118,11 @@ cd indicators
 
 # ORCHESTRATOR - Automatic sequential loading of ALL indicators
 python3 start_all_loaders.py
+python3 start_all_loaders.py --check-nulls  # Pass --check-nulls to all supporting loaders
 # Loads all enabled indicators sequentially from indicators_config.yaml
+# 26 loaders total: 23 indicator + 3 options (dvol, dvol_indicators, aggregated)
 # Configuration: orchestrator.loaders section (true/false for each indicator)
+# Execution order: determined by indicators section key order in indicators_config.yaml
 # Logs: indicators/logs/start_all_loaders_YYYYMMDD_HHMMSS.log (real-time)
 # Perfect for manual runs and cron jobs
 

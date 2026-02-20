@@ -181,14 +181,24 @@ def get_stochastic_williams_args(config: Dict) -> List[str]:
 
 
 def format_duration(seconds: float) -> str:
-    """Форматирует длительность в человекочитаемый вид"""
-    minutes = int(seconds // 60)
-    secs = int(seconds % 60)
+    """Форматирует длительность в человекочитаемый вид (1d 4h 15m 30s)"""
+    total = int(seconds)
+    days = total // 86400
+    hours = (total % 86400) // 3600
+    minutes = (total % 3600) // 60
+    secs = total % 60
 
+    parts = []
+    if days > 0:
+        parts.append(f"{days}d")
+    if hours > 0:
+        parts.append(f"{hours}h")
     if minutes > 0:
-        return f"{minutes}m {secs}s"
-    else:
-        return f"{secs}s"
+        parts.append(f"{minutes}m")
+    if secs > 0 or not parts:
+        parts.append(f"{secs}s")
+
+    return " ".join(parts)
 
 
 def run_loader(indicator_name: str, script_name: str, extra_args: List[str],
