@@ -265,6 +265,90 @@ class ATRLoader:
             finally:
                 cur.close()
 
+    def get_all_last_atr_dates(self, timeframe: str, periods: List[int]) -> Dict[int, Optional[datetime]]:
+        """
+        Получает последнюю дату с рассчитанным ATR для ВСЕХ периодов одним SQL запросом.
+
+        Args:
+            timeframe: Таймфрейм
+            periods: Список периодов ATR
+
+        Returns:
+            Dict {period: last_date или None}
+        """
+        table_name = self.get_table_name(timeframe)
+
+        # Строим CASE выражения для каждого периода
+        case_exprs = []
+        for p in periods:
+            case_exprs.append(
+                f"MAX(CASE WHEN atr_{p} IS NOT NULL THEN timestamp END) AS last_{p}"
+            )
+
+        query = f"""
+            SELECT {', '.join(case_exprs)}
+            FROM {table_name}
+            WHERE symbol = %s
+        """
+
+        with self.db.get_connection() as conn:
+            cur = conn.cursor()
+            try:
+                cur.execute(query, (self.symbol,))
+                row = cur.fetchone()
+                if not row:
+                    return {p: None for p in periods}
+                return {p: row[i] for i, p in enumerate(periods)}
+            finally:
+                cur.close()
+
+    def get_all_null_timestamps(self, timeframe: str, periods: List[int]) -> Dict[int, set]:
+        """
+        Получает NULL timestamps для ВСЕХ периодов одним подключением.
+        Исключает естественные NULL в начале данных.
+
+        Args:
+            timeframe: Таймфрейм
+            periods: Список периодов ATR
+
+        Returns:
+            Dict {period: set(timestamps)}
+        """
+        table_name = self.get_table_name(timeframe)
+        minutes = self.timeframe_minutes[timeframe]
+
+        result = {p: set() for p in periods}
+
+        with self.db.get_connection() as conn:
+            cur = conn.cursor()
+            try:
+                # Получаем min_date
+                cur.execute(f"""
+                    SELECT MIN(timestamp) FROM {table_name}
+                    WHERE symbol = %s
+                """, (self.symbol,))
+                min_date = cur.fetchone()[0]
+                if not min_date:
+                    return result
+
+                for period in periods:
+                    boundary = min_date + timedelta(minutes=period * minutes)
+                    atr_col = f'atr_{period}'
+                    natr_col = f'natr_{period}'
+
+                    cur.execute(f"""
+                        SELECT timestamp FROM {table_name}
+                        WHERE symbol = %s
+                          AND timestamp >= %s
+                          AND ({atr_col} IS NULL OR {natr_col} IS NULL)
+                    """, (self.symbol, boundary))
+
+                    result[period] = {row[0] for row in cur.fetchall()}
+
+                return result
+            finally:
+                cur.close()
+
     def get_null_timestamps_for_period(self, timeframe: str, period: int) -> set:
         """
         Находит timestamps с NULL значениями ATR или NATR для конкретного периода.
@@ -785,6 +869,85 @@ class ATRLoader:
                     logger.error(f"❌ Ошибка при обновлении {atr_col}/{natr_col}: {e}")
                     raise
 
+    def batch_update_all_atr(self, df: pd.DataFrame, table_name: str, periods: List[int]):
+        """
+        Пишет все ATR и NATR колонки одним UPDATE через execute_batch.
+        Commit после каждого дня для безопасного восстановления.
+
+        Args:
+            df: DataFrame с колонками timestamp, symbol, atr_{p}, natr_{p} для всех периодов
+            table_name: Имя таблицы индикаторов
+            periods: Список периодов ATR
+        """
+        if df.empty:
+            logger.info("Нет данных для обновления ATR/NATR")
+            return
+
+        # Строим SET часть запроса: atr_7=%s, natr_7=%s, atr_14=%s, natr_14=%s, ...
+        set_parts = []
+        for p in periods:
+            set_parts.append(f"atr_{p} = %s")
+            set_parts.append(f"natr_{p} = %s")
+
+        update_sql = f"""
+            UPDATE {table_name}
+            SET {', '.join(set_parts)}
+            WHERE timestamp = %s AND symbol = %s
+        """
+
+        # Группируем по дням
+        df_copy = df.copy()
+        df_copy['_date'] = pd.to_datetime(df_copy['timestamp']).dt.date
+        grouped = df_copy.groupby('_date')
+
+        total_days = len(grouped)
+        total_records = len(df_copy)
+
+        logger.info(f"Начало обновления БД: {total_records:,} записей за {total_days} дней, {len(periods)} периодов × 2 колонки")
+
+        with self.db.get_connection() as conn:
+            cur = conn.cursor()
+            try:
+                progress_desc = f"{self.symbol} {self.symbol_progress} ATR all periods {table_name.split('_')[-1].upper()}"
+                pbar = tqdm(
+                    total=total_days,
+                    desc=progress_desc,
+                    unit="d",
+                    ncols=100,
+                    bar_format='{desc}: {percentage:3.0f}%|{bar:20}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]'
+                )
+
+                for date, day_data in grouped:
+                    # Готовим данные через itertuples (быстрее iterrows)
+                    batch_data = []
+                    for row in day_data.itertuples(index=False):
+                        values = []
+                        for p in periods:
+                            atr_val = getattr(row, f'atr_{p}')
+                            natr_val = getattr(row, f'natr_{p}')
+                            values.append(float(atr_val) if pd.notna(atr_val) else None)
+                            values.append(float(natr_val) if pd.notna(natr_val) else None)
+                        values.append(row.timestamp)
+                        values.append(row.symbol)
+                        batch_data.append(tuple(values))
+
+                    psycopg2.extras.execute_batch(cur, update_sql, batch_data, page_size=1000)
+
+                    # Commit после каждого дня
+                    conn.commit()
+                    pbar.update(1)
+
+                pbar.close()
+                logger.info(f"✅ ATR/NATR all periods: {total_records:,} записей обновлено за {total_days} дней")
+
+            except Exception as e:
+                conn.rollback()
+                pbar.close()
+                logger.error(f"❌ Ошибка при обновлении ATR/NATR: {e}")
+                raise
+            finally:
+                cur.close()
+
     def save_single_column_to_db(self, df: pd.DataFrame, table_name: str, period: int):
         """
         Сохраняет одну колонку ATR в базу данных
@@ -836,22 +999,22 @@ class ATRLoader:
 
     def calculate_and_save_atr(self, timeframe: str, periods: List[int], batch_days: int = 1):
         """
-        Рассчитывает и сохраняет ATR для каждого периода (OBV pattern)
+        Single-pass расчёт и сохранение ATR/NATR для ВСЕХ периодов.
 
-        Алгоритм:
-        1. Загружает ВСЕ свечи от начала истории
-        2. Рассчитывает ATR для всех данных (поддерживая Wilder smoothing цепочку)
-        3. Фильтрует только новые данные для записи
-        4. Записывает батчами по дням
+        Оптимизация:
+        - 1 SQL SELECT (вместо 6)
+        - 1 расчёт True Range (вместо 6)
+        - 1 UPDATE на строку с 12 колонками (вместо 6 UPDATE по 2 колонки)
+        - Commit после каждого дня (безопасное восстановление)
 
         Args:
-            timeframe: Таймфрейм (1m, 15m, 1h)
+            timeframe: Таймфрейм (1m, 15m, 1h, 4h, 1d)
             periods: Список периодов ATR
             batch_days: Не используется (сохранен для обратной совместимости)
         """
         table_name = self.get_table_name(timeframe)
 
-        logger.info(f"🚀 Начало расчета ATR для {self.symbol} на таймфрейме {timeframe}")
+        logger.info(f"🚀 Single-pass ATR для {self.symbol} на таймфрейме {timeframe}")
         logger.info(f"📊 Периоды: {periods}")
 
         # Получаем диапазон доступных данных
@@ -860,79 +1023,70 @@ class ATRLoader:
 
         # Определяем последний завершенный период
         last_complete_period = self.get_last_complete_period(max_date, timeframe)
-
-        # Ограничиваем max_date последним завершенным периодом
         if max_date > last_complete_period:
             logger.info(f"⏸️  Ограничение max_date до последнего завершенного периода: {last_complete_period}")
             max_date = last_complete_period
 
-        # Последовательная обработка каждого периода
+        # ── Определяем что писать ──
+        write_timestamps = None  # None = по last_dates, set() = конкретные timestamps
+
+        if self.force_reload:
+            logger.info("🔄 Режим FORCE RELOAD: перезапись всех данных")
+        elif self.check_nulls:
+            # Получаем NULL timestamps для ВСЕХ периодов одним подключением
+            all_nulls = self.get_all_null_timestamps(timeframe, periods)
+            # Union всех NULL sets
+            union_nulls = set()
+            for p in periods:
+                if all_nulls[p]:
+                    logger.info(f"  🔍 ATR_{p}: {len(all_nulls[p])} NULL записей")
+                    union_nulls |= all_nulls[p]
+                else:
+                    logger.info(f"  ✅ ATR_{p}: все данные актуальны")
+            if not union_nulls:
+                logger.info("✅ Все периоды ATR актуальны — нечего обновлять")
+                return
+            write_timestamps = union_nulls
+            logger.info(f"🔍 Всего уникальных NULL timestamps: {len(write_timestamps)}")
+        else:
+            # Incremental: получаем last_dates для всех периодов одним запросом
+            last_dates = self.get_all_last_atr_dates(timeframe, periods)
+            for p in periods:
+                logger.info(f"  📅 ATR_{p} last_date: {last_dates[p]}")
+
+            # Проверяем — все ли периоды актуальны
+            all_up_to_date = all(
+                last_dates[p] is not None and last_dates[p] >= max_date
+                for p in periods
+            )
+            if all_up_to_date:
+                logger.info("✅ Все периоды ATR актуальны — нечего обновлять")
+                return
+
+        # ── Загружаем данные 1 раз ──
+        print()
+        print(f"🔄 [{self.symbol}] {self.symbol_progress} [{timeframe}] ATR single-pass: загрузка от начала истории")
+        print("ℹ️  Wilder smoothing требует полную цепочку данных для точности")
+        print()
+
+        logger.info("Загрузка всех исторических свечей...")
+        start_time = time.time()
+
+        df = self.load_all_candles(timeframe, min_date)
+        if df.empty:
+            logger.warning(f"Нет данных для расчета ATR для {self.symbol}")
+            return
+
+        # ── Расчёт True Range 1 раз ──
+        logger.info(f"Расчет True Range для {len(df):,} свечей...")
+        df['tr'] = self.calculate_true_range(df)
+
+        # ── Расчёт ATR + NATR для каждого периода ──
+        closes = np.asarray(df['close'], dtype=np.float64)
+
         for period in periods:
-            logger.info(f"\n{'='*80}")
-            logger.info(f"📊 Обработка периода: ATR_{period}")
-            logger.info(f"{'='*80}")
-
-            # Находим последнюю дату с данными для этого периода
-            last_date = self.get_last_atr_date(timeframe, period)
-            null_timestamps = None  # None = обычная логика, set() = только NULL timestamps
-
-            if self.force_reload:
-                # Режим force_reload - начинаем с самого начала
-                start_date = min_date
-                logger.info(f"🔄 Режим FORCE RELOAD: начинаем с начала данных")
-                logger.info(f"📅 Начальная дата: {start_date}")
-            elif self.check_nulls:
-                null_ts = self.get_null_timestamps_for_period(timeframe, period)
-                if not null_ts:
-                    logger.info(f"  ✅ ATR_{period}: все данные актуальны — пропускаем")
-                    continue
-                null_timestamps = null_ts
-                start_date = min_date  # Wilder smoothing требует полную цепочку
-                logger.info(f"🔍 ATR_{period}: найдено {len(null_ts)} NULL записей")
-                logger.info(f"🔄 Загрузка с начала истории для корректности Wilder smoothing")
-            elif last_date:
-                # Важно: для Wilder smoothing нужна вся история, но записывать будем только новые данные
-                # Начинаем загрузку с начала истории для корректности цепочки
-                start_date = min_date
-                logger.info(f"📅 Последняя дата ATR_{period}: {last_date}")
-                logger.info(f"🔄 Загрузка с начала истории для корректности Wilder smoothing")
-                logger.info(f"▶️  Записывать будем только новые данные (после {last_date})")
-            else:
-                # Начинаем с самого начала
-                start_date = min_date
-                logger.info(f"🆕 ATR_{period} пуст, начинаем с начала: {start_date}")
-
-            # Если уже все обработано (не для check_nulls — там null_timestamps уже проверены)
-            if null_timestamps is None and last_date and last_date >= max_date:
-                logger.info(f"✅ ATR_{period} уже актуален (до {max_date})")
-                continue
-
-            # Вывод сообщения о полном пересчете (как в OBV)
-            print()
-            print(f"🔄 [{self.symbol}] {self.symbol_progress} [{timeframe}] ATR-{period}: Расчёт от начала истории для корректности Wilder smoothing")
-            print("ℹ️  Это нормальная особенность индикатора ATR (требуется для точности)")
-            print()
-
-            # Загружаем ВСЕ свечи от начала истории
-            logger.info("Загрузка всех исторических свечей...")
-            start_time = time.time()
-
-            df = self.load_all_candles(timeframe, start_date)
-
-            if df.empty:
-                logger.warning(f"Нет данных для расчета ATR_{period} для {self.symbol}")
-                continue
-
-            # Расчет True Range и ATR для всех данных
-            logger.info(f"Расчет True Range и ATR-{period}...")
-            print(f"🔢 Начинаю расчёт ATR-{period} для {len(df):,} свечей...")
-
-            df['tr'] = self.calculate_true_range(df)
+            logger.info(f"Расчет ATR-{period} и NATR-{period}...")
             df[f'atr_{period}'] = self.calculate_atr(df, period)
-
-            # Расчёт NATR = ATR / Close * 100 (нормализованный ATR в процентах)
-            # Конвертируем close в float64 для корректных операций с numpy
-            closes = np.asarray(df['close'], dtype=np.float64)
             atr_values = df[f'atr_{period}'].values
             df[f'natr_{period}'] = np.where(
                 closes > 0,
@@ -940,44 +1094,44 @@ class ATRLoader:
                 np.nan
             )
 
-            calc_time = time.time() - start_time
+        calc_time = time.time() - start_time
+        if calc_time < 60:
+            time_str = f"{calc_time:.1f} секунд"
+        else:
+            mins = int(calc_time // 60)
+            secs = int(calc_time % 60)
+            time_str = f"{mins} минут {secs} секунд"
 
-            # Красивый вывод времени расчета
-            if calc_time < 60:
-                time_str = f"{calc_time:.1f} секунд"
+        print(f"⏱️  Расчёт всех {len(periods)} периодов ATR/NATR завершён за {time_str}")
+        print()
+        logger.info(f"✓ Все ATR/NATR рассчитаны для {len(df):,} записей за {calc_time:.2f}s")
+
+        # ── Фильтруем данные для записи ──
+        if self.force_reload:
+            df_to_update = df.copy()
+            logger.info(f"Режим FORCE RELOAD: перезапись всех {len(df_to_update):,} записей")
+        elif write_timestamps is not None:
+            # check_nulls — только union NULL timestamps
+            df_to_update = df[df['timestamp'].isin(write_timestamps)].copy()
+            logger.info(f"Режим CHECK NULLS: запись {len(df_to_update):,} записей")
+        else:
+            # Incremental — от MIN(last_dates) всех периодов
+            # Берём самую раннюю last_date (MIN), чтобы покрыть все периоды
+            valid_dates = [last_dates[p] for p in periods if last_dates[p] is not None]
+            if valid_dates:
+                earliest_last = min(valid_dates)
+                df_to_update = df[df['timestamp'] > earliest_last].copy()
+                logger.info(f"Incremental: {len(df_to_update):,} записей после {earliest_last}")
             else:
-                minutes = int(calc_time // 60)
-                seconds = int(calc_time % 60)
-                time_str = f"{minutes} минут {seconds} секунд"
-
-            print(f"⏱️  Расчёт ATR-{period} завершён за {time_str}")
-            print()
-
-            logger.info(f"✓ ATR-{period} рассчитан для {len(df):,} записей за {calc_time:.2f}s")
-
-            # Фильтруем данные для записи
-            if self.force_reload:
-                # force_reload - перезаписываем ВСЕ данные
-                df_to_update = df.copy()
-                logger.info(f"Режим FORCE RELOAD: перезапись всех {len(df_to_update):,} записей")
-            elif null_timestamps is not None:
-                # check_nulls - только NULL timestamps
-                df_to_update = df[df['timestamp'].isin(null_timestamps)].copy()
-                logger.info(f"Режим CHECK NULLS: запись {len(df_to_update):,} из {len(null_timestamps)} NULL записей")
-            elif last_date:
-                # Инкрементальная загрузка - только новые данные
-                df_to_update = df[df['timestamp'] > last_date].copy()
-                logger.info(f"Найдено {len(df_to_update):,} новых записей для обновления (после {last_date})")
-            else:
-                # Первая загрузка - все данные
+                # Первая загрузка — все данные
                 df_to_update = df.copy()
                 logger.info(f"Первичная загрузка: {len(df_to_update):,} записей")
 
-            # Если есть данные для обновления - записываем батчами
-            if not df_to_update.empty:
-                self.batch_update_atr(df_to_update, table_name, period)
-            else:
-                logger.info(f"✅ Нет новых данных для обновления ATR_{period}")
+        # ── Запись всех 12 колонок одним UPDATE ──
+        if not df_to_update.empty:
+            self.batch_update_all_atr(df_to_update, table_name, periods)
+        else:
+            logger.info("✅ Нет новых данных для обновления")
 
         logger.info(f"\n{'='*80}")
         logger.info(f"🎉 Все периоды ATR для {timeframe} завершены!")
