@@ -1238,6 +1238,9 @@ def main():
 
     print(f"🎯 Processing symbols: {symbols}")
 
+    # Засекаем общее время
+    start_time = time.time()
+
     # Loop through all symbols
     total_symbols = len(symbols)
     for idx, symbol in enumerate(symbols, 1):
@@ -1269,7 +1272,13 @@ def main():
             traceback.print_exc()
             continue
 
+    # Вычисляем общее время
+    elapsed = time.time() - start_time
+    minutes = int(elapsed // 60)
+    seconds = int(elapsed % 60)
+
     print(f"\n🎉 All symbols processed: {symbols}")
+    print(f"⏱️  Total time: {minutes}m {seconds}s")
 
 
 if __name__ == '__main__':
