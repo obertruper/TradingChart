@@ -14,6 +14,7 @@ Date: 2025-10-17
 
 import os
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -23,6 +24,7 @@ from tqdm import tqdm
 import pandas as pd
 import numpy as np
 from decimal import Decimal
+import psycopg2.extras
 
 # Suppress pandas SQLAlchemy warning for psycopg2 connections
 warnings.filterwarnings('ignore', message='pandas only supports SQLAlchemy connectable')
@@ -664,16 +666,432 @@ class ADXLoader:
 
                 conn.commit()
 
+    # ══════════════════════════════════════════════════════════════════════════
+    # Single-pass methods (OBV pattern — like ATR loader)
+    # ══════════════════════════════════════════════════════════════════════════
+
+    def load_all_candles(self, timeframe: str) -> pd.DataFrame:
+        """
+        Загрузка ВСЕХ свечей для single-pass расчёта ADX.
+        SQL-агрегация из 1m свечей (OBV pattern как в ATR loader).
+
+        Args:
+            timeframe: Таймфрейм (1m, 15m, 1h, 4h, 1d)
+
+        Returns:
+            DataFrame с колонками: timestamp, symbol, high, low, close
+        """
+        min_date, _ = self.get_data_range(timeframe)
+
+        with self.db.get_connection() as conn:
+            if timeframe == '1m':
+                query = """
+                    SELECT timestamp, symbol, high, low, close
+                    FROM candles_bybit_futures_1m
+                    WHERE symbol = %s AND timestamp >= %s
+                    ORDER BY timestamp ASC
+                """
+                df = pd.read_sql_query(query, conn, params=(self.symbol, min_date))
+            else:
+                minutes = self.TIMEFRAME_MINUTES[timeframe]
+
+                if minutes == 1440:  # 1d
+                    query = """
+                        WITH time_groups AS (
+                            SELECT timestamp,
+                                   DATE_TRUNC('day', timestamp) as period_start,
+                                   high, low, close, symbol
+                            FROM candles_bybit_futures_1m
+                            WHERE symbol = %s AND timestamp >= %s
+                        )
+                        SELECT period_start as timestamp, symbol,
+                               MAX(high) as high, MIN(low) as low,
+                               (ARRAY_AGG(close ORDER BY timestamp DESC))[1] as close
+                        FROM time_groups
+                        GROUP BY period_start, symbol
+                        ORDER BY period_start ASC
+                    """
+                elif minutes == 240:  # 4h
+                    query = """
+                        WITH time_groups AS (
+                            SELECT timestamp,
+                                   DATE_TRUNC('day', timestamp) +
+                                   INTERVAL '4 hours' * (EXTRACT(HOUR FROM timestamp)::integer / 4) as period_start,
+                                   high, low, close, symbol
+                            FROM candles_bybit_futures_1m
+                            WHERE symbol = %s AND timestamp >= %s
+                        )
+                        SELECT period_start as timestamp, symbol,
+                               MAX(high) as high, MIN(low) as low,
+                               (ARRAY_AGG(close ORDER BY timestamp DESC))[1] as close
+                        FROM time_groups
+                        GROUP BY period_start, symbol
+                        ORDER BY period_start ASC
+                    """
+                elif minutes == 60:  # 1h
+                    query = """
+                        WITH time_groups AS (
+                            SELECT timestamp,
+                                   DATE_TRUNC('hour', timestamp) as period_start,
+                                   high, low, close, symbol
+                            FROM candles_bybit_futures_1m
+                            WHERE symbol = %s AND timestamp >= %s
+                        )
+                        SELECT period_start as timestamp, symbol,
+                               MAX(high) as high, MIN(low) as low,
+                               (ARRAY_AGG(close ORDER BY timestamp DESC))[1] as close
+                        FROM time_groups
+                        GROUP BY period_start, symbol
+                        ORDER BY period_start ASC
+                    """
+                else:  # 15m and other sub-hourly
+                    query = f"""
+                        WITH time_groups AS (
+                            SELECT timestamp,
+                                   DATE_TRUNC('hour', timestamp) +
+                                   INTERVAL '1 minute' * (FLOOR(EXTRACT(MINUTE FROM timestamp) / {minutes}) * {minutes}) as period_start,
+                                   high, low, close, symbol
+                            FROM candles_bybit_futures_1m
+                            WHERE symbol = %s AND timestamp >= %s
+                        )
+                        SELECT period_start as timestamp, symbol,
+                               MAX(high) as high, MIN(low) as low,
+                               (ARRAY_AGG(close ORDER BY timestamp DESC))[1] as close
+                        FROM time_groups
+                        GROUP BY period_start, symbol
+                        ORDER BY period_start ASC
+                    """
+
+                df = pd.read_sql_query(query, conn, params=(self.symbol, min_date))
+
+        self.logger.info(f"Загружено {len(df):,} свечей от {df['timestamp'].min()} до {df['timestamp'].max()}")
+        return df
+
+    def get_all_last_processed_dates(self, timeframe: str, periods: List[int]) -> Dict[int, Optional[datetime]]:
+        """
+        Получает последнюю дату с рассчитанным ADX для ВСЕХ периодов одним SQL запросом.
+
+        Args:
+            timeframe: Таймфрейм
+            periods: Список периодов ADX
+
+        Returns:
+            Dict {period: last_date или None}
+        """
+        table_name = f'indicators_bybit_futures_{timeframe}'
+
+        case_exprs = []
+        for p in periods:
+            case_exprs.append(
+                f"MAX(CASE WHEN adx_{p} IS NOT NULL THEN timestamp END) AS last_{p}"
+            )
+
+        query = f"""
+            SELECT {', '.join(case_exprs)}
+            FROM {table_name}
+            WHERE symbol = %s
+        """
+
+        with self.db.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, (self.symbol,))
+                row = cur.fetchone()
+                if not row:
+                    return {p: None for p in periods}
+                return {p: row[i] for i, p in enumerate(periods)}
+
+    def get_all_null_timestamps(self, timeframe: str, periods: List[int]) -> Dict[int, set]:
+        """
+        Получает NULL timestamps для ВСЕХ периодов одним подключением.
+        Исключает естественные NULL в начале данных.
+        Natural boundary для ADX = period × 2 (двойное сглаживание Wilder).
+
+        Args:
+            timeframe: Таймфрейм
+            periods: Список периодов ADX
+
+        Returns:
+            Dict {period: set(timestamps)}
+        """
+        table_name = f'indicators_bybit_futures_{timeframe}'
+        minutes = self.TIMEFRAME_MINUTES[timeframe]
+
+        result = {p: set() for p in periods}
+
+        with self.db.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"""
+                    SELECT MIN(timestamp) FROM {table_name}
+                    WHERE symbol = %s
+                """, (self.symbol,))
+                min_date = cur.fetchone()[0]
+                if not min_date:
+                    return result
+
+                for period in periods:
+                    boundary = min_date + timedelta(minutes=period * 2 * minutes)
+                    adx_col = f'adx_{period}'
+                    plus_di_col = f'adx_{period}_plus_di'
+                    minus_di_col = f'adx_{period}_minus_di'
+
+                    cur.execute(f"""
+                        SELECT timestamp FROM {table_name}
+                        WHERE symbol = %s AND timestamp >= %s
+                          AND ({adx_col} IS NULL OR {plus_di_col} IS NULL OR {minus_di_col} IS NULL)
+                    """, (self.symbol, boundary))
+
+                    result[period] = {row[0] for row in cur.fetchall()}
+
+                return result
+
+    def batch_update_all_adx(self, df: pd.DataFrame, table_name: str, periods: List[int]):
+        """
+        Пишет все ADX колонки (3 × len(periods)) одним UPDATE через execute_batch.
+        Commit после каждого дня для безопасного восстановления.
+
+        Args:
+            df: DataFrame с колонками timestamp, symbol, adx_{p}, adx_{p}_plus_di, adx_{p}_minus_di
+            table_name: Имя таблицы индикаторов
+            periods: Список периодов ADX
+        """
+        if df.empty:
+            self.logger.info("Нет данных для обновления ADX")
+            return
+
+        # Строим SET часть: adx_7=%s, adx_7_plus_di=%s, adx_7_minus_di=%s, ...
+        set_parts = []
+        for p in periods:
+            set_parts.append(f"adx_{p} = %s")
+            set_parts.append(f"adx_{p}_plus_di = %s")
+            set_parts.append(f"adx_{p}_minus_di = %s")
+
+        update_sql = f"""
+            UPDATE {table_name}
+            SET {', '.join(set_parts)}
+            WHERE timestamp = %s AND symbol = %s
+        """
+
+        # Группируем по дням
+        df_copy = df.copy()
+        df_copy['_date'] = pd.to_datetime(df_copy['timestamp']).dt.date
+        grouped = df_copy.groupby('_date')
+
+        total_days = len(grouped)
+        total_records = len(df_copy)
+
+        self.logger.info(f"Начало обновления БД: {total_records:,} записей за {total_days} дней, {len(periods)} периодов × 3 колонки")
+
+        with self.db.get_connection() as conn:
+            cur = conn.cursor()
+            try:
+                progress_desc = f"{self.symbol} {self.symbol_progress}ADX all periods {table_name.split('_')[-1].upper()}"
+                pbar = tqdm(
+                    total=total_days,
+                    desc=progress_desc,
+                    unit="d",
+                    ncols=100,
+                    bar_format='{desc}: {percentage:3.0f}%|{bar:20}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]'
+                )
+
+                for date, day_data in grouped:
+                    batch_data = []
+                    for row in day_data.itertuples(index=False):
+                        values = []
+                        for p in periods:
+                            adx_val = getattr(row, f'adx_{p}')
+                            plus_di_val = getattr(row, f'adx_{p}_plus_di')
+                            minus_di_val = getattr(row, f'adx_{p}_minus_di')
+                            values.append(float(adx_val) if pd.notna(adx_val) else None)
+                            values.append(float(plus_di_val) if pd.notna(plus_di_val) else None)
+                            values.append(float(minus_di_val) if pd.notna(minus_di_val) else None)
+                        values.append(row.timestamp)
+                        values.append(row.symbol)
+                        batch_data.append(tuple(values))
+
+                    psycopg2.extras.execute_batch(cur, update_sql, batch_data, page_size=1000)
+
+                    # Commit после каждого дня
+                    conn.commit()
+                    pbar.update(1)
+
+                pbar.close()
+                self.logger.info(f"✅ ADX all periods: {total_records:,} записей обновлено за {total_days} дней")
+
+            except Exception as e:
+                conn.rollback()
+                pbar.close()
+                self.logger.error(f"❌ Ошибка при обновлении ADX: {e}")
+                raise
+            finally:
+                cur.close()
+
+    def process_timeframe_single_pass(self, timeframe: str, periods: List[int]):
+        """
+        Single-pass расчёт и сохранение ADX для ВСЕХ периодов.
+
+        Оптимизация (OBV pattern как в ATR):
+        - 1 SQL SELECT (вместо 8)
+        - 1 расчёт TR и DM (вместо 8)
+        - 1 UPDATE на строку с 24 колонками (вместо 8 UPDATE по 3)
+        - Commit после каждого дня
+
+        Args:
+            timeframe: Таймфрейм (1m, 15m, 1h, 4h, 1d)
+            periods: Список периодов ADX
+        """
+        table_name = f'indicators_bybit_futures_{timeframe}'
+
+        self.logger.info(f"🚀 Single-pass ADX для {self.symbol} на таймфрейме {timeframe}")
+        self.logger.info(f"📊 Периоды: {periods}")
+
+        # Ensure columns exist for all periods
+        for period in periods:
+            self.ensure_columns_exist(timeframe, period)
+
+        # Get data range
+        min_date, max_date = self.get_data_range(timeframe)
+        self.logger.info(f"📅 Диапазон данных: {min_date} - {max_date}")
+
+        # ── Determine what to write ──
+        write_timestamps = None  # None = use last_dates, set() = specific timestamps
+        last_dates = None
+
+        if self.force_reload:
+            self.logger.info("🔄 Режим FORCE RELOAD: перезапись всех данных")
+        elif self.check_nulls:
+            all_nulls = self.get_all_null_timestamps(timeframe, periods)
+            union_nulls = set()
+            for p in periods:
+                if all_nulls[p]:
+                    self.logger.info(f"  🔍 ADX_{p}: {len(all_nulls[p])} NULL записей")
+                    union_nulls |= all_nulls[p]
+                else:
+                    self.logger.info(f"  ✅ ADX_{p}: все данные актуальны")
+            if not union_nulls:
+                self.logger.info("✅ Все периоды ADX актуальны — нечего обновлять")
+                return
+            write_timestamps = union_nulls
+            self.logger.info(f"🔍 Всего уникальных NULL timestamps: {len(write_timestamps)}")
+        else:
+            # Incremental
+            last_dates = self.get_all_last_processed_dates(timeframe, periods)
+            for p in periods:
+                self.logger.info(f"  📅 ADX_{p} last_date: {last_dates[p]}")
+
+            all_up_to_date = all(
+                last_dates[p] is not None and last_dates[p] >= max_date
+                for p in periods
+            )
+            if all_up_to_date:
+                self.logger.info("✅ Все периоды ADX актуальны — нечего обновлять")
+                return
+
+        # ── Load all candles once ──
+        print()
+        print(f"🔄 [{self.symbol}] {self.symbol_progress}[{timeframe}] ADX single-pass: загрузка от начала истории")
+        print("ℹ️  Wilder smoothing требует полную цепочку данных для точности")
+        print()
+
+        self.logger.info("Загрузка всех исторических свечей...")
+        start_time = time.time()
+
+        df = self.load_all_candles(timeframe)
+        if df.empty:
+            self.logger.warning(f"Нет данных для расчета ADX для {self.symbol}")
+            return
+
+        # Convert to float for calculations
+        df['high'] = df['high'].astype(float)
+        df['low'] = df['low'].astype(float)
+        df['close'] = df['close'].astype(float)
+
+        # ── Calculate TR and DM once ──
+        self.logger.info(f"Расчет TR и DM для {len(df):,} свечей...")
+        tr = self.calculate_true_range(df['high'], df['low'], df['close'])
+        plus_dm, minus_dm = self.calculate_directional_movement(df['high'], df['low'])
+
+        # ── Calculate ADX for each period ──
+        for period in periods:
+            self.logger.info(f"Расчет ADX-{period}...")
+
+            # Wilder smoothing of TR, +DM, -DM
+            smoothed_tr = self.wilder_smoothing(tr, period)
+            smoothed_plus_dm = self.wilder_smoothing(plus_dm, period)
+            smoothed_minus_dm = self.wilder_smoothing(minus_dm, period)
+
+            # +DI, -DI
+            plus_di = 100 * smoothed_plus_dm / smoothed_tr
+            minus_di = 100 * smoothed_minus_dm / smoothed_tr
+
+            # DX
+            di_sum = plus_di + minus_di
+            di_diff = (plus_di - minus_di).abs()
+            dx = pd.Series(np.nan, index=df.index)
+            mask = di_sum != 0
+            dx[mask] = 100 * di_diff[mask] / di_sum[mask]
+
+            # Wilder smoothing of DX → ADX
+            adx = self.wilder_smoothing(dx, period)
+
+            df[f'adx_{period}'] = adx
+            df[f'adx_{period}_plus_di'] = plus_di
+            df[f'adx_{period}_minus_di'] = minus_di
+
+        calc_time = time.time() - start_time
+        if calc_time < 60:
+            time_str = f"{calc_time:.1f} секунд"
+        else:
+            mins = int(calc_time // 60)
+            secs = int(calc_time % 60)
+            time_str = f"{mins} минут {secs} секунд"
+
+        print(f"⏱️  Расчёт всех {len(periods)} периодов ADX завершён за {time_str}")
+        print()
+        self.logger.info(f"✓ Все ADX рассчитаны для {len(df):,} записей за {calc_time:.2f}s")
+
+        # ── Filter data for writing ──
+        if self.force_reload:
+            df_to_update = df.copy()
+            self.logger.info(f"Режим FORCE RELOAD: перезапись всех {len(df_to_update):,} записей")
+        elif write_timestamps is not None:
+            # check_nulls — only union NULL timestamps
+            df_to_update = df[df['timestamp'].isin(write_timestamps)].copy()
+            self.logger.info(f"Режим CHECK NULLS: запись {len(df_to_update):,} записей")
+        else:
+            # Incremental — from MIN(last_dates) of all periods
+            valid_dates = [last_dates[p] for p in periods if last_dates[p] is not None]
+            if valid_dates:
+                earliest_last = min(valid_dates)
+                df_to_update = df[df['timestamp'] > earliest_last].copy()
+                self.logger.info(f"Incremental: {len(df_to_update):,} записей после {earliest_last}")
+            else:
+                # First load — all data
+                df_to_update = df.copy()
+                self.logger.info(f"Первичная загрузка: {len(df_to_update):,} записей")
+
+        # ── Write all 24 columns in one UPDATE ──
+        if not df_to_update.empty:
+            self.batch_update_all_adx(df_to_update, table_name, periods)
+        else:
+            self.logger.info("✅ Нет новых данных для обновления")
+
+        self.logger.info(f"🎉 Все периоды ADX для {timeframe} завершены!")
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # Original methods (kept for backward compatibility and debugging)
+    # ══════════════════════════════════════════════════════════════════════════
+
     def load_timeframe(
         self,
         timeframe: str,
         periods: List[int] = None
     ):
         """
-        Load ADX for all periods in a specific timeframe
+        Load ADX for all periods in a specific timeframe.
+        Uses single-pass calculation for full Wilder chain accuracy.
 
         Args:
-            timeframe: Timeframe (1m, 15m, 1h)
+            timeframe: Timeframe (1m, 15m, 1h, 4h, 1d)
             periods: List of periods to load (default: all PERIODS)
         """
         if periods is None:
@@ -683,29 +1101,7 @@ class ADXLoader:
         self.logger.info(f"Processing timeframe: {timeframe}")
         self.logger.info(f"Periods: {periods}")
 
-        # Get data range
-        start_date, end_date = self.get_data_range(timeframe)
-        self.logger.info(f"Data range: {start_date.date()} to {end_date.date()}")
-
-        # Process each period sequentially (short to long)
-        for period in sorted(periods):
-            try:
-                null_timestamps = None
-
-                if self.check_nulls:
-                    # Режим check_nulls: находим NULL timestamps для периода
-                    null_timestamps = self.get_null_timestamps_for_period(timeframe, period)
-
-                    if not null_timestamps:
-                        self.logger.info(f"✅ ADX-{period} {timeframe}: нет NULL значений")
-                        continue
-
-                    self.logger.info(f"🔍 ADX-{period} {timeframe}: найдено {len(null_timestamps):,} NULL записей")
-
-                self.load_period(period, timeframe, start_date, end_date, null_timestamps=null_timestamps)
-            except Exception as e:
-                self.logger.error(f"Error loading ADX_{period} {timeframe}: {e}", exc_info=True)
-                continue
+        self.process_timeframe_single_pass(timeframe, periods)
 
         self.logger.info(f"Completed timeframe {timeframe}")
 
