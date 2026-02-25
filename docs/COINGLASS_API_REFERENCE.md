@@ -3,6 +3,7 @@
 Справочник по данным, доступным через Coinglass API, и сравнение с нашей системой.
 
 **Дата создания:** 2026-01-29
+**Последнее обновление:** 2026-02-25
 **API версия:** v4
 **Base URL:** `https://open-api-v4.coinglass.com`
 **Документация:** https://docs.coinglass.com
@@ -130,7 +131,7 @@
 | `/large-orderbook` | Крупные ордера | 💰 Coinglass | Whale orders |
 | `/large-orderbook-history` | История крупных ордеров | 💰 Coinglass | Tracking китов |
 
-**Наши данные:** ❌ Отсутствуют.
+**Наши данные:** ✅ Bybit orderbook (`orderbook_bybit_futures_1m`, 60 колонок, с 2023-01-18) + Binance orderbook (`orderbook_binance_futures_1m`, 46 колонок, с 2023-01-01). Агрегированный стакан со всех бирж — только Coinglass.
 
 ---
 
@@ -168,12 +169,12 @@
 
 | Endpoint | Описание | Статус | Примечание |
 |----------|----------|--------|------------|
-| `/option-max-pain` | Max Pain опционов | ⚡ Можем | Deribit API бесплатно |
-| `/info` | Информация по опционам | ⚡ Можем | Deribit API |
-| `/exchange-open-interest-history` | OI опционов | ⚡ Можем | Deribit API |
-| `/exchange-volume-history` | Volume опционов | ⚡ Можем | Deribit API |
+| `/option-max-pain` | Max Pain опционов | ✅ Есть | `options_deribit_aggregated_15m` (`max_pain_nearest`) |
+| `/info` | Информация по опционам | ✅ Есть | `options_deribit_raw` (15-мин снапшоты ~1500 контрактов) |
+| `/exchange-open-interest-history` | OI опционов | ✅ Есть | `options_deribit_aggregated_15m` (`total_open_interest`) |
+| `/exchange-volume-history` | Volume опционов | ✅ Есть | `options_deribit_aggregated_15m` (`total_volume_24h`) |
 
-**Наши данные:** ❌ Отсутствуют. Можем получить бесплатно с Deribit.
+**Наши данные:** ✅ Реализовано. 3 загрузчика: `options_dvol_loader.py` (DVOL OHLC), `options_dvol_indicators_loader.py` (22 индикатора), `options_aggregated_loader.py` (24 метрики из raw снапшотов). Таблицы: `options_deribit_dvol_1h/1m`, `options_deribit_dvol_indicators_1h`, `options_deribit_aggregated_15m`.
 
 ---
 
@@ -239,7 +240,7 @@
 | `/futures-indicators-boll` | Bollinger Bands | ✅ Есть | 13 конфигураций |
 | `/futures-indicators-macd` | MACD | ✅ Есть | 8 конфигураций |
 | `/futures-indicators-avg-true-range` | ATR | ✅ Есть | `atr_7/14/21/30/50/100` |
-| `/basis` | Futures Basis | ❌ Нет | Спред фьючерс-спот |
+| `/basis` | Futures Basis | ✅ Есть | `premium_index` (разница фьючерс-спот) |
 | `/whale-index` | Whale Index | 💰 Coinglass | Активность китов |
 | `/cgdi-index` | CGDI Index | 💰 Coinglass | Coinglass индекс |
 | `/cdri-index` | CDRI Index | 💰 Coinglass | Coinglass индекс |
@@ -316,16 +317,16 @@
 | Funding Rate | 6 | 1 | 0 | 5 |
 | Long/Short | 6 | 1 | 0 | 5 |
 | **Liquidations** | **14** | **0** | **0** | **14** |
-| Order Book | 5 | 0 | 0 | 5 |
+| Order Book | 5 | 1 | 0 | 4 |
 | Hyperliquid | 6 | 0 | 0 | 6 |
 | Taker Buy/Sell | 6 | 0 | 1 | 5 |
-| Options | 4 | 0 | 4 | 0 |
+| Options | 4 | 4 | 0 | 0 |
 | On-Chain | 7 | 0 | 0 | 7 |
 | ETF | 15 | 0 | 3 | 12 |
-| Индикаторы фьючерсы | 11 | 7 | 0 | 4 |
+| Индикаторы фьючерсы | 11 | 8 | 0 | 3 |
 | Индикаторы прочие | 30+ | 1 | 2 | 27+ |
 | WebSocket | 2 | 0 | 0 | 2 |
-| **ИТОГО** | **~127** | **~12** | **~16** | **~99** |
+| **ИТОГО** | **~127** | **~18** | **~12** | **~97** |
 
 ---
 
@@ -334,10 +335,10 @@
 ### Что стоит добавить бесплатно (без Coinglass):
 
 1. **Taker Buy/Sell Ratio** — Bybit API
-2. **Options Max Pain** — Deribit API
+2. ~~**Options Max Pain** — Deribit API~~ ✅ Реализовано
 3. **Coinbase Premium** — расчёт из цен
-4. **BTC Dominance** — CoinMarketCap API
-5. **Futures Basis** — расчёт спот vs фьючерс
+4. **BTC Dominance** — CoinMarketCap API (накопление)
+5. ~~**Futures Basis** — расчёт спот vs фьючерс~~ ✅ Реализовано (Premium Index)
 
 ### Когда стоит платить за Coinglass ($29+/мес):
 
@@ -366,22 +367,23 @@
 | **Тренд** |
 | SMA, EMA, MACD | ✅ | — | есть | Считаем сами |
 | ADX, Ichimoku | ✅ | — | есть | Считаем сами |
-| Supertrend | ✅ | — | — | Считаем из ATR |
-| Parabolic SAR | ✅ | — | — | Считаем сами |
-| Donchian Channels | ✅ | — | — | Считаем сами |
-| Aroon | ✅ | — | — | Считаем сами |
+| Supertrend | ✅ | — | — | Реализован (`supertrend_loader.py`) |
+| Ichimoku | ✅ | — | — | Реализован (`ichimoku_loader.py`) |
+| Parabolic SAR | — | — | — | Не реализован |
+| Donchian Channels | — | — | — | Не реализован |
+| Aroon | — | — | — | Не реализован |
 | **Моментум** |
 | RSI, Stochastic | ✅ | — | есть | Считаем сами |
 | MFI, Williams %R | ✅ | — | — | Считаем сами |
-| CCI, ROC | ✅ | — | — | Считаем сами |
+| CCI, ROC | — | — | — | Не реализован |
 | **Волатильность** |
 | ATR, Bollinger | ✅ | — | есть | Считаем сами |
-| Historical Volatility | ✅ | — | — | Считаем сами |
-| NATR, Garman-Klass | ✅ | — | — | Считаем сами |
-| Implied Volatility (DVOL) | — | ✅ Deribit | — | Deribit API бесплатно |
+| Historical Volatility | ✅ | — | — | Реализован (`hv_loader.py`) |
+| NATR | ✅ | — | — | Реализован (в `atr_loader.py`) |
+| Implied Volatility (DVOL) | ✅ | — | — | Реализован (`options_dvol_loader.py`) |
 | **Объём** |
 | OBV, VWAP, VMA | ✅ | — | — | Считаем сами |
-| CMF, CVD | ✅ | — | — | Считаем сами |
+| CMF, CVD | — | — | — | Не реализован |
 | Taker Buy/Sell | — | ✅ Bybit | есть | Bybit API бесплатно |
 | **Сентимент** |
 | Fear & Greed | — | ✅ Alternative.me | есть | Уже есть в БД |
@@ -390,8 +392,8 @@
 | **Деривативы** |
 | Open Interest | — | ✅ Bybit | есть | Уже есть в БД |
 | Funding Rate | — | ✅ Bybit | есть | Уже есть в БД |
-| Futures Basis | ✅ | — | есть | Считаем (F-S)/S |
-| Options Max Pain | — | ✅ Deribit | есть | Deribit бесплатно |
+| Premium Index | ✅ | — | есть | Реализован (`premium_index_loader.py`) |
+| Options Max Pain | ✅ | — | есть | Реализован (`options_aggregated_loader.py`) |
 | **Macro** |
 | BTC Dominance | — | ⚠️ CMC (текущие) | есть | См. раздел ниже |
 | Stablecoin MarketCap | — | ⚠️ CMC (текущие) | есть | Только текущие бесплатно |
@@ -492,12 +494,12 @@
 
 ### Что добавить БЕСПЛАТНО (приоритет):
 
-1. ✅ **Волатильность** — HV, NATR, Garman-Klass (из OHLCV)
-2. ✅ **Тренд** — Supertrend, Parabolic SAR, Donchian, Aroon (из OHLCV)
-3. ✅ **Taker Buy/Sell** — Bybit API
-4. ✅ **BTC Dominance** — CoinMarketCap (текущие, накапливать)
-5. ✅ **DVOL** — Deribit API (implied volatility)
-6. ✅ **Futures Basis** — расчёт из наших данных
+1. ✅ ~~**Волатильность** — HV, NATR~~ Реализовано (`hv_loader.py`, `atr_loader.py`)
+2. ✅ ~~**Тренд** — Supertrend, Ichimoku~~ Реализовано (`supertrend_loader.py`, `ichimoku_loader.py`)
+3. ⚡ **Taker Buy/Sell** — Bybit API (не реализовано)
+4. ⚡ **BTC Dominance** — CoinMarketCap (не реализовано, можно накапливать)
+5. ✅ ~~**DVOL** — Deribit API~~ Реализовано (`options_dvol_loader.py`)
+6. ✅ ~~**Premium Index** — Bybit API~~ Реализовано (`premium_index_loader.py`)
 
 ### Когда платить за Coinglass ($29/мес):
 

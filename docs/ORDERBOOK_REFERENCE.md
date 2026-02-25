@@ -871,7 +871,7 @@ LIMIT 20;
 
 | Таблица | Размер | Колонок |
 |---|---|---|
-| indicators_bybit_futures_1m | 113 GB | 206 |
+| indicators_bybit_futures_1m | 114 GB | 261 |
 | candles_bybit_futures_1m | 6.7 GB | 8 |
 | **orderbook_bybit_futures_1m** | **1.73 GB** (растёт) | **60** |
 

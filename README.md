@@ -1,271 +1,209 @@
-# TradingChart - Cryptocurrency Data Collection System
+# TradingChart - Cryptocurrency Trading Data Platform
 
-A robust system for collecting and managing historical cryptocurrency candle data from Bybit exchange.
+A comprehensive system for collecting, storing, and analyzing cryptocurrency market data from multiple exchanges. Includes historical and real-time data collection, 26 technical indicator loaders, orderbook data from Bybit and Binance, and options/volatility data from Deribit.
 
-## 🚀 Features
+## Features
 
-- **Bulk Historical Data Collection**: Efficiently collect years of 1-minute candle data
-- **Smart Chunking**: Automatically handles API limits (1000 candles per request)
-- **UTC Timezone Support**: Accurate timestamp handling across all operations
-- **PostgreSQL Integration**: Optimized bulk insertion with deduplication
-- **Progress Tracking**: Real-time progress bars and detailed logging
-- **Error Recovery**: Comprehensive retry logic and error handling
-- **Continuous Monitoring**: Automatic gap detection and real-time data updates
+- **Multi-Market Data Collection**: Futures (17 pairs) and Spot (16 pairs) from Bybit
+- **26 Indicator Loaders**: Technical indicators, market data, orderbook, options (261 columns per timeframe)
+- **5 Timeframes**: 1m, 15m, 1h, 4h, 1d with automatic aggregation from 1m base
+- **Cross-Exchange Orderbook**: Bybit + Binance orderbook data in separate tables
+- **Options & Volatility**: Deribit DVOL, DVOL indicators, aggregated options metrics
+- **Real-Time Monitoring**: Daemon-mode monitors for continuous data updates
+- **Orchestrator**: Automatic sequential loading of all indicators via `start_all_loaders.py`
+- **PostgreSQL**: 137 GB database on VPS with optimized bulk operations
 
-## 📋 Prerequisites
+## Prerequisites
 
 - Python 3.8+
 - PostgreSQL database (hosted on VPS)
 - Bybit API credentials (optional - NOT required for historical data)
-- VPS with Ubuntu (for database hosting)
 
-## 🛠 Installation
+## Installation
 
-1. Clone the repository:
 ```bash
-git clone https://github.com/yourusername/TradingChart.git
+# Clone and install
+git clone <repository-url>
 cd TradingChart
-```
-
-2. Install dependencies:
-```bash
 pip install -r requirements.txt
-```
 
-3. Set up environment and configuration:
-```bash
-# Create .env file from template
+# Configure environment
 cp .env.example .env
-
 # Edit .env with your database passwords
-nano .env
 
-# Copy example configs
+# Copy config templates
 cp data_collectors/data_collector_config.example.yaml data_collectors/data_collector_config.yaml
 cp data_collectors/monitor_config.example.yaml data_collectors/monitor_config.yaml
 ```
 
-4. PostgreSQL Database Setup:
+## Quick Start
 
-The project uses a PostgreSQL database hosted on VPS with a three-tier user permission system:
-- **trading_admin**: Full administrator privileges
-- **trading_writer**: Data collection user (used by scripts)
-- **trading_reader**: Read-only access for analysis
+### 1. Collect Historical Data
 
-See [DATABASE_SETUP.md](DATABASE_SETUP.md) for detailed setup instructions.
-
-## 🚀 Quick Start Guide
-
-After installation, follow these steps to start collecting data:
-
-1. **Test database connection**:
 ```bash
-python3 test_monitor.py
-```
-
-2. **Collect historical data** (first-time setup):
-```bash
+# Futures market
 cd data_collectors/bybit/futures
 python3 data_loader_futures.py
+
+# Spot market
+cd data_collectors/bybit/spot
+python3 data_loader_spot.py
 ```
 
-3. **Keep data up-to-date** (run regularly):
+### 2. Start Real-Time Monitoring
+
 ```bash
+# Futures monitor (daemon mode)
 cd data_collectors/bybit/futures
-python3 monitor.py --check-once --symbol BTCUSDT
-```
-
-## 📊 Usage
-
-### Historical Data Collection
-
-Collect historical candle data for specified date ranges:
-
-```bash
-cd data_collectors/bybit/futures
-python3 data_loader_futures.py
-```
-
-### Check Database
-
-View collected data statistics:
-
-```bash
-cd data_collectors/bybit/futures
-python3 check_data.py
-```
-
-Or use the test script from project root:
-```bash
-python3 test_monitor.py
-```
-
-### Continuous Monitoring
-
-Automatically keep your data up-to-date with real-time monitoring:
-
-```bash
-cd data_collectors/bybit/futures
-
-# One-time check for specific symbol
-python3 monitor.py --check-once --symbol BTCUSDT
-
-# Check all configured symbols once
-python3 monitor.py --check-once
-
-# Run in daemon mode (continuous monitoring)
 python3 monitor.py --daemon
 
-# With verbose output for debugging
-python3 monitor.py --check-once --verbose
-
-# Quiet mode (minimal output)
-python3 monitor.py --daemon --quiet
+# Spot monitor (daemon mode)
+cd data_collectors/bybit/spot
+python3 monitor_spot.py --daemon
 ```
 
-The monitor will:
-- Detect gaps in your data
-- Fill missing candles automatically
-- Keep data updated to the latest minute
-- Handle multiple symbols from config
+### 3. Load Indicators
 
-## 📁 Project Structure
+```bash
+cd indicators
+
+# Run ALL indicators sequentially (recommended)
+python3 start_all_loaders.py
+
+# Or run individual loaders
+python3 sma_loader.py
+python3 rsi_loader.py --symbol BTCUSDT --timeframe 1h
+```
+
+### 4. Check Data
+
+```bash
+# Futures data stats
+cd data_collectors/bybit/futures && python3 check_data.py
+
+# Spot data stats
+cd data_collectors/bybit/spot && python3 check_data_spot.py
+
+# Indicators status
+cd indicators && python3 check_indicators_status.py
+```
+
+## Project Structure
 
 ```
 TradingChart/
-├── api/
-│   └── bybit/
-│       └── bybit_api_client.py    # Bybit API wrapper
-├── data_collectors/
-│   ├── bybit/
-│   │   └── futures/
-│   │       ├── data_loader_futures.py    # Main data collector
-│   │       ├── monitor.py               # Real-time data monitor
-│   │       ├── database.py               # Database operations
-│   │       ├── time_utils.py            # Timezone utilities
-│   │       ├── config_validator.py      # Configuration validation
-│   │       ├── check_data.py           # Data verification
-│   │       └── monitor_manager.sh      # Monitor control script
-│   ├── data_collector_config.yaml      # Main configuration
-│   └── monitor_config.yaml             # Monitor configuration
-├── requirements.txt                    # Python dependencies
-└── README.md                          # This file
+├── api/bybit/                          # Bybit API wrapper
+├── data_collectors/bybit/
+│   ├── futures/                        # Futures data collection (17 pairs)
+│   │   ├── data_loader_futures.py      # Historical data collector
+│   │   ├── monitor.py                  # Real-time monitor
+│   │   ├── database.py                 # DB operations
+│   │   └── check_data.py              # Data verification
+│   └── spot/                           # Spot data collection (16 pairs)
+│       ├── data_loader_spot.py         # Historical data collector
+│       ├── monitor_spot.py             # Real-time monitor
+│       └── check_data_spot.py          # Data verification
+├── indicators/                         # 26 indicator loaders
+│   ├── start_all_loaders.py            # Orchestrator (runs all loaders)
+│   ├── sma_loader.py                   # SMA (5 periods)
+│   ├── ema_loader.py                   # EMA (7 periods)
+│   ├── rsi_loader.py                   # RSI (5 periods)
+│   ├── macd_loader.py                  # MACD (8 configurations)
+│   ├── bollinger_bands_loader.py       # Bollinger Bands (13 configs)
+│   ├── atr_loader.py                   # ATR + NATR (6 periods)
+│   ├── adx_loader.py                   # ADX (8 periods)
+│   ├── vwap_loader.py                  # VWAP (16 variants)
+│   ├── obv_loader.py                   # OBV
+│   ├── vma_loader.py                   # VMA (5 periods)
+│   ├── mfi_loader.py                   # MFI (5 periods)
+│   ├── stochastic_williams_loader.py   # Stochastic + Williams %R
+│   ├── ichimoku_loader.py              # Ichimoku Cloud (2 configs)
+│   ├── hv_loader.py                    # Historical Volatility
+│   ├── supertrend_loader.py            # SuperTrend (5 configs)
+│   ├── long_short_ratio_loader.py      # Long/Short Ratio (Bybit API)
+│   ├── open_interest_loader.py         # Open Interest (Bybit API)
+│   ├── funding_fee_loader.py           # Funding Rate (Bybit API)
+│   ├── premium_index_loader.py         # Premium Index (Bybit API)
+│   ├── fear_and_greed_loader_alternative.py  # Fear & Greed (Alternative.me)
+│   ├── fear_and_greed_coinmarketcap_loader.py # Market metrics (CMC)
+│   ├── orderbook_bybit_loader.py       # Orderbook (Bybit archives)
+│   ├── orderbook_binance_loader.py     # Orderbook (Binance archives)
+│   ├── options_dvol_loader.py          # DVOL (Deribit API)
+│   ├── options_dvol_indicators_loader.py    # DVOL indicators
+│   ├── options_aggregated_loader.py    # Options aggregated metrics
+│   ├── indicators_config.yaml          # Configuration
+│   └── INDICATORS_REFERENCE.md         # Technical documentation
+├── docs/                               # Reference documentation
+│   ├── ORDERBOOK_REFERENCE.md          # Bybit orderbook columns
+│   ├── ORDERBOOK_BINANCE_REFERENCE.md  # Binance orderbook columns
+│   ├── DVOL_REFERENCE.md               # DVOL/options reference
+│   └── OPTIONS_RESEARCH.md             # Options data research
+└── requirements.txt
 ```
 
-## ⚙️ Configuration
+## Database Schema
 
-### Database Configuration
+### Tables Overview
 
-The system connects to a PostgreSQL database on VPS (82.25.115.144) with:
-- Database name: `trading_data`
-- Table: `candles_bybit_futures_1m`
-- User credentials managed through secure three-tier system
+| Table | Size | Rows | Columns | Description |
+|-------|------|------|---------|-------------|
+| indicators_bybit_futures_1m | 114 GB | 25.6M | 261 | 1-min indicators |
+| indicators_bybit_futures_15m | 7.7 GB | 1.7M | 261 | 15-min indicators |
+| indicators_bybit_futures_1h | 2 GB | 437K | 261 | 1-hour indicators |
+| indicators_bybit_futures_4h | — | — | 261 | 4-hour indicators |
+| indicators_bybit_futures_1d | — | — | 261 | Daily indicators |
+| candles_bybit_futures_1m | 6.7 GB | 38M | 8 | Futures candles |
+| candles_bybit_spot_1m | 5.5 GB | 31M | 8 | Spot candles |
+| orderbook_bybit_futures_1m | 1.73 GB | 1.1M | 60 | Bybit orderbook |
+| orderbook_binance_futures_1m | 550 MB | 1.6M | 46 | Binance orderbook |
+| options_deribit_dvol_1h | ~2 MB | ~86K | 6 | DVOL hourly |
+| options_deribit_dvol_1m | ~30 MB | ~536K | 6 | DVOL 1-minute |
+| options_deribit_dvol_indicators_1h | — | — | 24 | DVOL indicators |
+| options_deribit_aggregated_15m | — | — | 26 | Options metrics |
 
-### Main Configuration (`data_collector_config.yaml`)
-
-Key settings:
-- `api`: Bybit API credentials
-- `database`: PostgreSQL connection to VPS
-  - Host: 82.25.115.144
-  - Port: 5432
-  - Database: trading_data
-  - User: trading_writer (for data collection)
-- `collection`: Time range and symbols to collect
-- `exchange`: Rate limiting and retry settings
-
-### Supported Trading Pairs
-
-- BTCUSDT
-- ETHUSDT
-- SOLUSDT
-- XRPUSDT
-- ADAUSDT
-- BNBUSDT
-- LINKUSDT
-- XLMUSDT
-- LTCUSDT
-- DOTUSDT
-
-## 📈 Performance
-
-- **Speed**: 60,000-120,000 candles/minute
-- **API Rate**: 100 requests/minute (configurable)
-- **Memory Usage**: <100MB for large collections
-- **Storage**: ~150 bytes per candle in PostgreSQL
-
-## 🔧 Database Schema
-
-Table: `candles_bybit_futures_1m`
+### Candle Columns
 
 | Column | Type | Description |
 |--------|------|-------------|
 | timestamp | TIMESTAMPTZ | Candle timestamp (UTC) |
-| symbol | VARCHAR(20) | Trading pair symbol |
-| open | DECIMAL(20,8) | Opening price |
-| high | DECIMAL(20,8) | Highest price |
-| low | DECIMAL(20,8) | Lowest price |
-| close | DECIMAL(20,8) | Closing price |
-| volume | DECIMAL(20,8) | Trading volume |
-| turnover | DECIMAL(20,8) | Trading turnover |
+| symbol | VARCHAR(20) | Trading pair |
+| open, high, low, close | DECIMAL(20,8) | Price data |
+| volume, turnover | DECIMAL(20,8) | Trading metrics |
 
-## 🖥️ Running as a Service
+## Supported Trading Pairs
 
-### Using tmux (Recommended for VPS)
-```bash
-# Create new tmux session
-tmux new -s monitor
+**Futures (17 pairs):** BTCUSDT, ETHUSDT, SOLUSDT, XRPUSDT, ADAUSDT, BNBUSDT, LINKUSDT, XLMUSDT, LTCUSDT, DOTUSDT, ARBUSDT, ATOMUSDT, ETCUSDT, NEARUSDT, POLUSDT, VETUSDT, XMRUSDT
 
-# Inside tmux, run monitor
-cd data_collectors/bybit/futures
-python3 monitor.py --daemon
+**Spot (16 pairs):** All futures pairs except XMRUSDT (not available on spot)
 
-# Detach from tmux: Press Ctrl+B, then D
-# Reattach later: tmux attach -t monitor
-```
+## Performance
 
-### Using systemd (Linux)
-Create `/etc/systemd/system/trading-monitor.service`:
-```ini
-[Unit]
-Description=Trading Data Monitor
-After=network.target
+| Metric | Value |
+|--------|-------|
+| Collection speed | 60,000-120,000 candles/min |
+| API batch size | 1,000 candles/request |
+| Memory usage | <100MB (daily batching) |
+| DB insert rate | ~10,000 inserts/sec |
+| Database size | 137 GB |
 
-[Service]
-Type=simple
-User=your_user
-WorkingDirectory=/path/to/TradingChart/data_collectors/bybit/futures
-ExecStart=/usr/bin/python3 monitor.py --daemon
-Restart=always
+## VPS Infrastructure
 
-[Install]
-WantedBy=multi-user.target
-```
+- **Host**: VPS with PostgreSQL, Docker containers
+- **Monitors**: Futures + Spot monitors running 24/7 in daemon mode
+- **Cron**: Indicator orchestrator runs daily at 01:00 UTC
+- **Docker**: Backtester (Celery + Redis + Streamlit + Flower), Metabase BI
 
-Then:
-```bash
-sudo systemctl enable trading-monitor
-sudo systemctl start trading-monitor
-```
+## Documentation
 
-## ✅ Current Status
+| Document | Description |
+|----------|-------------|
+| [CLAUDE.md](CLAUDE.md) | Full project reference (commands, architecture, schema) |
+| [indicators/INDICATORS_REFERENCE.md](indicators/INDICATORS_REFERENCE.md) | Technical indicator formulas and strategies |
+| [indicators/README.md](indicators/README.md) | Indicators navigation hub |
+| [docs/ORDERBOOK_REFERENCE.md](docs/ORDERBOOK_REFERENCE.md) | Bybit orderbook column reference |
+| [docs/ORDERBOOK_BINANCE_REFERENCE.md](docs/ORDERBOOK_BINANCE_REFERENCE.md) | Binance orderbook column reference |
+| [docs/DVOL_REFERENCE.md](docs/DVOL_REFERENCE.md) | DVOL and options data reference |
 
-- **Monitor.py**: Production-ready, actively maintains real-time data
-- **Database**: Successfully collecting 2.8M+ BTCUSDT candles since 2020
-- **Performance**: Updates within 1-2 minutes of real-time
-
-## 🤝 Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-## 📝 License
+## License
 
 This project is licensed under the MIT License.
-
-## 🔗 Resources
-
-- [Bybit API Documentation](https://bybit-exchange.github.io/docs/v5/intro)
-- [PostgreSQL Documentation](https://www.postgresql.org/docs/)
-
-## 📞 Support
-
-For issues and questions, please open an issue on GitHub.

@@ -235,12 +235,16 @@ indicators:
 | **1m** | candles_bybit_futures_1m | Прямое чтение |
 | **15m** | candles_bybit_futures_1m | Агрегация из 1m (15 свечей → 1) |
 | **1h** | candles_bybit_futures_1m | Агрегация из 1m (60 свечей → 1) |
+| **4h** | candles_bybit_futures_1m | Агрегация из 1m (240 свечей → 1) |
+| **1d** | candles_bybit_futures_1m | Агрегация из 1m (1440 свечей → 1) |
 
 ### Обработка символов
 
-Поддерживаемые торговые пары:
-- BTCUSDT, ETHUSDT, BNBUSDT, XRPUSDT, SOLUSDT
-- ADAUSDT, LINKUSDT, XLMUSDT, LTCUSDT, DOTUSDT
+Поддерживаемые торговые пары (17 фьючерсных):
+- BTCUSDT, ETHUSDT, SOLUSDT, XRPUSDT, ADAUSDT
+- BNBUSDT, LINKUSDT, XLMUSDT, LTCUSDT, DOTUSDT
+- ARBUSDT, ATOMUSDT, ETCUSDT, NEARUSDT, POLUSDT
+- VETUSDT, XMRUSDT
 
 ### Команды запуска
 
@@ -261,6 +265,7 @@ python3 sma_loader.py [опции]
 | `--timeframes` | строка | из config | Несколько таймфреймов через запятую |
 | `--batch-days` | число | 30 | Размер батча в днях для обработки |
 | `--force-reload` | флаг | false | **Полный пересчет с начала истории** |
+| `--check-nulls` | флаг | false | **Поиск и заполнение NULL в середине данных** |
 
 ---
 
@@ -336,7 +341,29 @@ python3 sma_loader.py --timeframes 15m,1h
 
 ---
 
-#### 5. Комбинированные режимы
+#### 5. Режим проверки NULL (--check-nulls)
+
+Находит и заполняет NULL значения **в середине** данных (не в начале — первые 200 записей естественно NULL).
+
+```bash
+python3 sma_loader.py --check-nulls
+python3 sma_loader.py --check-nulls --symbol BTCUSDT
+python3 sma_loader.py --check-nulls --timeframe 1h
+```
+
+**Как работает:**
+1. Находит timestamps с NULL значениями SMA (после первых 200 записей)
+2. Загружает данные с lookback 200 свечей вокруг NULL
+3. Рассчитывает SMA и записывает только NULL записи
+4. Быстро — обрабатывает только проблемные точки
+
+**Когда использовать:**
+- После добавления новых записей монитором (monitor.py)
+- Для заполнения пропусков без полного пересчета
+
+---
+
+#### 6. Комбинированные режимы
 
 Аргументы можно комбинировать:
 
@@ -371,9 +398,11 @@ python3 sma_loader.py --batch-days 60
 
 | Таблица | Таймфрейм | Примерный размер |
 |---------|-----------|------------------|
-| `indicators_bybit_futures_1m` | 1 минута | ~113 GB |
-| `indicators_bybit_futures_15m` | 15 минут | ~7.6 GB |
+| `indicators_bybit_futures_1m` | 1 минута | ~114 GB |
+| `indicators_bybit_futures_15m` | 15 минут | ~7.7 GB |
 | `indicators_bybit_futures_1h` | 1 час | ~2 GB |
+| `indicators_bybit_futures_4h` | 4 часа | — |
+| `indicators_bybit_futures_1d` | 1 день | — |
 
 ### Структура колонок SMA
 
@@ -806,6 +835,8 @@ python3 check_sma_data.py --verbose
 
 | Дата | Изменение |
 |------|-----------|
+| 2026-02-05 | Добавлена поддержка таймфреймов 4h и 1d |
+| 2026-02-03 | Добавлен флаг --check-nulls для заполнения NULL в середине данных |
 | 2025-12-17 | Исправлен баг агрегации timestamp для 15m и 1h таймфреймов |
 | 2025-11 | Добавлен флаг --force-reload для полного пересчета |
 | 2025-10 | Первоначальная реализация SMA loader |
