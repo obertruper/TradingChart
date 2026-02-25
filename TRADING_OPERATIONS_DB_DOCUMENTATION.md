@@ -14,19 +14,29 @@
 ```
 PostgreSQL Server (порт 5432)
 │
-├── База данных: trading_data (исторические данные)
+├── База данных: trading_data (137 GB — исторические данные)
 │   └── Таблицы:
-│       ├── candles_bybit_futures_1m
-│       ├── indicators_bybit_futures_1m
-│       ├── indicators_bybit_futures_15m
-│       ├── indicators_bybit_futures_1h
-│       └── rsi_bybit_futures_*
+│       ├── candles_bybit_futures_1m (38M строк, 6.7 GB)
+│       ├── candles_bybit_spot_1m (31M строк, 5.5 GB)
+│       ├── indicators_bybit_futures_1m (25.6M строк, 114 GB)
+│       ├── indicators_bybit_futures_15m (1.7M строк, 7.7 GB)
+│       ├── indicators_bybit_futures_1h (437K строк, 2 GB)
+│       ├── indicators_bybit_futures_4h
+│       ├── indicators_bybit_futures_1d
+│       ├── orderbook_bybit_futures_1m (~1.1M строк, 1.73 GB)
+│       ├── orderbook_binance_futures_1m (1.6M строк, 550 MB)
+│       ├── options_deribit_dvol_1h (~86K строк)
+│       ├── options_deribit_dvol_1m (~536K строк)
+│       ├── options_deribit_dvol_indicators_1h
+│       ├── options_deribit_aggregated_15m
+│       ├── backtest_ml (2M строк, 2.9 GB)
+│       └── eda (пустая)
 │
-└── База данных: trading_operations (торговые операции)
+└── База данных: trading_operations (8.3 MB — торговые операции)
     └── Таблицы:
-        ├── trade_history (история сделок)
-        ├── trading_signals (планируется)
-        ├── open_positions (планируется)
+        ├── trade_history (история сделок) ✅
+        ├── trading_signals (торговые сигналы) ✅
+        ├── open_positions (открытые позиции) ✅
         └── portfolio_balance (планируется)
 ```
 
@@ -555,17 +565,19 @@ Password: [см. конфигурационные файлы]
 5. **Symbol Analysis** - анализ по торговым парам
 6. **Bot/Account Comparison** - сравнение производительности ботов и аккаунтов
 
-## Планируемые таблицы
+## Связанные таблицы
 
-### trading_signals
-- Хранение торговых сигналов
+### trading_signals ✅
+- Хранение торговых сигналов для открытия/закрытия позиций
 - Связь с trade_history через signal_id
+- Документация: [TRADING_SIGNALS_DOCUMENTATION.md](TRADING_SIGNALS_DOCUMENTATION.md)
 
-### open_positions
-- Текущие открытые позиции
-- Real-time обновление P&L
+### open_positions ✅
+- Текущие открытые торговые позиции
+- Trailing stop, частичное закрытие, связь с сигналами
+- Документация: [TRADING_OPEN_POSITIONS_DOCUMENTATION.md](TRADING_OPEN_POSITIONS_DOCUMENTATION.md)
 
-### portfolio_balance
+### portfolio_balance (планируется)
 - История баланса портфеля
 - Метрики производительности
 
@@ -598,5 +610,5 @@ VACUUM ANALYZE trade_history;
 
 - **Проект**: TradingChart
 - **Дата создания документации**: 2025-09-22
-- **Последнее обновление**: 2025-09-22 (добавлено поле account_id)
-- **Версия**: 1.1
+- **Последнее обновление**: 2026-02-25 (актуализация структуры БД)
+- **Версия**: 1.2

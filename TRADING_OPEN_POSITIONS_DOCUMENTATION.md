@@ -418,5 +418,7 @@ HAVING COUNT(*) > 1;
 ## Контакты и поддержка
 
 - **База данных**: trading_operations на VPS 82.25.115.144
-- **Документация БД**: `/TRADING_OPERATIONS_DB_DOCUMENTATION.md`
+- **Документация БД**: [TRADING_OPERATIONS_DB_DOCUMENTATION.md](TRADING_OPERATIONS_DB_DOCUMENTATION.md)
+- **Документация trading_signals**: [TRADING_SIGNALS_DOCUMENTATION.md](TRADING_SIGNALS_DOCUMENTATION.md)
 - **Связанные таблицы**: trading_signals, trade_history
+- **Последнее обновление**: 2026-02-25

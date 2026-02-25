@@ -4,7 +4,9 @@
 
 Unit tests for indicators loaders: `sma_loader.py`, `ema_loader.py`, `rsi_loader.py`, `vma_loader.py`, `macd_loader.py`, `atr_loader.py`, `bollinger_bands_loader.py`, `stochastic_williams_loader.py`, `obv_loader.py`, `adx_loader.py`, `mfi_loader.py`, `vwap_loader.py`, `long_short_ratio_loader.py`, `fear_and_greed_alternative_loader.py`, `fear_and_greed_coinmarketcap_loader.py`.
 
-**Total: 736 tests** (35 SMA + 39 EMA + 37 RSI + 35 VMA + 45 MACD + 48 ATR + 55 BB + 68 Stochastic/Williams + 42 OBV + 55 ADX + 58 MFI + 64 VWAP + 50 Long/Short Ratio + 50 Fear&Greed Alternative + 55 Fear&Greed CoinMarketCap)
+**Total: 751 tests** (36 SMA + 40 EMA + 38 RSI + 36 VMA + 46 MACD + 49 ATR + 56 BB + 69 Stochastic/Williams + 43 OBV + 56 ADX + 59 MFI + 65 VWAP + 51 Long/Short Ratio + 51 Fear&Greed Alternative + 56 Fear&Greed CoinMarketCap)
+
+**Не покрыты тестами (8 загрузчиков):** ichimoku, hv, supertrend, orderbook_bybit, orderbook_binance, options_dvol, options_dvol_indicators, options_aggregated
 
 ## Structure
 
@@ -15,21 +17,21 @@ tests/
 ├── README.md                           # This file
 └── unit/                               # Unit tests
     ├── __init__.py
-    ├── test_sma_loader.py              # 35 tests for SMA Loader
-    ├── test_ema_loader.py              # 39 tests for EMA Loader
-    ├── test_rsi_loader.py              # 37 tests for RSI Loader
-    ├── test_vma_loader.py              # 35 tests for VMA Loader
-    ├── test_macd_loader.py             # 45 tests for MACD Loader
-    ├── test_atr_loader.py              # 48 tests for ATR Loader
-    ├── test_bollinger_bands_loader.py  # 55 tests for Bollinger Bands Loader
-    ├── test_stochastic_williams_loader.py  # 68 tests for Stochastic & Williams %R
-    ├── test_obv_loader.py              # 42 tests for OBV Loader
-    ├── test_adx_loader.py              # 55 tests for ADX Loader
-    ├── test_mfi_loader.py              # 58 tests for MFI Loader
-    ├── test_vwap_loader.py             # 64 tests for VWAP Loader
-    ├── test_long_short_ratio_loader.py # 50 tests for Long/Short Ratio Loader
-    ├── test_fear_and_greed_alternative_loader.py  # 50 tests for Fear & Greed Alternative.me
-    └── test_fear_and_greed_coinmarketcap_loader.py # 55 tests for Fear & Greed CoinMarketCap
+    ├── test_sma_loader.py              # 36 tests for SMA Loader
+    ├── test_ema_loader.py              # 40 tests for EMA Loader
+    ├── test_rsi_loader.py              # 38 tests for RSI Loader
+    ├── test_vma_loader.py              # 36 tests for VMA Loader
+    ├── test_macd_loader.py             # 46 tests for MACD Loader
+    ├── test_atr_loader.py              # 49 tests for ATR Loader
+    ├── test_bollinger_bands_loader.py  # 56 tests for Bollinger Bands Loader
+    ├── test_stochastic_williams_loader.py  # 69 tests for Stochastic & Williams %R
+    ├── test_obv_loader.py              # 43 tests for OBV Loader
+    ├── test_adx_loader.py              # 56 tests for ADX Loader
+    ├── test_mfi_loader.py              # 59 tests for MFI Loader
+    ├── test_vwap_loader.py             # 65 tests for VWAP Loader
+    ├── test_long_short_ratio_loader.py # 51 tests for Long/Short Ratio Loader
+    ├── test_fear_and_greed_alternative_loader.py  # 51 tests for Fear & Greed Alternative.me
+    └── test_fear_and_greed_coinmarketcap_loader.py # 56 tests for Fear & Greed CoinMarketCap
 ```
 
 ## Running Tests
@@ -121,7 +123,7 @@ make test-quick
 
 ## Test Coverage
 
-### test_sma_loader.py (35 tests)
+### test_sma_loader.py (36 tests)
 Tests for Simple Moving Average loader
 
 **1. Timeframe Parsing (9 tests)**
@@ -160,8 +162,8 @@ Tests for Simple Moving Average loader
 - SMA column name generation
 - Table name generation
 
-### test_ema_loader.py (39 tests)
-Tests for Exponential Moving Average loader with checkpoint system
+### test_ema_loader.py (40 tests)
+Tests for Exponential Moving Average loader
 
 **1. Timeframe Parsing (6 tests)**
 - Real production config (1m, 15m, 1h)
@@ -208,7 +210,7 @@ Tests for Exponential Moving Average loader with checkpoint system
 - Timeframe minutes caching
 
 ### test_rsi_loader.py (38 tests)
-Tests for Relative Strength Index loader with Wilder's smoothing
+Tests for Relative Strength Index loader with single-pass Wilder's smoothing
 
 **1. Timeframe Parsing (4 tests)**
 - Real production config (1m, 15m, 1h)
@@ -253,7 +255,7 @@ Tests for Relative Strength Index loader with Wilder's smoothing
 - Timeframe minutes caching
 - Type validation
 
-### test_vma_loader.py (35 tests)
+### test_vma_loader.py (36 tests)
 Tests for Volume Moving Average loader
 
 **1. Timeframe Parsing (6 tests)**
@@ -300,7 +302,7 @@ Tests for Volume Moving Average loader
 - Symbol initialization
 - get_last_vma_date (with data / no data)
 
-### test_macd_loader.py (45 tests)
+### test_macd_loader.py (46 tests)
 Tests for MACD (Moving Average Convergence Divergence) loader
 
 **1. Timeframe Parsing (6 tests)**
@@ -352,7 +354,7 @@ Tests for MACD (Moving Average Convergence Divergence) loader
 - Table name format validation
 - Lookback multiplier from config
 
-### test_atr_loader.py (48 tests)
+### test_atr_loader.py (49 tests)
 Tests for ATR (Average True Range) loader
 
 **1. Timeframe Parsing (6 tests)**
@@ -407,7 +409,7 @@ Tests for ATR (Average True Range) loader
 - Table names (indicators + candles)
 - ATR periods from config
 
-### test_bollinger_bands_loader.py (55 tests)
+### test_bollinger_bands_loader.py (56 tests)
 Tests for Bollinger Bands (BB) volatility indicator
 
 **1. Column Name Generation (8 tests)**
@@ -474,7 +476,7 @@ Tests for Bollinger Bands (BB) volatility indicator
 - Classic configuration exists (20, 2.0)
 - Loader initialization defaults
 
-### test_fear_and_greed_alternative_loader.py (50 tests)
+### test_fear_and_greed_alternative_loader.py (51 tests)
 Tests for Fear & Greed Index loader from Alternative.me API
 
 **1. Column Names (3 tests)**
@@ -545,7 +547,7 @@ Tests for Fear & Greed Index loader from Alternative.me API
 - Config loading
 - Symbol validation (BTCUSDT only)
 
-### test_fear_and_greed_coinmarketcap_loader.py (55 tests)
+### test_fear_and_greed_coinmarketcap_loader.py (56 tests)
 Tests for Fear & Greed Index loader from CoinMarketCap API
 
 **1. Column Names (3 tests)**
@@ -623,59 +625,15 @@ Tests for Fear & Greed Index loader from CoinMarketCap API
 
 ## Test Results
 
-### All tests (294 total)
+### All tests (751 total)
 ```bash
 # Run all unit tests
 make test-unit
 
 ============================= test session starts ==============================
-platform darwin -- Python 3.13.7, pytest-8.4.2, pluggy-1.6.0
-plugins: mock-3.15.1, cov-7.0.0
-collecting ... 294 tests collected
+751 tests collected
 
-============================ 294 passed in ~3.5s ===============================
-```
-
-### SMA tests (35 tests)
-```bash
-make test-sma
-============================== 35 passed in 0.18s ===============================
-```
-
-### EMA tests (39 tests)
-```bash
-make test-ema
-============================== 39 passed in 0.21s ===============================
-```
-
-### RSI tests (37 tests)
-```bash
-make test-rsi
-============================== 37 passed in 0.19s ===============================
-```
-
-### VMA tests (35 tests)
-```bash
-make test-vma
-============================== 35 passed in 0.19s ===============================
-```
-
-### MACD tests (45 tests)
-```bash
-make test-macd
-============================== 45 passed in 0.22s ===============================
-```
-
-### ATR tests (48 tests)
-```bash
-make test-atr
-============================== 48 passed in 0.24s ===============================
-```
-
-### Bollinger Bands tests (55 tests)
-```bash
-make test-bb
-============================== 55 passed in 0.48s ===============================
+============================ 751 passed =======================================
 ```
 
 ## Dependencies
@@ -807,7 +765,7 @@ Convenient commands for running tests:
 - **Uses mocks** for DatabaseConnection
 - **Fast execution**: ~0.2s per loader (SMA, EMA, RSI, VMA)
 - **Real production config** values used in tests
-- **Timeframes**: 1m, 15m, 1h (all loaders)
+- **Timeframes**: 1m, 15m, 1h, 4h, 1d (all loaders)
 - **Periods**:
   - SMA: 10, 30, 50, 100, 200
   - EMA: 9, 12, 21, 26, 50, 100, 200
@@ -817,7 +775,7 @@ Convenient commands for running tests:
   - ATR: 7, 14, 21, 30, 50, 100
 - **Run from anywhere**: project root or indicators/ directory
 - **pytest.ini** enables automatic test discovery
-- **Checkpoint testing**: EMA, RSI, VMA test resumable loading
+- **Incremental loading**: EMA, VMA test resumable loading
 - **Formula validation**: All calculations verified against known formulas
   - SMA: rolling mean of price
   - EMA: exponential smoothing with α = 2/(period+1)

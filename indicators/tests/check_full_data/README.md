@@ -37,7 +37,7 @@ Validates Simple Moving Average (SMA) indicators across all timeframes and perio
 - ✅ Warm-up period (first N-1 candles should be NULL, where N = period)
 - ✅ Data completeness (no unexpected NULL values after warm-up)
 - ✅ All 5 SMA periods: 10, 30, 50, 100, 200
-- ✅ All 3 timeframes: 1m, 15m, 1h
+- ✅ All 5 timeframes: 1m, 15m, 1h, 4h, 1d
 - ✅ All configured symbols (17 futures pairs)
 
 **Tolerance:**
@@ -55,7 +55,7 @@ Validates Exponential Moving Average (EMA) indicators across all timeframes and 
 - ✅ Warm-up period (first N-1 candles should be NULL, where N = period)
 - ✅ Data completeness (no unexpected NULL values after warm-up)
 - ✅ All 7 EMA periods: 9, 12, 21, 26, 50, 100, 200
-- ✅ All 3 timeframes: 1m, 15m, 1h
+- ✅ All 5 timeframes: 1m, 15m, 1h, 4h, 1d
 - ✅ All configured symbols (17 futures pairs)
 
 **Formula:**
@@ -78,7 +78,7 @@ Validates Relative Strength Index (RSI) indicators across all timeframes and per
 - ✅ Warm-up period (10x lookback for 99.996% convergence accuracy)
 - ✅ Data completeness (no unexpected NULL values after warm-up)
 - ✅ All 5 RSI periods: 7, 9, 14, 21, 25
-- ✅ All 3 timeframes: 1m, 15m, 1h
+- ✅ All 5 timeframes: 1m, 15m, 1h, 4h, 1d
 - ✅ All configured symbols (17 futures pairs)
 
 **Formula:**
@@ -93,9 +93,34 @@ Validates Relative Strength Index (RSI) indicators across all timeframes and per
 - Flags anything beyond this tolerance as calculation error
 
 **Special Notes:**
-- Uses 10x lookback multiplier (vs 2x in old version) for full Wilder smoothing convergence
-- Checkpoint system validation: verifies stored avg_gain/avg_loss states
+- Uses 10x lookback multiplier for full Wilder smoothing convergence
+- Single-pass calculation (load all → calculate → compare)
 - Critical for momentum trading strategies
+
+---
+
+### 4. ATR Validator (`check_atr_data.py`)
+
+Validates Average True Range (ATR) indicators using Wilder smoothing method.
+
+**What it checks:**
+- ✅ True Range calculation: TR = max(H-L, |H-PC|, |L-PC|)
+- ✅ ATR Wilder smoothing: ATR = (ATR_prev × (period-1) + TR) / period
+- ✅ All 6 ATR periods: 7, 14, 21, 30, 50, 100
+- ✅ All 5 timeframes: 1m, 15m, 1h, 4h, 1d
+- ✅ All configured symbols (17 futures pairs)
+
+---
+
+### 5. MFI Validator (`check_mfi_data.py`)
+
+Validates Money Flow Index (MFI) indicators.
+
+**What it checks:**
+- ✅ MFI calculation using typical price and volume
+- ✅ All 5 MFI periods: 7, 10, 14, 20, 25
+- ✅ All 5 timeframes: 1m, 15m, 1h, 4h, 1d
+- ✅ All configured symbols (17 futures pairs)
 
 ---
 
@@ -117,9 +142,11 @@ python3 check_rsi_data.py
 ```
 
 **Warning:**
-- SMA validation: ~255 combinations (17 symbols × 3 timeframes × 5 periods) - **15-30 minutes**
-- EMA validation: ~357 combinations (17 symbols × 3 timeframes × 7 periods) - **20-40 minutes**
-- RSI validation: ~255 combinations (17 symbols × 3 timeframes × 5 periods) - **15-30 minutes**
+- SMA validation: ~425 combinations (17 symbols × 5 timeframes × 5 periods) - **20-40 minutes**
+- EMA validation: ~595 combinations (17 symbols × 5 timeframes × 7 periods) - **30-60 minutes**
+- RSI validation: ~425 combinations (17 symbols × 5 timeframes × 5 periods) - **20-40 minutes**
+- ATR validation: ~510 combinations (17 symbols × 5 timeframes × 6 periods) - **25-50 minutes**
+- MFI validation: ~425 combinations (17 symbols × 5 timeframes × 5 periods) - **20-40 minutes**
 
 ### Filtered Validation
 
@@ -167,23 +194,20 @@ python3 check_ema_data.py --symbol ETHUSDT --verbose
 
 **RSI Examples:**
 ```bash
-# Single symbol
-python3 check_rsi_data.py --symbol ETHUSDT
-
-# Single timeframe
-python3 check_rsi_data.py --timeframe 1h
-
-# Single period
-python3 check_rsi_data.py --period 14
-
-# Last 7 days only (recommended after recalculation)
-python3 check_rsi_data.py --days 7
-
-# Combination filters
 python3 check_rsi_data.py --symbol ETHUSDT --timeframe 1h --days 7
+python3 check_rsi_data.py --period 14 --verbose
+```
 
-# Verbose output
-python3 check_rsi_data.py --symbol ETHUSDT --verbose
+**ATR Examples:**
+```bash
+python3 check_atr_data.py --symbol BTCUSDT --timeframe 1h
+python3 check_atr_data.py --period 14 --days 30 --verbose
+```
+
+**MFI Examples:**
+```bash
+python3 check_mfi_data.py --symbol BTCUSDT --timeframe 1h --days 7
+python3 check_mfi_data.py --period 14 --verbose
 ```
 
 ### Common Workflows
@@ -193,13 +217,17 @@ python3 check_rsi_data.py --symbol ETHUSDT --verbose
 python3 check_sma_data.py --days 7
 python3 check_ema_data.py --days 7
 python3 check_rsi_data.py --days 7
+python3 check_atr_data.py --days 7
+python3 check_mfi_data.py --days 7
 ```
 
 **Single Symbol Deep Dive:**
 ```bash
 python3 check_sma_data.py --symbol BTCUSDT --verbose
 python3 check_ema_data.py --symbol BTCUSDT --verbose
-python3 check_rsi_data.py --symbol ETHUSDT --verbose
+python3 check_rsi_data.py --symbol BTCUSDT --verbose
+python3 check_atr_data.py --symbol BTCUSDT --verbose
+python3 check_mfi_data.py --symbol BTCUSDT --verbose
 ```
 
 **Production Validation (Hourly Data Only):**
@@ -207,13 +235,8 @@ python3 check_rsi_data.py --symbol ETHUSDT --verbose
 python3 check_sma_data.py --timeframe 1h
 python3 check_ema_data.py --timeframe 1h
 python3 check_rsi_data.py --timeframe 1h
-```
-
-**Debug Specific Period:**
-```bash
-python3 check_sma_data.py --period 200 --days 30 --verbose
-python3 check_ema_data.py --period 200 --days 30 --verbose
-python3 check_rsi_data.py --period 14 --days 30 --verbose
+python3 check_atr_data.py --timeframe 1h
+python3 check_mfi_data.py --timeframe 1h
 ```
 
 ---
@@ -429,14 +452,16 @@ fi
 
 ```
 Database Tables:
-  candles_bybit_futures_1m/15m/1h  →  [close prices]
-  indicators_bybit_futures_1m/15m/1h  →  [stored SMA values]
+  candles_bybit_futures_1m  →  [source OHLCV prices]
+  indicators_bybit_futures_{1m,15m,1h,4h,1d}  →  [stored indicator values]
                                       ↓
-                              SMA Validator
+                              Validator Script
                                       ↓
-                              [recalculate]
+                    [aggregate 1m candles to target timeframe]
                                       ↓
-                              [compare]
+                    [recalculate indicator from candles]
+                                      ↓
+                    [compare calculated vs stored values]
                                       ↓
                               Validation Report
 ```
@@ -447,37 +472,16 @@ Database Tables:
 
 ### Adding New Indicator Validators
 
-To create validators for other indicators (RSI, EMA, MACD, etc.), follow this template:
+Currently 5 validators exist: SMA, EMA, RSI, ATR, MFI. To add a new validator, follow the existing pattern:
 
-```python
-# check_rsi_data.py
+1. Create `check_<indicator>_data.py` in this directory
+2. Implement the indicator formula identically to the loader
+3. Load candle data from `candles_bybit_futures_1m`, aggregate to target timeframe via SQL
+4. Compare calculated values with stored values from `indicators_bybit_futures_*`
+5. Use tolerance appropriate for the indicator (e.g., ±0.00000001 for SMA, ±0.5 for RSI)
+6. Support CLI flags: `--symbol`, `--timeframe`, `--period`, `--days`, `--verbose`
 
-class RSIValidator:
-    def __init__(self, config_path=None):
-        # Load config, connect to DB
-        pass
-
-    def calculate_rsi(self, df, period):
-        # Implement RSI calculation
-        # Use same formula as rsi_loader.py
-        pass
-
-    def validate_period(self, symbol, timeframe, period):
-        # 1. Fetch candle data + stored RSI
-        # 2. Calculate RSI locally
-        # 3. Compare with tolerance
-        # 4. Report errors
-        pass
-
-    def validate_all(self, symbols, timeframes, periods):
-        # Loop through all combinations
-        # Use tqdm progress bar
-        pass
-
-    def print_report(self, results):
-        # Format and print results
-        pass
-```
+**Priority candidates for new validators:** ADX, Bollinger Bands, MACD, Stochastic.
 
 ---
 
@@ -485,14 +489,11 @@ class RSIValidator:
 
 1. **Run validation after every loader execution**
    ```bash
-   # After SMA loader
    python3 sma_loader.py && python3 check_sma_data.py --days 1
-
-   # After EMA loader
    python3 ema_loader.py && python3 check_ema_data.py --days 1
-
-   # After RSI loader
    python3 rsi_loader.py && python3 check_rsi_data.py --days 1
+   python3 atr_loader.py && python3 check_atr_data.py --days 1
+   python3 mfi_loader.py && python3 check_mfi_data.py --days 1
    ```
 
 2. **Validate recent data frequently (daily)**
@@ -500,6 +501,8 @@ class RSIValidator:
    python3 check_sma_data.py --days 7
    python3 check_ema_data.py --days 7
    python3 check_rsi_data.py --days 7
+   python3 check_atr_data.py --days 7
+   python3 check_mfi_data.py --days 7
    ```
 
 3. **Full validation periodically (weekly/monthly)**
@@ -507,29 +510,17 @@ class RSIValidator:
    python3 check_sma_data.py
    python3 check_ema_data.py
    python3 check_rsi_data.py
+   python3 check_atr_data.py
+   python3 check_mfi_data.py
    ```
 
-4. **Test new loaders with validation**
+4. **Use filters for faster debugging**
    ```bash
-   # After modifying sma_loader.py
-   python3 sma_loader.py --symbol BTCUSDT --timeframe 1h
-   python3 check_sma_data.py --symbol BTCUSDT --timeframe 1h --verbose
-
-   # After modifying ema_loader.py
-   python3 ema_loader.py --symbol BTCUSDT --timeframe 1h
-   python3 check_ema_data.py --symbol BTCUSDT --timeframe 1h --verbose
-
-   # After modifying rsi_loader.py
-   python3 rsi_loader.py --symbol ETHUSDT --timeframe 1h --force-reload
-   python3 check_rsi_data.py --symbol ETHUSDT --timeframe 1h --verbose
-   ```
-
-5. **Use filters for faster debugging**
-   ```bash
-   # Don't validate everything when debugging
    python3 check_sma_data.py --symbol BTCUSDT --days 1 --verbose
    python3 check_ema_data.py --symbol BTCUSDT --days 1 --verbose
    python3 check_rsi_data.py --symbol ETHUSDT --days 1 --verbose
+   python3 check_atr_data.py --symbol BTCUSDT --timeframe 1h --verbose
+   python3 check_mfi_data.py --symbol BTCUSDT --timeframe 1h --verbose
    ```
 
 ---
@@ -541,11 +532,11 @@ class RSIValidator:
 | `check_sma_data.py` | **SMA mathematical validation** | Slow (recalculates) |
 | `check_ema_data.py` | **EMA mathematical validation** | Slow (recalculates) |
 | `check_rsi_data.py` | **RSI mathematical validation** | Slow (recalculates) |
+| `check_atr_data.py` | **ATR mathematical validation** | Slow (recalculates) |
+| `check_mfi_data.py` | **MFI mathematical validation** | Slow (recalculates) |
 | `../../check_indicators_status.py` | Quick status overview (all indicators) | Fast (counts only) |
 | `../../check_atr_status.py` | ATR-specific status check | Fast (no recalc) |
-| `../../sma_loader.py` | Load SMA data into database | Medium |
-| `../../ema_loader.py` | Load EMA data into database | Medium |
-| `../../rsi_loader.py` | Load RSI data into database | Medium |
+| `../../check_adx_status.py` | ADX-specific status check | Fast (no recalc) |
 
 ---
 
@@ -567,13 +558,11 @@ For issues or questions:
   - Uses Wilder smoothing method: `avg = (avg * (period-1) + new_value) / period`
   - 10x lookback multiplier for 99.996% convergence accuracy (vs 2x = 86.6%)
   - Tolerance: ±0.5 (RSI oscillates 0-100)
-  - Validates checkpoint system: avg_gain/avg_loss states
+  - Single-pass calculation: load all → calculate → compare
 - **RSI Loader Bug Fix** (same timestamp offset bug as EMA/SMA)
-  - Fixed SQL aggregation: period START → period END
+  - Fixed SQL aggregation timestamp formula
   - Increased lookback: 2x → 10x for Wilder smoothing convergence
-  - Added checkpoint file system with 7-day validation
   - Added --force-reload flag for full recalculation
-  - Expected validation results: 99%+ accuracy after full historical recalculation
 - **Critical**: All RSI data in aggregated timeframes (15m, 1h) requires recalculation with --force-reload
 
 ### Version 1.3.0 (2025-11-10) - SMA Validator Timestamp Offset Bug Fix
@@ -602,7 +591,6 @@ For issues or questions:
   - 3x covers 95% of EMA weights, 5x covers 99% of EMA weights
   - Error reduction: 1.99 points → 0.01 points
 - **Validation Results**: 99.99% accuracy for short periods (EMA 9-26), long periods within industry standards
-- **Full Analysis**: See `indicators/tools/EMA_ROOT_CAUSE_REPORT.md`
 
 ### Version 1.1.0 (2025-01-10)
 - Added EMA mathematical validation (`check_ema_data.py`)
@@ -612,7 +600,7 @@ For issues or questions:
 ### Version 1.0.0 (2025-01-07)
 - Initial release
 - SMA mathematical validation (`check_sma_data.py`)
-- Support for all 17 symbols, 3 timeframes, 5 periods
+- Support for all 17 symbols, 5 timeframes, 5 periods
 - Warm-up period validation
 - CLI interface with filters
 - Comprehensive error reporting
