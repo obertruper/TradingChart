@@ -793,6 +793,15 @@ def main():
 
     args = parser.parse_args()
 
+    # Подтверждение --force-reload
+    if args.force_reload and os.environ.get('FORCE_RELOAD_CONFIRMED') != '1':
+        print("\n⚠️  ВНИМАНИЕ: --force-reload полностью перезапишет все данные SuperTrend в таблице!")
+        print("⏱️  Полная перезапись может занять значительное время.")
+        response = input("\nПродолжить? (y/n): ").strip().lower()
+        if response != 'y':
+            print("❌ Отменено пользователем.")
+            sys.exit(0)
+
     # Загружаем конфиг
     config_path = os.path.join(os.path.dirname(__file__), 'indicators_config.yaml')
 

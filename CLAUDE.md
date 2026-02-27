@@ -134,6 +134,8 @@ python3 start_all_loaders.py --symbol BTCUSDT --timeframe 1h --force-reload  # C
 # --timeframe: passes --timeframe to 23 loaders (all except orderbook_bybit, orderbook_binance,
 #   options_dvol_indicators, options_aggregated — these have fixed timeframes)
 # --force-reload: passes --force-reload to all 26 loaders (full recalculation and rewrite)
+#   Requires y/n confirmation before execution (both in orchestrator and individual loaders)
+#   Orchestrator sets FORCE_RELOAD_CONFIRMED=1 env var so child loaders skip re-confirmation
 # Perfect for manual runs and cron jobs
 
 # Individual loader commands (if you need to run specific indicators):

@@ -29,6 +29,7 @@ Usage:
 """
 
 import sys
+import os
 import logging
 import argparse
 import warnings
@@ -717,6 +718,15 @@ def main():
 
     # 2. Парсинг аргументов
     args = parse_args()
+
+    # Подтверждение --force-reload
+    if args.force_reload and os.environ.get('FORCE_RELOAD_CONFIRMED') != '1':
+        print("\n⚠️  ВНИМАНИЕ: --force-reload полностью перезапишет все данные Funding Rate в таблице!")
+        print("⏱️  Полная перезапись может занять значительное время.")
+        response = input("\nПродолжить? (y/n): ").strip().lower()
+        if response != 'y':
+            print("❌ Отменено пользователем.")
+            sys.exit(0)
 
     # 3. Загрузка конфигурации
     try:

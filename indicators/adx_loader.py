@@ -1201,6 +1201,15 @@ def main():
 
     args = parser.parse_args()
 
+    # Подтверждение --force-reload
+    if args.force_reload and os.environ.get('FORCE_RELOAD_CONFIRMED') != '1':
+        print("\n⚠️  ВНИМАНИЕ: --force-reload полностью перезапишет все данные ADX в таблице!")
+        print("⏱️  Полная перезапись может занять значительное время.")
+        response = input("\nПродолжить? (y/n): ").strip().lower()
+        if response != 'y':
+            print("❌ Отменено пользователем.")
+            sys.exit(0)
+
     # Determine symbols to process
     if args.symbols:
         symbols = [s.strip() for s in args.symbols.split(',')]
