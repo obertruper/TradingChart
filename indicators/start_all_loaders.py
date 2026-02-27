@@ -14,10 +14,15 @@ Start All Loaders - Orchestrator для автоматического посл�
 - Останавливается при первой ошибке
 - Логирует в консоль + файл logs/run_YYYYMMDD_HHMMSS.log
 - Показывает статистику времени выполнения
+- Поддержка --symbol для фильтрации по символу (пробрасывается в каждый загрузчик)
+- Автоматическая трансляция --symbol → --currency для Options-загрузчиков (BTCUSDT→BTC, ETHUSDT→ETH)
 
 Использование:
     cd indicators
-    python3 start_all_loaders.py
+    python3 start_all_loaders.py                          # Все символы
+    python3 start_all_loaders.py --symbol BTCUSDT         # Только BTCUSDT
+    python3 start_all_loaders.py --check-nulls            # Заполнение NULL
+    python3 start_all_loaders.py --symbol BTCUSDT --check-nulls  # Комбинация
 
 Автор: Trading System
 Дата: 2025-10-23
@@ -87,6 +92,25 @@ LOADERS_WITH_CHECK_NULLS = {
     'sma', 'ema', 'rsi', 'vma', 'atr', 'adx', 'macd', 'bollinger_bands', 'vwap', 'mfi',
     'stochastic', 'williams_r', 'premium_index', 'ichimoku', 'hv', 'supertrend',
     'fear_and_greed', 'coinmarketcap_fear_and_greed', 'binance_orderbook',
+}
+
+# Загрузчики, поддерживающие флаг --symbol
+LOADERS_WITH_SYMBOL = {
+    'sma', 'ema', 'rsi', 'vma', 'atr', 'adx', 'macd', 'obv', 'bollinger_bands',
+    'vwap', 'mfi', 'stochastic', 'williams_r', 'ichimoku', 'hv', 'supertrend',
+    'long_short_ratio', 'open_interest', 'funding_rate', 'premium_index',
+    'bybit_orderbook', 'binance_orderbook',
+}
+
+# Загрузчики, использующие --currency вместо --symbol (Options/Deribit)
+LOADERS_WITH_CURRENCY = {
+    'options_dvol', 'options_dvol_indicators', 'options_aggregated',
+}
+
+# Маппинг symbol → currency для Options-загрузчиков
+SYMBOL_TO_CURRENCY = {
+    'BTCUSDT': 'BTC',
+    'ETHUSDT': 'ETH',
 }
 
 
@@ -275,6 +299,9 @@ def main():
     parser = argparse.ArgumentParser(description='Orchestrator: последовательный запуск всех indicator loaders')
     parser.add_argument('--check-nulls', action='store_true',
                        help='Передать --check-nulls каждому загрузчику (заполнение NULL в середине данных)')
+    parser.add_argument('--symbol', type=str, default=None,
+                       help='Обработать только указанный символ (например, BTCUSDT). '
+                            'Пробрасывается как --symbol для индикаторов и --currency для Options-загрузчиков.')
     args = parser.parse_args()
 
     # Настраиваем логирование
@@ -289,6 +316,10 @@ def main():
     logger.info(f"Лог файл: {log_file}")
     if args.check_nulls:
         logger.info(f"🔍 Режим CHECK NULLS: будет передан --check-nulls поддерживающим загрузчикам")
+    if args.symbol:
+        currency = SYMBOL_TO_CURRENCY.get(args.symbol)
+        currency_info = f" (→ --currency {currency} для Options)" if currency else " (Options-загрузчики будут пропущены)"
+        logger.info(f"🎯 Фильтр по символу: {args.symbol}{currency_info}")
     logger.info("")
 
     # Загружаем конфигурацию
@@ -330,10 +361,26 @@ def main():
         logger.info(f"  {idx}. {indicator}")
     logger.info("")
 
+    # Подготавливаем общие аргументы для --symbol
+    symbol_args = []
+    currency_args = []
+    skip_currency_loaders = False
+
+    if args.symbol:
+        symbol_args = ['--symbol', args.symbol]
+        currency = SYMBOL_TO_CURRENCY.get(args.symbol)
+        if currency:
+            currency_args = ['--currency', currency]
+        else:
+            skip_currency_loaders = True
+            logger.info(f"⚠️  Символ {args.symbol} не имеет маппинга на currency — Options-загрузчики будут пропущены")
+
     # Получаем аргументы для stochastic+williams
     stochastic_williams_args = get_stochastic_williams_args(config)
     if args.check_nulls:
         stochastic_williams_args += ['--check-nulls']
+    if symbol_args:
+        stochastic_williams_args += symbol_args
 
     # Запускаем loader'ы последовательно
     results = []
@@ -395,9 +442,23 @@ def main():
                 logger.error(f"Добавьте mapping в LOADER_MAPPING")
                 break
 
+            # Пропускаем Options-загрузчики если символ не маппится на currency
+            if args.symbol and indicator_name in LOADERS_WITH_CURRENCY and skip_currency_loaders:
+                logger.info("")
+                logger.info(f"⏭️  [{indicator_name.upper()}] Пропущено (символ {args.symbol} не поддерживается)")
+                continue
+
             extra_args = []
             if args.check_nulls and indicator_name in LOADERS_WITH_CHECK_NULLS:
                 extra_args.append('--check-nulls')
+
+            # Пробрасываем --symbol или --currency
+            if args.symbol:
+                if indicator_name in LOADERS_WITH_SYMBOL:
+                    extra_args += symbol_args
+                elif indicator_name in LOADERS_WITH_CURRENCY:
+                    extra_args += currency_args
+                # Fear & Greed и другие без поддержки symbol — запускаются без фильтра
 
             success, duration = run_loader(
                 indicator_name,

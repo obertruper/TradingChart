@@ -118,12 +118,17 @@ cd indicators
 
 # ORCHESTRATOR - Automatic sequential loading of ALL indicators
 python3 start_all_loaders.py
-python3 start_all_loaders.py --check-nulls  # Pass --check-nulls to all supporting loaders
+python3 start_all_loaders.py --symbol BTCUSDT              # Only BTCUSDT across all loaders
+python3 start_all_loaders.py --check-nulls                 # Pass --check-nulls to all supporting loaders
+python3 start_all_loaders.py --symbol BTCUSDT --check-nulls  # Combine both flags
 # Loads all enabled indicators sequentially from indicators_config.yaml
 # 26 loaders total: 23 indicator + 3 options (dvol, dvol_indicators, aggregated)
 # Configuration: orchestrator.loaders section (true/false for each indicator)
 # Execution order: determined by indicators section key order in indicators_config.yaml
 # Logs: indicators/logs/start_all_loaders_YYYYMMDD_HHMMSS.log (real-time)
+# --symbol: passes --symbol to 22 loaders, translates to --currency for 3 Options loaders
+#   BTCUSDT → --currency BTC, ETHUSDT → --currency ETH, other symbols → Options skipped
+#   Fear & Greed loaders (2) run without filter (global data, no symbol concept)
 # Perfect for manual runs and cron jobs
 
 # Individual loader commands (if you need to run specific indicators):
