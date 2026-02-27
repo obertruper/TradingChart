@@ -483,8 +483,12 @@ class OBVLoader:
 
         logger.info(f"✓ OBV рассчитан для {len(df):,} записей за {calc_time:.2f}s")
 
-        # Фильтруем только новые данные для записи
-        if last_obv_date:
+        # Фильтруем данные для записи
+        force_reload = getattr(self, 'force_reload', False)
+        if force_reload:
+            df_to_update = df.copy()
+            logger.info(f"🔄 Force reload: перезапись всех {len(df_to_update):,} записей")
+        elif last_obv_date:
             df_to_update = df[df['timestamp'] > last_obv_date].copy()
             logger.info(f"Найдено {len(df_to_update):,} новых записей для обновления (после {last_obv_date})")
         else:
@@ -551,6 +555,7 @@ def main():
     parser.add_argument('--symbol', type=str, help='Символ для обработки (например, BTCUSDT)')
     parser.add_argument('--timeframe', type=str, help='Таймфрейм для обработки (1m, 15m, 1h)')
     parser.add_argument('--batch-days', type=int, help='Размер батча в днях (по умолчанию из конфига)')
+    parser.add_argument('--force-reload', action='store_true', help='Полный пересчёт и перезапись всех данных OBV')
 
     args = parser.parse_args()
 
@@ -611,6 +616,7 @@ def main():
             try:
                 loader = OBVLoader(symbol, timeframe, config)
                 loader.symbol_progress = symbol_progress
+                loader.force_reload = args.force_reload
                 loader.load_obv_for_timeframe()
 
             except KeyboardInterrupt:

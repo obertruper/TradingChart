@@ -120,9 +120,9 @@ cd indicators
 python3 start_all_loaders.py
 python3 start_all_loaders.py --symbol BTCUSDT              # Only BTCUSDT across all loaders
 python3 start_all_loaders.py --timeframe 4h                # Only 4h timeframe across all loaders
+python3 start_all_loaders.py --force-reload                # Full recalculation of all data
 python3 start_all_loaders.py --check-nulls                 # Pass --check-nulls to all supporting loaders
-python3 start_all_loaders.py --symbol BTCUSDT --timeframe 1h  # Combine symbol + timeframe
-python3 start_all_loaders.py --symbol BTCUSDT --check-nulls   # Combine symbol + check-nulls
+python3 start_all_loaders.py --symbol BTCUSDT --timeframe 1h --force-reload  # Combine all flags
 # Loads all enabled indicators sequentially from indicators_config.yaml
 # 26 loaders total: 23 indicator + 3 options (dvol, dvol_indicators, aggregated)
 # Configuration: orchestrator.loaders section (true/false for each indicator)
@@ -133,6 +133,7 @@ python3 start_all_loaders.py --symbol BTCUSDT --check-nulls   # Combine symbol +
 #   Fear & Greed loaders (2) run without filter (global data, no symbol concept)
 # --timeframe: passes --timeframe to 23 loaders (all except orderbook_bybit, orderbook_binance,
 #   options_dvol_indicators, options_aggregated — these have fixed timeframes)
+# --force-reload: passes --force-reload to all 26 loaders (full recalculation and rewrite)
 # Perfect for manual runs and cron jobs
 
 # Individual loader commands (if you need to run specific indicators):
@@ -270,9 +271,11 @@ python3 obv_loader.py
 python3 obv_loader.py --symbol BTCUSDT  # Specific symbol only
 python3 obv_loader.py --timeframe 1m  # Specific timeframe only
 python3 obv_loader.py --batch-days 7  # Larger batches for faster DB writes
+python3 obv_loader.py --force-reload  # Full recalculation and rewrite all data
 # Note: Full recalculation from history start (cumulative indicator)
 # Calculation time: ~1-2 minutes for 5 years, DB write: ~28-38 minutes
-# Incremental writes: only new data written to DB
+# Incremental writes: only new data written to DB (unless --force-reload)
+# --force-reload: rewrites ALL OBV values (useful if source candle data was corrected)
 
 # Load MACD (Moving Average Convergence Divergence)
 python3 macd_loader.py

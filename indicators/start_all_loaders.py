@@ -17,12 +17,14 @@ Start All Loaders - Orchestrator для автоматического посл�
 - Поддержка --symbol для фильтрации по символу (пробрасывается в каждый загрузчик)
 - Автоматическая трансляция --symbol → --currency для Options-загрузчиков (BTCUSDT→BTC, ETHUSDT→ETH)
 - Поддержка --timeframe для обработки конкретного таймфрейма (например, 4h или 1d)
+- Поддержка --force-reload для полного пересчёта данных (пробрасывается в каждый загрузчик)
 
 Использование:
     cd indicators
     python3 start_all_loaders.py                          # Все символы, все таймфреймы
     python3 start_all_loaders.py --symbol BTCUSDT         # Только BTCUSDT
     python3 start_all_loaders.py --timeframe 4h           # Только 4h таймфрейм
+    python3 start_all_loaders.py --force-reload           # Полный пересчёт всех данных
     python3 start_all_loaders.py --check-nulls            # Заполнение NULL
     python3 start_all_loaders.py --symbol BTCUSDT --timeframe 1h  # Комбинация
 
@@ -123,6 +125,17 @@ LOADERS_WITH_TIMEFRAME = {
     'ichimoku', 'hv', 'supertrend',
     'fear_and_greed', 'coinmarketcap_fear_and_greed',
     'options_dvol',
+}
+
+# Загрузчики, поддерживающие флаг --force-reload
+LOADERS_WITH_FORCE_RELOAD = {
+    'sma', 'ema', 'rsi', 'vma', 'atr', 'adx', 'macd', 'bollinger_bands',
+    'vwap', 'mfi', 'stochastic', 'williams_r', 'obv',
+    'long_short_ratio', 'open_interest', 'funding_rate', 'premium_index',
+    'ichimoku', 'hv', 'supertrend',
+    'fear_and_greed', 'coinmarketcap_fear_and_greed',
+    'bybit_orderbook', 'binance_orderbook',
+    'options_dvol', 'options_dvol_indicators', 'options_aggregated',
 }
 
 
@@ -317,6 +330,9 @@ def main():
     parser.add_argument('--timeframe', type=str, default=None,
                        help='Обработать только указанный таймфрейм (например, 1h, 4h, 1d). '
                             'Пробрасывается как --timeframe в каждый загрузчик.')
+    parser.add_argument('--force-reload', action='store_true',
+                       help='Полный пересчёт всех данных. '
+                            'Пробрасывается как --force-reload в каждый загрузчик.')
     args = parser.parse_args()
 
     # Настраиваем логирование
@@ -337,6 +353,8 @@ def main():
         logger.info(f"🎯 Фильтр по символу: {args.symbol}{currency_info}")
     if args.timeframe:
         logger.info(f"🕐 Фильтр по таймфрейму: {args.timeframe}")
+    if args.force_reload:
+        logger.info(f"🔄 Режим FORCE RELOAD: будет передан --force-reload поддерживающим загрузчикам")
     logger.info("")
 
     # Загружаем конфигурацию
@@ -401,6 +419,8 @@ def main():
     stochastic_williams_args = get_stochastic_williams_args(config)
     if args.check_nulls:
         stochastic_williams_args += ['--check-nulls']
+    if args.force_reload:
+        stochastic_williams_args += ['--force-reload']
     if symbol_args:
         stochastic_williams_args += symbol_args
     if timeframe_args:
@@ -487,6 +507,10 @@ def main():
             # Пробрасываем --timeframe
             if args.timeframe and indicator_name in LOADERS_WITH_TIMEFRAME:
                 extra_args += timeframe_args
+
+            # Пробрасываем --force-reload
+            if args.force_reload and indicator_name in LOADERS_WITH_FORCE_RELOAD:
+                extra_args.append('--force-reload')
 
             success, duration = run_loader(
                 indicator_name,
