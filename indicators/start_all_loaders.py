@@ -16,13 +16,15 @@ Start All Loaders - Orchestrator для автоматического посл�
 - Показывает статистику времени выполнения
 - Поддержка --symbol для фильтрации по символу (пробрасывается в каждый загрузчик)
 - Автоматическая трансляция --symbol → --currency для Options-загрузчиков (BTCUSDT→BTC, ETHUSDT→ETH)
+- Поддержка --timeframe для обработки конкретного таймфрейма (например, 4h или 1d)
 
 Использование:
     cd indicators
-    python3 start_all_loaders.py                          # Все символы
+    python3 start_all_loaders.py                          # Все символы, все таймфреймы
     python3 start_all_loaders.py --symbol BTCUSDT         # Только BTCUSDT
+    python3 start_all_loaders.py --timeframe 4h           # Только 4h таймфрейм
     python3 start_all_loaders.py --check-nulls            # Заполнение NULL
-    python3 start_all_loaders.py --symbol BTCUSDT --check-nulls  # Комбинация
+    python3 start_all_loaders.py --symbol BTCUSDT --timeframe 1h  # Комбинация
 
 Автор: Trading System
 Дата: 2025-10-23
@@ -111,6 +113,16 @@ LOADERS_WITH_CURRENCY = {
 SYMBOL_TO_CURRENCY = {
     'BTCUSDT': 'BTC',
     'ETHUSDT': 'ETH',
+}
+
+# Загрузчики, поддерживающие флаг --timeframe
+LOADERS_WITH_TIMEFRAME = {
+    'sma', 'ema', 'rsi', 'vma', 'atr', 'adx', 'macd', 'bollinger_bands',
+    'vwap', 'mfi', 'stochastic', 'williams_r', 'obv',
+    'long_short_ratio', 'open_interest', 'funding_rate', 'premium_index',
+    'ichimoku', 'hv', 'supertrend',
+    'fear_and_greed', 'coinmarketcap_fear_and_greed',
+    'options_dvol',
 }
 
 
@@ -302,6 +314,9 @@ def main():
     parser.add_argument('--symbol', type=str, default=None,
                        help='Обработать только указанный символ (например, BTCUSDT). '
                             'Пробрасывается как --symbol для индикаторов и --currency для Options-загрузчиков.')
+    parser.add_argument('--timeframe', type=str, default=None,
+                       help='Обработать только указанный таймфрейм (например, 1h, 4h, 1d). '
+                            'Пробрасывается как --timeframe в каждый загрузчик.')
     args = parser.parse_args()
 
     # Настраиваем логирование
@@ -320,6 +335,8 @@ def main():
         currency = SYMBOL_TO_CURRENCY.get(args.symbol)
         currency_info = f" (→ --currency {currency} для Options)" if currency else " (Options-загрузчики будут пропущены)"
         logger.info(f"🎯 Фильтр по символу: {args.symbol}{currency_info}")
+    if args.timeframe:
+        logger.info(f"🕐 Фильтр по таймфрейму: {args.timeframe}")
     logger.info("")
 
     # Загружаем конфигурацию
@@ -375,12 +392,19 @@ def main():
             skip_currency_loaders = True
             logger.info(f"⚠️  Символ {args.symbol} не имеет маппинга на currency — Options-загрузчики будут пропущены")
 
+    # Подготавливаем общие аргументы для --timeframe
+    timeframe_args = []
+    if args.timeframe:
+        timeframe_args = ['--timeframe', args.timeframe]
+
     # Получаем аргументы для stochastic+williams
     stochastic_williams_args = get_stochastic_williams_args(config)
     if args.check_nulls:
         stochastic_williams_args += ['--check-nulls']
     if symbol_args:
         stochastic_williams_args += symbol_args
+    if timeframe_args:
+        stochastic_williams_args += timeframe_args
 
     # Запускаем loader'ы последовательно
     results = []
@@ -459,6 +483,10 @@ def main():
                 elif indicator_name in LOADERS_WITH_CURRENCY:
                     extra_args += currency_args
                 # Fear & Greed и другие без поддержки symbol — запускаются без фильтра
+
+            # Пробрасываем --timeframe
+            if args.timeframe and indicator_name in LOADERS_WITH_TIMEFRAME:
+                extra_args += timeframe_args
 
             success, duration = run_loader(
                 indicator_name,

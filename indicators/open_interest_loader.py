@@ -210,6 +210,11 @@ class OpenInterestLoader:
                     end_date = end_date.replace(minute=minutes, second=0, microsecond=0)
                 elif self.timeframe == '1h':
                     end_date = end_date.replace(minute=0, second=0, microsecond=0)
+                elif self.timeframe == '4h':
+                    hour = (end_date.hour // 4) * 4
+                    end_date = end_date.replace(hour=hour, minute=0, second=0, microsecond=0)
+                elif self.timeframe == '1d':
+                    end_date = end_date.replace(hour=0, minute=0, second=0, microsecond=0)
 
                 logger.info(f"📅 Максимальная дата в indicators: {max_indicator_date}")
                 logger.info(f"⏸️  Ограничение end_date до последней завершенной свечи: {end_date}")
