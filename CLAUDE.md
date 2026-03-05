@@ -1208,6 +1208,13 @@ GET https://pro-api.coinmarketcap.com/v1/global-metrics/quotes/latest
   - **Position**: ADX now runs automatically between bollinger_bands and stochastic loaders
   - **Impact**: ADX data (8 periods × 3 components = 24 columns) will be automatically updated during orchestrator runs
   - **Configuration**: No manual ADX loader runs needed - handled by `python3 start_all_loaders.py`
+- **ADX Single-Pass Architecture + Full Force-Reload** (2026-02-24 refactor, 2026-03-05 reload)
+  - **Refactor** (commit `5b9767c`): Switched ADX to single-pass OBV-pattern — load all candles once, calculate TR/DM once, apply Wilder smoothing per period on full chain, write all 24 columns in one UPDATE
+  - **Force-reload completed** (2026-03-05): All 5 timeframes × 10 symbols = 27.5M rows recalculated
+  - **Timing**: 1d (1m 19s), 4h (2m 50s), 1h (8m 35s), 15m (31m 30s), 1m (7h 21m) — total ~8 hours
+  - **Verification**: Before/after comparison on 10,100 control points — data practically unchanged (0% diff on 1m, 0.1% on 15m, 5% on 1h with max delta 3.07 points)
+  - **Conclusion**: Old batch algorithm already produced correct results in practice, but new single-pass architecture guarantees correctness and is faster
+  - **Tracker**: `docs/ADX_FORCE_RELOAD_TRACKER.md`
 - **VPS Disk Space Investigation & Cleanup** (2025-12-17)
   - **Problem**: +40 GB unexpected disk usage on VPS, disk was 96% full (185 GB / 193 GB)
   - **Investigation**: Analyzed PostgreSQL databases, Docker, and filesystem
