@@ -107,9 +107,9 @@ LOADERS_WITH_SYMBOL = {
 }
 
 # Загрузчики, использующие --currency вместо --symbol (Options/Deribit)
-LOADERS_WITH_CURRENCY = {
-    'options_dvol', 'options_dvol_indicators', 'options_aggregated',
-}
+# Все три Options-загрузчика — глобальные индексы, всегда загружают обе валюты (BTC+ETH)
+# При запуске через orchestrator --currency НЕ передаётся (аналогично Fear & Greed)
+LOADERS_WITH_CURRENCY = set()
 
 # Маппинг symbol → currency для Options-загрузчиков
 SYMBOL_TO_CURRENCY = {

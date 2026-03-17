@@ -441,8 +441,8 @@ def parse_args():
         description='Options DVOL Loader — загрузка Deribit Volatility Index'
     )
     parser.add_argument(
-        '--currency', type=str, default='BTC',
-        help='Валюта: BTC, ETH, BTCUSDT, ETHUSDT (по умолчанию: BTC)'
+        '--currency', type=str, default=None,
+        help='Валюта: BTC, ETH, BTCUSDT, ETHUSDT (по умолчанию: обе — BTC + ETH)'
     )
     parser.add_argument(
         '--timeframe', type=str, default=None,
@@ -468,24 +468,35 @@ def main():
             print("❌ Отменено пользователем.")
             sys.exit(0)
 
+    # DVOL — глобальный индекс, всегда загружаем обе валюты (BTC + ETH)
+    # --currency позволяет ограничить при ручном запуске
+    ALL_CURRENCIES = ['BTC', 'ETH']
+    if args.currency:
+        raw = args.currency.upper()
+        resolved = OptionsDvolLoader.CURRENCY_ALIASES.get(raw, raw)
+        currencies = [resolved]
+    else:
+        currencies = ALL_CURRENCIES
+
     timeframes = [args.timeframe] if args.timeframe else ALL_TIMEFRAMES
 
-    logger.info(f"Валюта: {args.currency}")
+    logger.info(f"Валюты: {', '.join(currencies)}")
     logger.info(f"Таймфреймы: {', '.join(timeframes)}")
     if args.force_reload:
         logger.info("Режим: FORCE RELOAD")
 
-    for tf in timeframes:
-        if shutdown_requested:
-            logger.info("Остановка по запросу пользователя")
-            break
+    for currency in currencies:
+        for tf in timeframes:
+            if shutdown_requested:
+                logger.info("Остановка по запросу пользователя")
+                return
 
-        loader = OptionsDvolLoader(
-            currency=args.currency,
-            timeframe=tf,
-            force_reload=args.force_reload
-        )
-        loader.run()
+            loader = OptionsDvolLoader(
+                currency=currency,
+                timeframe=tf,
+                force_reload=args.force_reload
+            )
+            loader.run()
 
 
 if __name__ == "__main__":

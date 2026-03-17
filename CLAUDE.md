@@ -128,9 +128,8 @@ python3 start_all_loaders.py --symbol BTCUSDT --timeframe 1h --force-reload  # C
 # Configuration: orchestrator.loaders section (true/false for each indicator)
 # Execution order: determined by indicators section key order in indicators_config.yaml
 # Logs: indicators/logs/start_all_loaders_YYYYMMDD_HHMMSS.log (real-time)
-# --symbol: passes --symbol to 22 loaders, translates to --currency for 3 Options loaders
-#   BTCUSDT → --currency BTC, ETHUSDT → --currency ETH, other symbols → Options skipped
-#   Fear & Greed loaders (2) run without filter (global data, no symbol concept)
+# --symbol: passes --symbol to 22 loaders
+#   Options loaders (3) and Fear & Greed loaders (2) run without filter (global data, always BTC+ETH)
 # --timeframe: passes --timeframe to 23 loaders (all except orderbook_bybit, orderbook_binance,
 #   options_dvol_indicators, options_aggregated — these have fixed timeframes)
 # --force-reload: passes --force-reload to all 26 loaders (full recalculation and rewrite)
@@ -429,16 +428,16 @@ python3 orderbook_binance_loader.py --check-nulls           # Find and reload da
 # Documentation: docs/ORDERBOOK_BINANCE_REFERENCE.md (full column reference)
 
 # Load DVOL (Deribit Volatility Index) - crypto VIX, forward-looking IV
-python3 options_dvol_loader.py                        # BTC, 1m + 1h (both timeframes)
-python3 options_dvol_loader.py --currency ETH         # ETH, 1m + 1h
-python3 options_dvol_loader.py --timeframe 1h         # BTC, only 1h
-python3 options_dvol_loader.py --timeframe 1m         # BTC, only 1m
+python3 options_dvol_loader.py                        # BTC + ETH, 1m + 1h (all currencies and timeframes)
+python3 options_dvol_loader.py --currency ETH         # ETH only, 1m + 1h
+python3 options_dvol_loader.py --timeframe 1h         # BTC + ETH, only 1h
+python3 options_dvol_loader.py --timeframe 1m         # BTC + ETH, only 1m
 python3 options_dvol_loader.py --force-reload         # Full reload (1h: from 2021-03-24, 1m: last 180 days)
 python3 options_dvol_loader.py --currency BTCUSDT --timeframe 1m  # Currency aliases supported
 # Note: Separate tables options_deribit_dvol_1m, options_deribit_dvol_1h (NOT in indicators tables)
 # Source: Deribit public API (no auth required), endpoint: public/get_volatility_index_data
 # DVOL = expected 30-day annualized volatility (%), analogous to VIX
-# Currencies: BTC, ETH, BTCUSDT, ETHUSDT (aliases normalized to BTC/ETH)
+# Currencies: BTC, ETH (both by default; --currency to limit to one)
 # Timeframes: 1m, 1h (default: both sequentially)
 # 1h data: from 2021-03-24 (~5 years, ~43K records per currency)
 # 1m data: rolling window ~186 days from Deribit (run every 2 weeks to accumulate history)
@@ -1628,6 +1627,17 @@ GET https://pro-api.coinmarketcap.com/v1/global-metrics/quotes/latest
     - SQL UPDATEs: 16 per row → 1 per row (16× reduction)
     - Peak RAM: ~27 GB → ~hundreds of MB
   - **File Modified**: `indicators/vwap_loader.py`
+- **Options Loaders Always Load Both Currencies (BTC+ETH)** (2026-03-17):
+  - **Problem**: ETH DVOL stopped collecting on 2026-02-12 (791 missing hours), causing `dvol_btc_eth_spread` and `dvol_btc_eth_ratio` to become NULL
+  - **Root Cause**: `start_all_loaders.py --symbol BTCUSDT` translated to `--currency BTC` for Options loaders, so ETH was never loaded
+  - **Fix**: Options loaders (DVOL, DVOL Indicators, Aggregated) now always load both currencies (BTC+ETH), like Fear & Greed loaders
+  - **Changes**:
+    - `start_all_loaders.py`: Removed all 3 Options loaders from `LOADERS_WITH_CURRENCY` set (now empty)
+    - `options_dvol_loader.py`: Default `--currency` changed from `'BTC'` to `None` (both currencies), added currency loop in `main()`
+    - `options_dvol_indicators_loader.py` and `options_aggregated_loader.py`: No code changes needed (already default to both currencies when `--currency` not passed)
+  - **Behavior**: `--currency` CLI flag still works for manual single-currency runs
+  - **Action Required**: Run `python3 options_dvol_loader.py` to backfill 791 missing ETH DVOL hours, then `python3 options_dvol_indicators_loader.py --group cross` to recalculate spread/ratio
+  - **Files Modified**: `indicators/options_dvol_loader.py`, `indicators/start_all_loaders.py`
 
 ### Security Notes
 - Database passwords are stored in `.env` file (not in repository)
