@@ -1638,6 +1638,13 @@ GET https://pro-api.coinmarketcap.com/v1/global-metrics/quotes/latest
   - **Behavior**: `--currency` CLI flag still works for manual single-currency runs
   - **Action Required**: Run `python3 options_dvol_loader.py` to backfill 791 missing ETH DVOL hours, then `python3 options_dvol_indicators_loader.py --group cross` to recalculate spread/ratio
   - **Files Modified**: `indicators/options_dvol_loader.py`, `indicators/start_all_loaders.py`
+- **MFI Decimal Precision Upgrade** (2026-03-17):
+  - **Problem**: MFI columns stored as `NUMERIC(10,2)` — only 2 decimal places (e.g., `42.88`)
+  - **Fix**: Upgraded to `NUMERIC(10,6)` across all 5 timeframe tables (1m, 15m, 1h, 4h, 1d)
+  - **DB**: `ALTER TABLE ... ALTER COLUMN mfi_* TYPE NUMERIC(10,6)` applied to all 25 columns (5 periods × 5 tables)
+  - **Script**: Updated `mfi_loader.py` line 129: `DECIMAL(10,2)` → `DECIMAL(10,6)`
+  - **Action Required**: Run `python3 mfi_loader.py --force-reload` to recalculate with full precision
+  - **File Modified**: `indicators/mfi_loader.py`
 
 ### Security Notes
 - Database passwords are stored in `.env` file (not in repository)

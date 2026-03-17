@@ -126,7 +126,7 @@ class MFILoader:
                 for period in self.periods:
                     col_name = f'mfi_{period}'
                     if col_name not in existing_columns:
-                        columns_to_add.append(f'{col_name} DECIMAL(10,2)')
+                        columns_to_add.append(f'{col_name} DECIMAL(10,6)')
                         logger.info(f"  - {col_name} (будет создана)")
 
                 # Создаем колонки если нужно
