@@ -1645,6 +1645,13 @@ GET https://pro-api.coinmarketcap.com/v1/global-metrics/quotes/latest
   - **Script**: Updated `mfi_loader.py` line 129: `DECIMAL(10,2)` → `DECIMAL(10,6)`
   - **Action Required**: Run `python3 mfi_loader.py --force-reload` to recalculate with full precision
   - **File Modified**: `indicators/mfi_loader.py`
+- **RSI Decimal Precision Upgrade** (2026-03-17):
+  - **Problem**: RSI columns stored as `NUMERIC(10,4)` — only 4 decimal places
+  - **Fix**: Upgraded to `NUMERIC(10,6)` across all 5 timeframe tables (1m, 15m, 1h, 4h, 1d)
+  - **DB**: `ALTER TABLE ... ALTER COLUMN rsi_* TYPE NUMERIC(10,6)` applied to all 25 columns (5 periods × 5 tables)
+  - **Script**: Updated `rsi_loader.py` line 150: `DECIMAL(10,4)` → `DECIMAL(10,6)`
+  - **Action Required**: Run `python3 rsi_loader.py --force-reload` to recalculate with full precision
+  - **File Modified**: `indicators/rsi_loader.py`
 
 ### Security Notes
 - Database passwords are stored in `.env` file (not in repository)

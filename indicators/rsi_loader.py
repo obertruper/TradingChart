@@ -147,7 +147,7 @@ class RSILoader:
                 if col_name not in existing_columns:
                     cur.execute(f"""
                         ALTER TABLE {table_name}
-                        ADD COLUMN IF NOT EXISTS {col_name} DECIMAL(10,4)
+                        ADD COLUMN IF NOT EXISTS {col_name} DECIMAL(10,6)
                     """)
                     columns_added.append(col_name)
 
